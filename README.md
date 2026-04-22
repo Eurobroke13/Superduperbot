@@ -1,0 +1,2 @@
+# Superduperbot
+Crypto trading bot
