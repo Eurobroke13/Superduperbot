@@ -7,8 +7,35 @@ function defaultState() {
     cash: 10000,
     positions: {},
     trades: [],
+    lastRegime: null,
+    hmmParams: null,
+    markovChain: null,
+    peakValue: 10000,
+    circuitBreakerActive: false,
+    startedAt: new Date().toISOString(),
+    lastPhase: 0,
+    lastHeadlineIds: null,
+    newsBlocked: [],
+    newsBoosted: [],
+    newsHeadlines: [],
+    newsNeedsClaude: false,
+    tokenUsage: null,
+    signalStats: {},
+    disabledSignals: [],
+    dynamicWeights: {},
+    lastWeightUpdate: 0,
+    coinHistory: {},
+    dailyBias: null,
+    weeklyReviews: [],
+    lunarCache: null,
+    lastPeriodicReportAt: null,
     lastRunAt: null,
-    runCount: 0
+    runCount: 0,
+    regimeStats: {
+      bull: { wins: 0, losses: 0, totalPnl: 0, count: 0 },
+      bear: { wins: 0, losses: 0, totalPnl: 0, count: 0 },
+      sideways: { wins: 0, losses: 0, totalPnl: 0, count: 0 }
+    }
   };
 }
 

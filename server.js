@@ -1,6 +1,7 @@
 import express from "express";
 import { initDb } from "./db.js";
-import { loadState, saveState } from "./state-store.js";
+import { loadState } from "./state-store.js";
+import { runBot } from "./bot.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -29,18 +30,17 @@ app.get("/state", async (_, res) => {
 
 app.get("/run", async (_, res) => {
   try {
+    await runBot(process.env);
     const state = await loadState();
-
-    state.runCount = (state.runCount || 0) + 1;
-    state.lastRunAt = new Date().toISOString();
-
-    await saveState(state);
 
     res.json({
       ok: true,
-      message: "Manual run completed",
+      message: "Bot run completed",
       runCount: state.runCount,
-      lastRunAt: state.lastRunAt
+      lastRunAt: state.lastRunAt,
+      lastPhase: state.lastPhase,
+      openPositions: Object.keys(state.positions || {}).length,
+      trades: (state.trades || []).length
     });
   } catch (error) {
     console.error("[run]", error);
