@@ -3969,5 +3969,11 @@ function std(arr) { if (arr.length < 2) return 0; const m = mean(arr); return Ma
 function logGaussian(x, mu, sigma) { if (sigma <= 0) sigma = 1e-6; return -0.5 * Math.log(2 * Math.PI * sigma * sigma) - (x - mu) ** 2 / (2 * sigma * sigma); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-export { runBot };
+export {
+  runBot,
+  sendDailyReport,
+  sendWeeklyReview,
+  premarketScan,
+  reevaluatePositions
+};
 

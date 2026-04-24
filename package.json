@@ -5,7 +5,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "import:state": "node import-state.js"
+    "import:state": "node import-state.js",
+    "task:run-bot": "node task-runner.js run-bot",
+    "task:daily-report": "node task-runner.js daily-report",
+    "task:weekly-review": "node task-runner.js weekly-review",
+    "task:premarket": "node task-runner.js premarket",
+    "task:reevaluate": "node task-runner.js reevaluate"
   },
   "dependencies": {
     "express": "^4.18.2",

@@ -27,4 +27,9 @@ export async function initDb() {
   initialized = true;
 }
 
+export async function closeDb() {
+  initialized = false;
+  await pool.end();
+}
+
 export { pool };
