@@ -19,65 +19,15 @@
 // Secrets: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, LUNARCRUSH_API_KEY
 // =============================================================================
 
-const API_BASE           = "https://www.okx.com";
-const ANTHROPIC_API      = "https://api.anthropic.com/v1/messages";
-const LUNARCRUSH_API     = "https://lunarcrush.com/api4/public/coins";
-const CLAUDE_MODEL       = "claude-sonnet-4-20250514";
-
-const PAPER_CASH         = 10000;
-const RISK_PCT           = 0.03;
-const MAX_LEVERAGE       = 6;
-const MAX_POSITION_SHARE = 1 / 10;
-const ATR_SL_MULT        = 2.0;
-const ATR_TP_MULT        = 4.0;
-const MAX_POSITIONS      = 10;
-const ENTRY_THRESHOLD    = 4;
-const CLAUDE_THRESHOLD   = 8;
-const CANDLE_LIMIT       = 500;
-const DRAWDOWN_LIMIT     = 0.15;
-
-const MONTHLY_BUDGET_USD   = 40.00;
-const INPUT_COST_PER_MTOK  = 3.00;
-const OUTPUT_COST_PER_MTOK = 15.00;
-
-const SIGNAL_WEIGHTS = {
-  "TK-bull": 1.0, "TK-bear": 1.0,
-  "above-cloud": 1.5, "below-cloud": 1.5,
-  "chikou-bull": 0.8, "chikou-bear": 0.8,
-  "OBV-bull-div": 2.5, "OBV-bear-div": 2.5,
-  "fisher-rising": 0.8, "fisher-falling": 0.8,
-  "rsi-bull-div": 2.0, "rsi-bear-div": 2.0,
-  "ema-ribbon-bull": 1.5, "ema-ribbon-bear": 1.5,
-  "fisher-oversold": 1.2, "fisher-overbought": 1.2,
-  "above-VWAP": 1.0, "below-VWAP": 1.0,
-  "gauss-up": 0.7, "gauss-down": 0.7,
-  "rsi-oversold": 1.3, "rsi-overbought": 1.3,
-  "near-support": 1.5, "near-resistance": 1.5,
-  "in-HVN": -1.5,
-  "macd-cross-up": 1.2, "macd-cross-down": 1.2,
-  "adx-strong-bull": 1.0, "adx-strong-bear": 1.0,
-  "bb-oversold": 1.0, "bb-overbought": 1.0,
-  "stochrsi-oversold": 1.0, "stochrsi-overbought": 1.0,
-  "stochrsi-cross-up": 0.8, "stochrsi-cross-down": 0.8,
-  "volume-confirm": 1.5, "volume-climax": -0.5,
-  "funding-crowded-long": 1.0, "funding-crowded-short": 1.0,
-  "funding-extreme-long": 1.5, "funding-extreme-short": 1.5,
-  "h4-bull": 2.0, "h4-bear": 2.0,
-  "news-boost": 0.8,
-  "lunar-bull": 0.7, "lunar-bear": 0.7,
-  "lunar-sentiment-warning": -1.0,
-};
-const BASE_WEIGHTS = { ...SIGNAL_WEIGHTS };
-
-const FUNDING_SETTLEMENT_HOURS = [0, 8, 16];
-const SETTLEMENT_AVOID_MINUTES = 10;
-
-const HOUR_PERFORMANCE = {
-  0: -0.3, 1: 0.0, 2: 0.0, 3: 0.0, 4: 0.1, 5: 0.2, 6: 0.2, 7: 0.0,
-  8: -0.3, 9: 0.1, 10: 0.2, 11: 0.2, 12: 0.1, 13: 0.2, 14: 0.3,
-  15: 0.2, 16: -0.3, 17: 0.1, 18: 0.1, 19: 0.1, 20: 0.0,
-  21: -0.1, 22: -0.1, 23: 0.0,
-};
+import {
+  API_BASE, ANTHROPIC_API, LUNARCRUSH_API, CLAUDE_MODEL,
+  PAPER_CASH, RISK_PCT, MAX_LEVERAGE, MAX_POSITION_SHARE,
+  ATR_SL_MULT, ATR_TP_MULT, MAX_POSITIONS, ENTRY_THRESHOLD,
+  CLAUDE_THRESHOLD, CANDLE_LIMIT, DRAWDOWN_LIMIT,
+  MONTHLY_BUDGET_USD, INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK,
+  SIGNAL_WEIGHTS, BASE_WEIGHTS,
+  FUNDING_SETTLEMENT_HOURS, SETTLEMENT_AVOID_MINUTES, HOUR_PERFORMANCE,
+} from "./bot/config.js";
 
 function getTimeFilter() {
   const now     = new Date();
