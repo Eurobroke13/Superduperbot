@@ -3970,6 +3970,10 @@ function logGaussian(x, mu, sigma) { if (sigma <= 0) sigma = 1e-6; return -0.5 *
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 export {
+  fetchAllTickers,
+  estimateMonthlySpend,
+  PAPER_CASH,
+  MONTHLY_BUDGET_USD,
   runBot,
   sendDailyReport,
   sendWeeklyReview,
