@@ -69,6 +69,11 @@ import {
   volumeProfile,
   vwap
 } from "./bot/indicators.js";
+import {
+  checkGraduatedExit,
+  closePosition,
+  executePartialClose
+} from "./bot/exits.js";
 
 function getTimeFilter() {
   const now     = new Date();
@@ -447,12 +452,16 @@ async function checkAllExits(env, state) {
       checkTranches(pos, price, state);
       await checkDCA(pos, price, atrVal, state, env);
 
-      const exit = checkGraduatedExit(pos, price, high, low, atrVal, state);
+      const exit = checkGraduatedExit(pos, price, high, low, atrVal);
       if (exit.exit) {
         positionsToClose.push({ ...pos, exitPrice: price, exitReason: exit.reason });
       } else if (exit.partial && exit.partialCloses) {
         for (const pc of exit.partialCloses) {
-          executePartialClose(symbol, price, pc.pct, pc.reason, pos, state);
+          executePartialClose(symbol, price, pc.pct, pc.reason, pos, state, {
+            updateCoinHistory,
+            updateDynamicWeights,
+            updateRegimeStats
+          });
           await notifyTrade("PARTIAL", {
             symbol, direction: pos.direction, exitPrice: price,
             reason: pc.reason, pct: pc.pct,
@@ -487,7 +496,11 @@ async function checkAllExits(env, state) {
     for (const p of positionsToClose) {
       if (state.positions[p.symbol]) {
         const journal = claudeResult.journals[p.symbol] || null;
-        closePosition(p.symbol, p.exitPrice, p.exitReason, state.positions[p.symbol], state, journal);
+        closePosition(p.symbol, p.exitPrice, p.exitReason, state.positions[p.symbol], state, journal, {
+          updateCoinHistory,
+          updateDynamicWeights,
+          updateRegimeStats
+        });
         await notifyTrade("CLOSE", p, state, env);
       }
     }
@@ -495,7 +508,11 @@ async function checkAllExits(env, state) {
     console.error("[BATCH CLOSE]", err.message);
     for (const p of positionsToClose) {
       if (state.positions[p.symbol]) {
-        closePosition(p.symbol, p.exitPrice, p.exitReason, state.positions[p.symbol], state, null);
+        closePosition(p.symbol, p.exitPrice, p.exitReason, state.positions[p.symbol], state, null, {
+          updateCoinHistory,
+          updateDynamicWeights,
+          updateRegimeStats
+        });
       }
     }
   }
@@ -2150,231 +2167,6 @@ function checkTranches(pos, price, state) {
 // TP3 (40%): Remaining with trailing stop — let it run
 // =============================================================================
 
-function checkGraduatedExit(pos, price, high, low, currentAtr, state) {
-  const { direction, entryPrice } = pos;
-  if (!pos.maxFavorable) pos.maxFavorable = entryPrice;
-
-  console.log(
-    `[EXIT CHECK] ${pos.symbol} ${direction.toUpperCase()} ` +
-    `live=${price.toFixed(6)} high=${high.toFixed(6)} low=${low.toFixed(6)} ` +
-    `sl=${pos.sl.toFixed(6)} tp=${pos.tp.toFixed(6)}`
-  );
-
-  if (direction === "long" && low <= pos.sl) {
-    console.log(`[SL HIT] ${pos.symbol} LONG | low=${low.toFixed(6)} <= sl=${pos.sl.toFixed(6)}`);
-    return { exit: true, reason: "stop-loss-hit" };
-  }
-
-  if (direction === "short" && high >= pos.sl) {
-    console.log(`[SL HIT] ${pos.symbol} SHORT | high=${high.toFixed(6)} >= sl=${pos.sl.toFixed(6)}`);
-    return { exit: true, reason: "stop-loss-hit" };
-  }
-
-  if (direction === "long" && high >= pos.tp) {
-    console.log(`[TP HIT] ${pos.symbol} LONG | high=${high.toFixed(6)} >= tp=${pos.tp.toFixed(6)}`);
-    return { exit: true, reason: "take-profit-hit" };
-  }
-
-  if (direction === "short" && low <= pos.tp) {
-    console.log(`[TP HIT] ${pos.symbol} SHORT | low=${low.toFixed(6)} <= tp=${pos.tp.toFixed(6)}`);
-    return { exit: true, reason: "take-profit-hit" };
-  }
-
-  // Use entry ATR for TP levels, current ATR for trailing
-  const entryAtr = pos.atrVal || currentAtr;
-
-  // Initialize TP tracking if not present (fallback for legacy positions)
-  if (!pos.tpLevels) {
-    pos.tpLevels = {
-      tp1: {
-        atrMult: 2.0,
-        pct: 0.30,
-        hit: false,
-        // TP1: Take 30% at the candidate's calculated TP (structure-aware)
-        // or 2×ATR, whichever is CLOSER (lock profit early)
-        price: direction === "long"
-          ? entryPrice + entryAtr * 2.0
-          : entryPrice - entryAtr * 2.0
-      },
-      tp2: {
-        atrMult: 3.5,
-        pct: 0.30,
-        hit: false,
-        // TP2: Take 30% at the full structure TP or 3.5×ATR
-        price: direction === "long"
-          ? entryPrice + entryAtr * 3.5
-          : entryPrice - entryAtr * 3.5
-      },
-      tp3: {
-        pct: 0.40,
-        hit: false
-      }
-    };
-  }
-
-  const partialCloses = [];
-
-  if (direction === "long") {
-    pos.maxFavorable = Math.max(pos.maxFavorable, price);
-
-    // Stop loss — close everything
-    if (low <= pos.sl) return { exit: true, reason: "stop-loss", partial: false };
-    // Liquidation
-    if (pos.liquidationPrice && low <= pos.liquidationPrice) return { exit: true, reason: "liquidation", partial: false };
-
-    // TP1: 30% at 2×ATR
-    if (!pos.tpLevels.tp1.hit && high >= pos.tpLevels.tp1.price) {
-      pos.tpLevels.tp1.hit = true;
-      partialCloses.push({ pct: pos.tpLevels.tp1.pct, reason: "tp1-2xATR" });
-      // Move stop to breakeven after TP1
-      pos.sl = Math.max(pos.sl, entryPrice + currentAtr * 0.1);
-    }
-
-    // TP2: 30% at 3.5×ATR
-    if (!pos.tpLevels.tp2.hit && high >= pos.tpLevels.tp2.price) {
-      pos.tpLevels.tp2.hit = true;
-      partialCloses.push({ pct: pos.tpLevels.tp2.pct, reason: "tp2-3.5xATR" });
-      // Move stop to TP1 level
-      pos.sl = Math.max(pos.sl, pos.tpLevels.tp1.price);
-    }
-
-    // TP3: adaptive trailing stop for remaining 40%
-    if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit) {
-      const profitATRs = currentAtr > 0 ? (price - entryPrice) / currentAtr : 0;
-      // Tighten trail as profit grows: starts at 1.2 ATR, shrinks to 0.6 ATR
-      const trailDistance = currentAtr * Math.max(0.6, 1.2 - (profitATRs - 3.5) * 0.15);
-      pos.sl = Math.max(pos.sl, pos.maxFavorable - trailDistance);
-
-      // Never let stop go below TP2 level (protect profits)
-      if (pos.tpLevels.tp2.price) {
-        pos.sl = Math.max(pos.sl, pos.tpLevels.tp2.price);
-      }
-    }
-
-    // Progressive trailing before TP1
-    const profitATRs = currentAtr > 0 ? (price - entryPrice) / currentAtr : 0;
-    if (profitATRs > 3 && !pos.tpLevels.tp1.hit) {
-      const trail = currentAtr * Math.max(1.0, ATR_SL_MULT - (profitATRs - 3) * 0.2);
-      pos.sl = Math.max(pos.sl, pos.maxFavorable - trail);
-    }
-
-    // Time-based tightening
-    const hours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
-    if (hours > 48 && profitATRs > 1) {
-      pos.sl = Math.max(pos.sl, entryPrice + currentAtr * 0.5);
-    }
-
-    // Full TP safety net (legacy pos.tp field)
-    if (pos.tp && high >= pos.tp) {
-      return { exit: true, reason: "take-profit-full", partial: false };
-    }
-
-  } else {
-    // SHORT
-    pos.maxFavorable = Math.min(pos.maxFavorable, price);
-
-    if (high >= pos.sl) return { exit: true, reason: "stop-loss", partial: false };
-    if (pos.liquidationPrice && high >= pos.liquidationPrice) return { exit: true, reason: "liquidation", partial: false };
-
-    // TP1: 30% at 2×ATR
-    if (!pos.tpLevels.tp1.hit && low <= pos.tpLevels.tp1.price) {
-      pos.tpLevels.tp1.hit = true;
-      partialCloses.push({ pct: pos.tpLevels.tp1.pct, reason: "tp1-2xATR" });
-      pos.sl = Math.min(pos.sl, entryPrice - currentAtr * 0.1);
-    }
-
-    // TP2: 30% at 3.5×ATR
-    if (!pos.tpLevels.tp2.hit && low <= pos.tpLevels.tp2.price) {
-      pos.tpLevels.tp2.hit = true;
-      partialCloses.push({ pct: pos.tpLevels.tp2.pct, reason: "tp2-3.5xATR" });
-      pos.sl = Math.min(pos.sl, pos.tpLevels.tp1.price);
-    }
-
-    // TP3 trailing
-    if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit) {
-      const profitATRs = currentAtr > 0 ? (entryPrice - price) / currentAtr : 0;
-      const trailDistance = currentAtr * Math.max(0.6, 1.2 - (profitATRs - 3.5) * 0.15);
-      pos.sl = Math.min(pos.sl, pos.maxFavorable + trailDistance);
-
-      if (pos.tpLevels.tp2.price) {
-        pos.sl = Math.min(pos.sl, pos.tpLevels.tp2.price);
-      }
-    }
-
-    // Progressive trailing before TP1
-    const profitATRs = currentAtr > 0 ? (entryPrice - price) / currentAtr : 0;
-    if (profitATRs > 3 && !pos.tpLevels.tp1.hit) {
-      const trail = currentAtr * Math.max(1.0, ATR_SL_MULT - (profitATRs - 3) * 0.2);
-      pos.sl = Math.min(pos.sl, pos.maxFavorable + trail);
-    }
-
-    // Time-based tightening
-    const hours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
-    if (hours > 48 && profitATRs > 1) {
-      pos.sl = Math.min(pos.sl, entryPrice - currentAtr * 0.5);
-    }
-
-    // Full TP safety net (legacy pos.tp field)
-    if (pos.tp && low <= pos.tp) {
-      return { exit: true, reason: "take-profit-full", partial: false };
-    }
-  }
-
-  if (partialCloses.length > 0) {
-    return { exit: false, partial: true, partialCloses };
-  }
-
-  return { exit: false, partial: false };
-}
-
-
-// Execute a partial close
-function executePartialClose(symbol, price, pct, reason, pos, state) {
-  const closeSize     = pos.size * pct;
-  const closeNotional = pos.notional * pct;
-
-  const rawPnl   = pos.direction === "long"
-    ? (price - pos.entryPrice) * closeSize
-    : (pos.entryPrice - price) * closeSize;
-  const clampPnl = Math.max(rawPnl, -closeNotional);
-  const pnlPct   = closeNotional > 0 ? (clampPnl / closeNotional) * 100 : 0;
-
-  // Return cash from partial close
-  state.cash += closeNotional + clampPnl;
-
-  // Reduce position
-  pos.size     -= closeSize;
-  pos.notional -= closeNotional;
-  pos.effectiveExposure = pos.notional * pos.leverage;
-
-  // Record partial trade
-  state.trades.push({
-    symbol, direction: pos.direction,
-    entryPrice: pos.entryPrice, exitPrice: price,
-    size: closeSize, leverage: pos.leverage, notional: closeNotional,
-    pnl: parseFloat(clampPnl.toFixed(6)),
-    pnlPct: parseFloat(pnlPct.toFixed(2)),
-    reason: `partial-${reason}`, openedAt: pos.openedAt, closedAt: new Date().toISOString(),
-    score: pos.score,
-    reasons: [...(pos.reasons || [])],
-    setupType: pos.setupType || "unknown",
-    approvalType: pos.approvalType || "unknown",
-    signalSet: [...(pos.signalSet || [])],
-    journal: null, wasLiquidated: false,
-    isPartial: true, partialPct: pct
-  });
-
-  // Update learning systems
-  const tradeRecord = state.trades[state.trades.length - 1];
-  updateCoinHistory(state, symbol, {
-    direction: pos.direction, pnl: clampPnl, pnlPct,
-    reasons: pos.reasons, reason: `partial-${reason}`
-  });
-  updateRegimeStats(state, tradeRecord);
-
-  console.log(`📊 [${symbol}] PARTIAL CLOSE ${(pct * 100).toFixed(0)}% @$${price.toFixed(6)} | PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason} | Remaining:$${pos.notional.toFixed(2)}`);
-  updateDynamicWeights(state);
-}
 
 // =============================================================================
 // DCA — CONTROLLED AVERAGING DOWN
@@ -2502,47 +2294,6 @@ async function checkDCA(pos, price, currentAtr, state, env) {
   } catch (err) {
     console.error(`[DCA ${pos.symbol}]`, err.message);
   }
-}
-function closePosition(symbol, price, reason, pos, state, journal) {
-  const rawPnl    = pos.direction === "long" ? (price - pos.entryPrice) * pos.size : (pos.entryPrice - price) * pos.size;
-  const clampPnl  = Math.max(rawPnl, -pos.notional);
-  const pnlPct    = pos.notional > 0 ? (clampPnl / pos.notional) * 100 : 0;
-  const holdHours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
-
-  state.cash += pos.notional + clampPnl;
-
-  state.trades.push({
-    symbol, direction: pos.direction,
-    entryPrice: pos.entryPrice, exitPrice: price,
-    size: pos.size, leverage: pos.leverage, notional: pos.notional,
-    pnl: parseFloat(clampPnl.toFixed(6)),
-    pnlPct: parseFloat(pnlPct.toFixed(2)),
-    reason, openedAt: pos.openedAt, closedAt: new Date().toISOString(),
-    setupType: pos.setupType || "unknown",
-    approvalType: pos.approvalType || "unknown",
-    reasons: [...(pos.reasons || [])],
-    signalSet: [...(pos.signalSet || [])],
-    holdHours: parseFloat(holdHours.toFixed(2)),
-    score: pos.score, atrVal: pos.atrVal, riskReward: pos.riskReward,
-    journal: journal || null, wasLiquidated: rawPnl <= -pos.notional
-  });
-
-  updateCoinHistory(state, symbol, {
-    direction: pos.direction,
-    pnl:       clampPnl,
-    pnlPct:    pnlPct,
-    reasons:   pos.reasons,
-    reason:    reason
-  });
-
-  // UPGRADE 3
-  const tradeRecord = state.trades[state.trades.length - 1];
-  updateRegimeStats(state, tradeRecord);
-  delete state.positions[symbol];
-  updateDynamicWeights(state);
-
-  const icon = clampPnl >= 0 ? "✅" : "❌";
-  console.log(`${icon} [${symbol}] CLOSE ${pos.direction.toUpperCase()} @$${price.toFixed(6)} | PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason}${rawPnl <= -pos.notional ? " ⚠LIQUIDATED" : ""}`);
 }
 
 

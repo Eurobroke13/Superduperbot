@@ -1,0 +1,273 @@
+import { ATR_SL_MULT } from "./config.js";
+
+export function checkGraduatedExit(pos, price, high, low, currentAtr) {
+  const { direction, entryPrice } = pos;
+  if (!pos.maxFavorable) pos.maxFavorable = entryPrice;
+
+  console.log(
+    `[EXIT CHECK] ${pos.symbol} ${direction.toUpperCase()} ` +
+    `live=${price.toFixed(6)} high=${high.toFixed(6)} low=${low.toFixed(6)} ` +
+    `sl=${pos.sl.toFixed(6)} tp=${pos.tp.toFixed(6)}`
+  );
+
+  if (direction === "long" && low <= pos.sl) {
+    console.log(`[SL HIT] ${pos.symbol} LONG | low=${low.toFixed(6)} <= sl=${pos.sl.toFixed(6)}`);
+    return { exit: true, reason: "stop-loss-hit" };
+  }
+
+  if (direction === "short" && high >= pos.sl) {
+    console.log(`[SL HIT] ${pos.symbol} SHORT | high=${high.toFixed(6)} >= sl=${pos.sl.toFixed(6)}`);
+    return { exit: true, reason: "stop-loss-hit" };
+  }
+
+  if (direction === "long" && high >= pos.tp) {
+    console.log(`[TP HIT] ${pos.symbol} LONG | high=${high.toFixed(6)} >= tp=${pos.tp.toFixed(6)}`);
+    return { exit: true, reason: "take-profit-hit" };
+  }
+
+  if (direction === "short" && low <= pos.tp) {
+    console.log(`[TP HIT] ${pos.symbol} SHORT | low=${low.toFixed(6)} <= tp=${pos.tp.toFixed(6)}`);
+    return { exit: true, reason: "take-profit-hit" };
+  }
+
+  const entryAtr = pos.atrVal || currentAtr;
+
+  if (!pos.tpLevels) {
+    pos.tpLevels = {
+      tp1: {
+        atrMult: 2.0,
+        pct: 0.30,
+        hit: false,
+        price: direction === "long"
+          ? entryPrice + entryAtr * 2.0
+          : entryPrice - entryAtr * 2.0
+      },
+      tp2: {
+        atrMult: 3.5,
+        pct: 0.30,
+        hit: false,
+        price: direction === "long"
+          ? entryPrice + entryAtr * 3.5
+          : entryPrice - entryAtr * 3.5
+      },
+      tp3: {
+        pct: 0.40,
+        hit: false
+      }
+    };
+  }
+
+  const partialCloses = [];
+
+  if (direction === "long") {
+    pos.maxFavorable = Math.max(pos.maxFavorable, price);
+
+    if (low <= pos.sl) return { exit: true, reason: "stop-loss", partial: false };
+    if (pos.liquidationPrice && low <= pos.liquidationPrice) {
+      return { exit: true, reason: "liquidation", partial: false };
+    }
+
+    if (!pos.tpLevels.tp1.hit && high >= pos.tpLevels.tp1.price) {
+      pos.tpLevels.tp1.hit = true;
+      partialCloses.push({ pct: pos.tpLevels.tp1.pct, reason: "tp1-2xATR" });
+      pos.sl = Math.max(pos.sl, entryPrice + currentAtr * 0.1);
+    }
+
+    if (!pos.tpLevels.tp2.hit && high >= pos.tpLevels.tp2.price) {
+      pos.tpLevels.tp2.hit = true;
+      partialCloses.push({ pct: pos.tpLevels.tp2.pct, reason: "tp2-3.5xATR" });
+      pos.sl = Math.max(pos.sl, pos.tpLevels.tp1.price);
+    }
+
+    if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit) {
+      const profitATRs = currentAtr > 0 ? (price - entryPrice) / currentAtr : 0;
+      const trailDistance = currentAtr * Math.max(0.6, 1.2 - (profitATRs - 3.5) * 0.15);
+      pos.sl = Math.max(pos.sl, pos.maxFavorable - trailDistance);
+
+      if (pos.tpLevels.tp2.price) {
+        pos.sl = Math.max(pos.sl, pos.tpLevels.tp2.price);
+      }
+    }
+
+    const profitATRs = currentAtr > 0 ? (price - entryPrice) / currentAtr : 0;
+    if (profitATRs > 3 && !pos.tpLevels.tp1.hit) {
+      const trail = currentAtr * Math.max(1.0, ATR_SL_MULT - (profitATRs - 3) * 0.2);
+      pos.sl = Math.max(pos.sl, pos.maxFavorable - trail);
+    }
+
+    const hours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
+    if (hours > 48 && profitATRs > 1) {
+      pos.sl = Math.max(pos.sl, entryPrice + currentAtr * 0.5);
+    }
+
+    if (pos.tp && high >= pos.tp) {
+      return { exit: true, reason: "take-profit-full", partial: false };
+    }
+  } else {
+    pos.maxFavorable = Math.min(pos.maxFavorable, price);
+
+    if (high >= pos.sl) return { exit: true, reason: "stop-loss", partial: false };
+    if (pos.liquidationPrice && high >= pos.liquidationPrice) {
+      return { exit: true, reason: "liquidation", partial: false };
+    }
+
+    if (!pos.tpLevels.tp1.hit && low <= pos.tpLevels.tp1.price) {
+      pos.tpLevels.tp1.hit = true;
+      partialCloses.push({ pct: pos.tpLevels.tp1.pct, reason: "tp1-2xATR" });
+      pos.sl = Math.min(pos.sl, entryPrice - currentAtr * 0.1);
+    }
+
+    if (!pos.tpLevels.tp2.hit && low <= pos.tpLevels.tp2.price) {
+      pos.tpLevels.tp2.hit = true;
+      partialCloses.push({ pct: pos.tpLevels.tp2.pct, reason: "tp2-3.5xATR" });
+      pos.sl = Math.min(pos.sl, pos.tpLevels.tp1.price);
+    }
+
+    if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit) {
+      const profitATRs = currentAtr > 0 ? (entryPrice - price) / currentAtr : 0;
+      const trailDistance = currentAtr * Math.max(0.6, 1.2 - (profitATRs - 3.5) * 0.15);
+      pos.sl = Math.min(pos.sl, pos.maxFavorable + trailDistance);
+
+      if (pos.tpLevels.tp2.price) {
+        pos.sl = Math.min(pos.sl, pos.tpLevels.tp2.price);
+      }
+    }
+
+    const profitATRs = currentAtr > 0 ? (entryPrice - price) / currentAtr : 0;
+    if (profitATRs > 3 && !pos.tpLevels.tp1.hit) {
+      const trail = currentAtr * Math.max(1.0, ATR_SL_MULT - (profitATRs - 3) * 0.2);
+      pos.sl = Math.min(pos.sl, pos.maxFavorable + trail);
+    }
+
+    const hours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
+    if (hours > 48 && profitATRs > 1) {
+      pos.sl = Math.min(pos.sl, entryPrice - currentAtr * 0.5);
+    }
+
+    if (pos.tp && low <= pos.tp) {
+      return { exit: true, reason: "take-profit-full", partial: false };
+    }
+  }
+
+  if (partialCloses.length > 0) {
+    return { exit: false, partial: true, partialCloses };
+  }
+
+  return { exit: false, partial: false };
+}
+
+export function executePartialClose(symbol, price, pct, reason, pos, state, deps = {}) {
+  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {} } = deps;
+
+  const closeSize = pos.size * pct;
+  const closeNotional = pos.notional * pct;
+  const rawPnl = pos.direction === "long"
+    ? (price - pos.entryPrice) * closeSize
+    : (pos.entryPrice - price) * closeSize;
+  const clampPnl = Math.max(rawPnl, -closeNotional);
+  const pnlPct = closeNotional > 0 ? (clampPnl / closeNotional) * 100 : 0;
+
+  state.cash += closeNotional + clampPnl;
+
+  pos.size -= closeSize;
+  pos.notional -= closeNotional;
+  pos.effectiveExposure = pos.notional * pos.leverage;
+
+  state.trades.push({
+    symbol,
+    direction: pos.direction,
+    entryPrice: pos.entryPrice,
+    exitPrice: price,
+    size: closeSize,
+    leverage: pos.leverage,
+    notional: closeNotional,
+    pnl: parseFloat(clampPnl.toFixed(6)),
+    pnlPct: parseFloat(pnlPct.toFixed(2)),
+    reason: `partial-${reason}`,
+    openedAt: pos.openedAt,
+    closedAt: new Date().toISOString(),
+    score: pos.score,
+    reasons: [...(pos.reasons || [])],
+    setupType: pos.setupType || "unknown",
+    approvalType: pos.approvalType || "unknown",
+    signalSet: [...(pos.signalSet || [])],
+    journal: null,
+    wasLiquidated: false,
+    isPartial: true,
+    partialPct: pct
+  });
+
+  const tradeRecord = state.trades[state.trades.length - 1];
+  updateCoinHistory(state, symbol, {
+    direction: pos.direction,
+    pnl: clampPnl,
+    pnlPct,
+    reasons: pos.reasons,
+    reason: `partial-${reason}`
+  });
+  updateRegimeStats(state, tradeRecord);
+
+  console.log(
+    `📊 [${symbol}] PARTIAL CLOSE ${(pct * 100).toFixed(0)}% @$${price.toFixed(6)} | ` +
+    `PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason} | Remaining:$${pos.notional.toFixed(2)}`
+  );
+  updateDynamicWeights(state);
+}
+
+export function closePosition(symbol, price, reason, pos, state, journal, deps = {}) {
+  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {} } = deps;
+
+  const rawPnl = pos.direction === "long"
+    ? (price - pos.entryPrice) * pos.size
+    : (pos.entryPrice - price) * pos.size;
+  const clampPnl = Math.max(rawPnl, -pos.notional);
+  const pnlPct = pos.notional > 0 ? (clampPnl / pos.notional) * 100 : 0;
+  const holdHours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
+
+  state.cash += pos.notional + clampPnl;
+
+  state.trades.push({
+    symbol,
+    direction: pos.direction,
+    entryPrice: pos.entryPrice,
+    exitPrice: price,
+    size: pos.size,
+    leverage: pos.leverage,
+    notional: pos.notional,
+    pnl: parseFloat(clampPnl.toFixed(6)),
+    pnlPct: parseFloat(pnlPct.toFixed(2)),
+    reason,
+    openedAt: pos.openedAt,
+    closedAt: new Date().toISOString(),
+    setupType: pos.setupType || "unknown",
+    approvalType: pos.approvalType || "unknown",
+    reasons: [...(pos.reasons || [])],
+    signalSet: [...(pos.signalSet || [])],
+    holdHours: parseFloat(holdHours.toFixed(2)),
+    score: pos.score,
+    atrVal: pos.atrVal,
+    riskReward: pos.riskReward,
+    journal: journal || null,
+    wasLiquidated: rawPnl <= -pos.notional
+  });
+
+  updateCoinHistory(state, symbol, {
+    direction: pos.direction,
+    pnl: clampPnl,
+    pnlPct,
+    reasons: pos.reasons,
+    reason
+  });
+
+  const tradeRecord = state.trades[state.trades.length - 1];
+  updateRegimeStats(state, tradeRecord);
+  delete state.positions[symbol];
+  updateDynamicWeights(state);
+
+  const icon = clampPnl >= 0 ? "✅" : "❌";
+  console.log(
+    `${icon} [${symbol}] CLOSE ${pos.direction.toUpperCase()} @$${price.toFixed(6)} | ` +
+    `PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason}` +
+    `${rawPnl <= -pos.notional ? " ⚠LIQUIDATED" : ""}`
+  );
+}
