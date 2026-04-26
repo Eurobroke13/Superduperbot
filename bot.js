@@ -74,6 +74,7 @@ import {
   fundingRateSignal,
   scoreSymbol
 } from "./bot/scoring.js";
+import { runBot as runBotCore } from "./bot/runner.js";
 
 function getTimeFilter() {
   const now     = new Date();
@@ -122,7 +123,7 @@ export default {
       } else {
         // */20 * * * * — main bot run
         // Main bot cadence is expected to be driven by a */15 wrangler cron.
-        await runBot(env);
+        await runBotRailway(env);
       }
     } catch (err) {
       console.error("[BOT] Fatal:", err.message || err);
@@ -132,7 +133,7 @@ export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
     if (path === "/run") {
-      await runBot(env);
+      await runBotRailway(env);
       const state = await loadState(env);
       return jsonResponse(state);
     }
@@ -1809,8 +1810,26 @@ function std(arr) { if (arr.length < 2) return 0; const m = mean(arr); return Ma
 function logGaussian(x, mu, sigma) { if (sigma <= 0) sigma = 1e-6; return -0.5 * Math.log(2 * Math.PI * sigma * sigma) - (x - mu) ** 2 / (2 * sigma * sigma); }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+async function runBotRailway(env) {
+  return runBotCore(env, {
+    claudeBatchAnalysis,
+    getAdaptiveThreshold,
+    getWeight,
+    loadState,
+    notifyTrade,
+    printPortfolioSummary,
+    saveState,
+    sendRegimeChangeAlert,
+    sendTelegram,
+    sleep,
+    updateCoinHistory,
+    updateDynamicWeights,
+    updateRegimeStats
+  });
+}
+
 export {
-  runBot,
+  runBotRailway as runBot,
   sendDailyReport,
   sendWeeklyReview,
   premarketScan,
