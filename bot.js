@@ -74,6 +74,12 @@ import {
   closePosition,
   executePartialClose
 } from "./bot/exits.js";
+import {
+  checkDCA,
+  checkTranches,
+  openPositionGradual,
+  portfolioValue
+} from "./bot/execution.js";
 
 function getTimeFilter() {
   const now     = new Date();
@@ -450,7 +456,7 @@ async function checkAllExits(env, state) {
       }
 
       checkTranches(pos, price, state);
-      await checkDCA(pos, price, atrVal, state, env);
+      await checkDCA(pos, price, atrVal, state, env, { notifyTrade });
 
       const exit = checkGraduatedExit(pos, price, high, low, atrVal);
       if (exit.exit) {
@@ -832,7 +838,9 @@ async function phaseScan(env, state, startFrac, endFrac) {
   // Auto-approve lower scores
   for (const c of autoList) {
     if (autoApproveSignal(c, regime)) {
-      const opened = openPositionGradual({ ...c, approvalType: "auto" }, state, livePrices, env);
+      const opened = openPositionGradual({ ...c, approvalType: "auto" }, state, livePrices, env, {
+        sendTelegram
+      });
       if (opened) await notifyTrade("OPEN", c, state, env);
     }
   }
@@ -848,7 +856,9 @@ async function phaseScan(env, state, startFrac, endFrac) {
       for (const c of claudeList) {
         const v = claudeResult.validations[c.symbol];
         if (v?.approved === true) {
-          const opened = openPositionGradual({ ...c, approvalType: "claude" }, state, livePrices, env);
+          const opened = openPositionGradual({ ...c, approvalType: "claude" }, state, livePrices, env, {
+            sendTelegram
+          });
           if (opened) {
             await notifyTrade("OPEN", c, state, env);
             console.log(`[${c.symbol}] Claude approved: ${v.reason}`);
@@ -865,7 +875,9 @@ async function phaseScan(env, state, startFrac, endFrac) {
       console.error("[CLAUDE VALIDATE]", err.message);
       for (const c of claudeList) {
         if (c.score >= 9 && autoApproveSignal(c, regime)) {
-          const opened = openPositionGradual({ ...c, approvalType: "claude" }, state, livePrices, env);
+          const opened = openPositionGradual({ ...c, approvalType: "claude" }, state, livePrices, env, {
+            sendTelegram
+          });
           if (opened) {
             await notifyTrade("OPEN", c, state, env);
             console.log(`[${c.symbol}] Claude unavailable, fallback decision: auto-fallback`);
@@ -1876,425 +1888,6 @@ function getAdaptiveThreshold(state, currentRegime) {
 // -----------------------------------------------------------------------------
 
 
-// =============================================================================
-// POSITION MANAGEMENT
-// =============================================================================
-function portfolioValue(state, livePrices = null) {
-  let unrealizedPnl = 0;
-  for (const pos of Object.values(state.positions)) {
-    const currentPrice = livePrices ? livePrices[pos.symbol] : null;
-    if (currentPrice) {
-      const rawPnl = pos.direction === "long"
-        ? (currentPrice - pos.entryPrice) * pos.size
-        : (pos.entryPrice - currentPrice) * pos.size;
-      unrealizedPnl += Math.max(rawPnl, -pos.notional);
-    }
-  }
-  const reserved = Object.values(state.positions).reduce((s, p) => s + p.notional, 0);
-  return state.cash + reserved + unrealizedPnl;
-}
-
-
-// =============================================================================
-// GRADUAL ENTRY — SCALED POSITION BUILDING
-// Entry in up to 3 tranches:
-//   Tranche 1 (40%): Initial signal triggers
-//   Tranche 2 (35%): Price moves 0.5×ATR in our favor
-//   Tranche 3 (25%): Price moves 1.5×ATR in our favor
-// =============================================================================
-
-function openPositionGradual(candidate, state, livePrices = null, env = null) {
-  const {
-    symbol,
-    signal,
-    price,
-    sl,
-    tp,
-    atrVal,
-    riskReward,
-    score,
-    reasons,
-    setupType = "unknown",
-    approvalType = "auto"
-  } = candidate;
-
-  const currVal = portfolioValue(state, livePrices);
-  if (!state.peakValue || currVal > state.peakValue) state.peakValue = currVal;
-  const drawdown = (state.peakValue - currVal) / state.peakValue;
-  state.drawdown = drawdown;
-  if (drawdown >= DRAWDOWN_LIMIT) {
-    if (!state.circuitBreakerActive) {
-      state.circuitBreakerActive = true;
-      console.warn(`[CIRCUIT] DD ${(drawdown * 100).toFixed(1)}% — halting entries`);
-      // Notify once when circuit breaker activates
-      sendTelegram(`⚠️ CIRCUIT BREAKER ACTIVE\nDrawdown: ${(drawdown * 100).toFixed(1)}%\nNo new entries until portfolio recovers.`, env).catch(() => {});
-    }
-    return false;
-  }
-  state.circuitBreakerActive = false;
-
-  const leverage = score >= 8 ? 6
-                 : score >= 7 ? 5
-                 : score >= 6 ? 4
-                 : score >= 5 ? 3
-                 : 2;
-
-  const setupDecision = getAdaptiveSetupDecision(state, setupType);
-
-  if (!setupDecision.allow) {
-    console.log(
-      `[${symbol}] Skipped: setup blocked (${setupType}) ${setupDecision.reason}`
-    );
-    return false;
-  }
-
-  let sizeMultiplier = setupDecision.sizeMult;
-
-  console.log(
-    `[${symbol}] Setup decision (${setupType}) -> allow=${setupDecision.allow} ` +
-    `sizeMult=${setupDecision.sizeMult.toFixed(2)} ${setupDecision.reason}`
-  );
-
-  if (setupType === "breakout") sizeMultiplier *= 1.15;
-  else if (setupType === "liquidity-trap") sizeMultiplier *= 1.0;
-  else if (setupType === "mean-reversion") sizeMultiplier *= 0.85;
-
-  if (drawdown > 0.10) sizeMultiplier *= 0.7;
-
-  const setupRiskMult = getSetupRiskMultiplier(state, setupType);
-  const approvalRiskMult = getApprovalRiskMultiplier(state, approvalType);
-  const combinedRiskMult = setupRiskMult * approvalRiskMult * sizeMultiplier;
-  const adjustedRiskPct = Math.max(
-    0.01,
-    Math.min(RISK_PCT * combinedRiskMult, 0.05)
-  );
-
-  const approvalStats = getApprovalStats(state.trades, approvalType);
-
-  if (approvalStats && approvalStats.count >= 20) {
-    console.log(
-      `[${symbol}] approval=${approvalType} n=${approvalStats.count} ` +
-      `EV=${approvalStats.expectancy.toFixed(2)} mult=${approvalRiskMult.toFixed(2)}`
-    );
-  }
-
-  const riskAmount = currVal * adjustedRiskPct;
-  const slDist     = Math.abs(price - sl);
-  if (slDist === 0) return false;
-
-  let totalSize = riskAmount / slDist;
-  let totalNotional = totalSize * price;
-  const maxN = currVal * MAX_POSITION_SHARE;
-  if (totalNotional > maxN) { totalNotional = maxN; totalSize = totalNotional / price; }
-
-  // Tranche 1: 40% of total position
-  const tranche1Pct = 0.40;
-  const tranche1Notional = totalNotional * tranche1Pct;
-  const tranche1Size     = totalSize * tranche1Pct * leverage;
-
-  if (tranche1Notional > state.cash) {
-    console.log(`[${symbol}] Cash too low ($${state.cash.toFixed(2)} < $${tranche1Notional.toFixed(2)})`);
-    return false;
-  }
-
-  const liqPrice = signal === "long"
-    ? price * (1 - 1 / leverage + 0.005)
-    : price * (1 + 1 / leverage - 0.005);
-
-  // Define tranche trigger prices
-  const tranche2Trigger = signal === "long"
-    ? price + atrVal * 0.5
-    : price - atrVal * 0.5;
-  const tranche3Trigger = signal === "long"
-    ? price + atrVal * 1.5
-    : price - atrVal * 1.5;
-
-  state.cash -= tranche1Notional;
-
-  state.positions[symbol] = {
-    symbol, direction: signal, entryPrice: price,
-    size: tranche1Size,
-    notional: tranche1Notional,
-    effectiveExposure: tranche1Notional * leverage,
-    leverage: leverage, sl, tp, atrVal, riskReward, score,
-    reasons: [...(reasons || [])],
-    setupType,
-    approvalType,
-    signalSet: [...new Set((reasons || []).slice().sort())],
-    lunarSentiment: candidate.lunarSentiment ?? null,
-    lunarGalaxyScore: candidate.lunarGalaxyScore ?? null,
-    liquidationPrice: liqPrice,
-    maxFavorable: price,
-    forceClose: false,
-    openedAt: new Date().toISOString(),
-
-    // Gradual entry tracking
-    tranches: {
-      plan: {
-        totalSize: totalSize * leverage,
-        totalNotional: totalNotional,
-        tranche1: { pct: 0.40, filled: true, price: price, size: tranche1Size, notional: tranche1Notional },
-        tranche2: { pct: 0.35, filled: false, triggerPrice: tranche2Trigger, size: 0, notional: 0 },
-        tranche3: { pct: 0.25, filled: false, triggerPrice: tranche3Trigger, size: 0, notional: 0 },
-      },
-      filledCount: 1,
-      avgEntryPrice: price
-    },
-    tpLevels: {
-      tp1: {
-        atrMult: 2.0,
-        pct: 0.30,
-        hit: false,
-        price: signal === "long"
-          ? price + atrVal * 2.0
-          : price - atrVal * 2.0
-      },
-      tp2: {
-        atrMult: 3.5,
-        pct: 0.30,
-        hit: false,
-        price: signal === "long"
-          ? price + atrVal * 3.5
-          : price - atrVal * 3.5
-      },
-      tp3: {
-        pct: 0.40,
-        hit: false
-      }
-    },
-    dcaApplied: false,
-  };
-
-  console.log(
-    `🟢 [${symbol}] OPEN ${signal.toUpperCase()} T1/3 @$${price.toFixed(6)} | ` +
-    `$${tranche1Notional.toFixed(2)} margin (40% of $${totalNotional.toFixed(2)}) | ` +
-    `T2@$${tranche2Trigger.toFixed(6)} T3@$${tranche3Trigger.toFixed(6)} | ` +
-    `Score:${score} [${reasons.join(",")}]`
-  );
-  return true;
-}
-
-// Check and fill remaining tranches during exit checks
-function checkTranches(pos, price, state) {
-  if (!pos.tranches) return; // Legacy position without tranches
-
-  const plan = pos.tranches.plan;
-
-  // Check tranche 2
-  if (!plan.tranche2.filled) {
-    const triggered = pos.direction === "long"
-      ? price >= plan.tranche2.triggerPrice
-      : price <= plan.tranche2.triggerPrice;
-
-    if (triggered) {
-      const t2Notional = plan.totalNotional * plan.tranche2.pct;
-      const t2Size     = plan.totalSize * plan.tranche2.pct;
-
-      if (t2Notional <= state.cash) {
-        state.cash -= t2Notional;
-        pos.size     += t2Size;
-        pos.notional += t2Notional;
-        pos.effectiveExposure = pos.notional * pos.leverage;
-
-        plan.tranche2.filled   = true;
-        plan.tranche2.price    = price;
-        plan.tranche2.size     = t2Size;
-        plan.tranche2.notional = t2Notional;
-        pos.tranches.filledCount = 2;
-
-        // Recalculate average entry
-        const t1 = plan.tranche1;
-        const t2 = plan.tranche2;
-        pos.tranches.avgEntryPrice = (t1.price * t1.size + t2.price * t2.size) / (t1.size + t2.size);
-        pos.entryPrice = pos.tranches.avgEntryPrice;
-
-        // Tighten stop to breakeven on tranche 1
-        if (pos.direction === "long") {
-          pos.sl = Math.max(pos.sl, plan.tranche1.price);
-        } else {
-          pos.sl = Math.min(pos.sl, plan.tranche1.price);
-        }
-
-        console.log(`📈 [${pos.symbol}] TRANCHE 2 filled @$${price.toFixed(6)} | +$${t2Notional.toFixed(2)} | Total:$${pos.notional.toFixed(2)} | SL→$${pos.sl.toFixed(6)}`);
-      }
-    }
-  }
-
-  // Check tranche 3
-  if (plan.tranche2.filled && !plan.tranche3.filled) {
-    const triggered = pos.direction === "long"
-      ? price >= plan.tranche3.triggerPrice
-      : price <= plan.tranche3.triggerPrice;
-
-    if (triggered) {
-      const t3Notional = plan.totalNotional * plan.tranche3.pct;
-      const t3Size     = plan.totalSize * plan.tranche3.pct;
-
-      if (t3Notional <= state.cash) {
-        state.cash -= t3Notional;
-        pos.size     += t3Size;
-        pos.notional += t3Notional;
-        pos.effectiveExposure = pos.notional * pos.leverage;
-
-        plan.tranche3.filled   = true;
-        plan.tranche3.price    = price;
-        plan.tranche3.size     = t3Size;
-        plan.tranche3.notional = t3Notional;
-        pos.tranches.filledCount = 3;
-
-        // Recalculate average entry
-        const sizes  = [plan.tranche1, plan.tranche2, plan.tranche3].filter(t => t.filled);
-        const totalS = sizes.reduce((s, t) => s + t.size, 0);
-        pos.tranches.avgEntryPrice = sizes.reduce((s, t) => s + t.price * t.size, 0) / totalS;
-        pos.entryPrice = pos.tranches.avgEntryPrice;
-
-        // Tighten stop to tranche 1 entry
-        if (pos.direction === "long") {
-          pos.sl = Math.max(pos.sl, plan.tranche1.price + pos.atrVal * 0.3);
-        } else {
-          pos.sl = Math.min(pos.sl, plan.tranche1.price - pos.atrVal * 0.3);
-        }
-
-        console.log(`📈 [${pos.symbol}] TRANCHE 3 filled @$${price.toFixed(6)} | FULL POSITION $${pos.notional.toFixed(2)} | SL→$${pos.sl.toFixed(6)}`);
-      }
-    }
-  }
-}
-// =============================================================================
-// GRADUATED TAKE-PROFIT
-// TP1 (30%): Close 30% at 2×ATR profit — lock in base profit
-// TP2 (30%): Close 30% at 3.5×ATR profit — capture momentum
-// TP3 (40%): Remaining with trailing stop — let it run
-// =============================================================================
-
-
-// =============================================================================
-// DCA — CONTROLLED AVERAGING DOWN
-// Only triggers if:
-//   1. Position is down 1-2×ATR (not catastrophically)
-//   2. Original signal reasons are still mostly valid
-//   3. Only one DCA per position (no infinite averaging)
-//   4. Overall portfolio is not in drawdown
-//   5. Position has been open at least 4 hours
-// =============================================================================
-
-async function checkDCA(pos, price, currentAtr, state, env) {
-  // Already DCA'd once — no more
-  if (pos.dcaApplied) return;
-
-  // Position must be at least 4 hours old
-  const hoursOpen = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
-  if (hoursOpen < 4) return;
-
-  // Must be in a loss of 1-2×ATR (not too deep, not shallow)
-  const loss = pos.direction === "long"
-    ? pos.entryPrice - price
-    : price - pos.entryPrice;
-  const lossATRs = currentAtr > 0 ? loss / currentAtr : 0;
-
-  if (lossATRs < 0.7 || lossATRs > 2.5) return;
-
-  // Portfolio must not be in drawdown
-  const currVal = portfolioValue(state);
-  if (state.peakValue && (state.peakValue - currVal) / state.peakValue > 0.08) return;
-
-  // Re-validate the signal: at least 60% of original reasons should still be active
-  try {
-    const candles = await fetchCandles(pos.symbol, "1h", 100);
-    if (!candles || candles.length < 50) return;
-
-    const closes  = candles.map(c => c.close);
-    const highs   = candles.map(c => c.high);
-    const lows    = candles.map(c => c.low);
-    const volumes = candles.map(c => c.volume);
-    const n       = closes.length;
-
-    // Quick signal recheck
-    const rsiArr    = rsiSeries(closes, 14);
-    const rsiVal    = rsiArr[n - 1];
-    const vwapVal   = vwap(highs, lows, closes, volumes, 24);
-    const ichi      = ichimoku(highs, lows, closes);
-    const macdR     = macd(closes);
-
-    let confirmations = 0;
-    const needed = 3;
-
-    if (pos.direction === "long") {
-      if (rsiVal < 40) confirmations++;              // Still not overbought
-      if (price > vwapVal) confirmations++;           // Still above VWAP
-      if (ichi.tkCross > 0) confirmations++;          // Tenkan still above Kijun
-      if (macdR.histogram > 0) confirmations++;       // MACD still positive
-      if (price > ichi.senkouA) confirmations++;      // Still above cloud
-    } else {
-      if (rsiVal > 60) confirmations++;
-      if (price < vwapVal) confirmations++;
-      if (ichi.tkCross < 0) confirmations++;
-      if (macdR.histogram < 0) confirmations++;
-      if (price < ichi.senkouA) confirmations++;
-    }
-
-    if (confirmations < needed) {
-      console.log(`[DCA ${pos.symbol}] Signal invalidated (${confirmations}/${needed} confirmations). No DCA.`);
-      return;
-    }
-
-    // Execute DCA: add 50% of original position size
-    const dcaPct = 0.50;
-    const oldSize = pos.size;
-    const dcaSize = oldSize * dcaPct;
-    const dcaNotional = pos.notional * dcaPct;
-
-    if (dcaNotional > state.cash) {
-      console.log(`[DCA ${pos.symbol}] Insufficient cash.`);
-      return;
-    }
-
-    // Calculate new average BEFORE modifying size
-    pos.entryPrice = (pos.entryPrice * oldSize + price * dcaSize) / (oldSize + dcaSize);
-
-    state.cash -= dcaNotional;
-    pos.notional += dcaNotional;
-    pos.size += dcaSize;
-    pos.effectiveExposure = pos.notional * pos.leverage;
-
-    // Adjust stop
-    const newSlDist = currentAtr * ATR_SL_MULT;
-    if (pos.direction === "long") {
-      pos.sl = pos.entryPrice - newSlDist;
-    } else {
-      pos.sl = pos.entryPrice + newSlDist;
-    }
-
-    // Recalculate TP levels with new entry
-    if (pos.tpLevels) {
-      const entryAtr = pos.atrVal || currentAtr;
-      if (!pos.tpLevels.tp1.hit) {
-        pos.tpLevels.tp1.price = pos.direction === "long"
-          ? pos.entryPrice + entryAtr * 2.0
-          : pos.entryPrice - entryAtr * 2.0;
-      }
-      if (!pos.tpLevels.tp2.hit) {
-        pos.tpLevels.tp2.price = pos.direction === "long"
-          ? pos.entryPrice + entryAtr * 3.5
-          : pos.entryPrice - entryAtr * 3.5;
-      }
-    }
-
-    pos.dcaApplied = true;
-    pos.dcaPrice   = price;
-    pos.dcaDate    = new Date().toISOString();
-
-    console.log(`📉 [${pos.symbol}] DCA +50% @$${price.toFixed(6)} | New avg:$${pos.entryPrice.toFixed(6)} | New SL:$${pos.sl.toFixed(6)} | Margin:$${pos.notional.toFixed(2)}`);
-
-    await notifyTrade("DCA", {
-      symbol: pos.symbol, direction: pos.direction,
-      price, entryPrice: pos.entryPrice, notional: pos.notional
-    }, state, env);
-
-  } catch (err) {
-    console.error(`[DCA ${pos.symbol}]`, err.message);
-  }
-}
 
 
 // =============================================================================
