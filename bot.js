@@ -23,11 +23,21 @@ import {
   API_BASE, ANTHROPIC_API, LUNARCRUSH_API, CLAUDE_MODEL,
   PAPER_CASH, RISK_PCT, MAX_LEVERAGE, MAX_POSITION_SHARE,
   ATR_SL_MULT, ATR_TP_MULT, MAX_POSITIONS, ENTRY_THRESHOLD,
-  CLAUDE_THRESHOLD, CANDLE_LIMIT, DRAWDOWN_LIMIT,
-  MONTHLY_BUDGET_USD, INPUT_COST_PER_MTOK, OUTPUT_COST_PER_MTOK,
+  CANDLE_LIMIT, DRAWDOWN_LIMIT,
+  MONTHLY_BUDGET_USD,
   SIGNAL_WEIGHTS, BASE_WEIGHTS,
   FUNDING_SETTLEMENT_HOURS, SETTLEMENT_AVOID_MINUTES, HOUR_PERFORMANCE,
 } from "./bot/config.js";
+import {
+  calculatePerformanceMetrics,
+  estimateMonthlySpend,
+  getAdaptiveClaudeThreshold,
+  getAdaptiveSetupDecision,
+  getApprovalRiskMultiplier,
+  getApprovalStats,
+  getSetupRiskMultiplier,
+  getSetupStats
+} from "./bot/stats.js";
 
 function getTimeFilter() {
   const now     = new Date();
@@ -1824,190 +1834,6 @@ function getWeight(signal, state) {
 // =============================================================================
 // UPGRADE 2 — PER-COIN TRADE MEMORY
 // =============================================================================
-function getSetupStats(trades, setupType) {
-  const rows = (trades || []).filter(t => t.setupType === setupType);
-  if (rows.length === 0) return null;
-
-  const wins = rows.filter(t => t.pnl > 0);
-  const losses = rows.filter(t => t.pnl <= 0);
-
-  const winRate = wins.length / rows.length;
-  const avgWin = wins.length
-    ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length
-    : 0;
-  const avgLoss = losses.length
-    ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length)
-    : 0;
-
-  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
-
-  return {
-    count: rows.length,
-    winRate,
-    avgWin,
-    avgLoss,
-    expectancy
-  };
-}
-
-function getApprovalStats(trades, approvalType) {
-  const rows = (trades || []).filter(t => t.approvalType === approvalType);
-  if (rows.length === 0) return null;
-
-  const wins = rows.filter(t => t.pnl > 0);
-  const losses = rows.filter(t => t.pnl <= 0);
-
-  const winRate = wins.length / rows.length;
-  const avgWin = wins.length
-    ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length
-    : 0;
-  const avgLoss = losses.length
-    ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length)
-    : 0;
-
-  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
-
-  return {
-    count: rows.length,
-    winRate,
-    avgWin,
-    avgLoss,
-    expectancy
-  };
-}
-
-function getApprovalRiskMultiplier(state, approvalType) {
-  const stats = getApprovalStats(state.trades || [], approvalType);
-  if (!stats || stats.count < 15) return 1.0;
-  if (stats.expectancy > 8 && stats.winRate > 0.52) return 1.10;
-  if (stats.expectancy < -5 && stats.winRate < 0.45) return 0.85;
-  if (stats.expectancy < 0) return 0.93;
-  return 1.0;
-}
-
-function getAdaptiveSetupDecision(state, setupType) {
-  const stats = getSetupStats(state.trades || [], setupType);
-
-  // No evidence yet
-  if (!stats) {
-    return {
-      allow: true,
-      sizeMult: 1.0,
-      reason: "no-stats"
-    };
-  }
-
-  const { count, expectancy, winRate } = stats;
-
-  // Small sample: ignore
-  if (count < 10) {
-    return {
-      allow: true,
-      sizeMult: 1.0,
-      reason: "low-sample"
-    };
-  }
-
-  // Medium sample: soft adjustments only
-  if (count < 20) {
-    if (expectancy > 5 && winRate > 0.5) {
-      return {
-        allow: true,
-        sizeMult: 1.10,
-        reason: `early-good n=${count} ev=${expectancy.toFixed(2)}`
-      };
-    }
-
-    if (expectancy < 0) {
-      return {
-        allow: true,
-        sizeMult: 0.85,
-        reason: `early-weak n=${count} ev=${expectancy.toFixed(2)}`
-      };
-    }
-
-    return {
-      allow: true,
-      sizeMult: 1.0,
-      reason: `early-neutral n=${count} ev=${expectancy.toFixed(2)}`
-    };
-  }
-
-  // Established sample: stronger adjustments
-  if (count < 30) {
-    if (expectancy > 8 && winRate > 0.52) {
-      return {
-        allow: true,
-        sizeMult: 1.15,
-        reason: `good n=${count} ev=${expectancy.toFixed(2)}`
-      };
-    }
-
-    if (expectancy < -5) {
-      return {
-        allow: true,
-        sizeMult: 0.70,
-        reason: `bad-but-not-blocked n=${count} ev=${expectancy.toFixed(2)}`
-      };
-    }
-
-    if (expectancy < 0) {
-      return {
-        allow: true,
-        sizeMult: 0.85,
-        reason: `weak n=${count} ev=${expectancy.toFixed(2)}`
-      };
-    }
-
-    return {
-      allow: true,
-      sizeMult: 1.0,
-      reason: `neutral n=${count} ev=${expectancy.toFixed(2)}`
-    };
-  }
-
-  // Strong sample: allow hard skip only here
-  if (expectancy < -5 && winRate < 0.45) {
-    return {
-      allow: false,
-      sizeMult: 0.0,
-      reason: `blocked n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
-    };
-  }
-
-  if (expectancy < 0) {
-    return {
-      allow: true,
-      sizeMult: 0.75,
-      reason: `established-weak n=${count} ev=${expectancy.toFixed(2)}`
-    };
-  }
-
-  if (expectancy > 8 && winRate > 0.52) {
-    return {
-      allow: true,
-      sizeMult: 1.20,
-      reason: `established-strong n=${count} ev=${expectancy.toFixed(2)}`
-    };
-  }
-
-  return {
-    allow: true,
-    sizeMult: 1.0,
-    reason: `established-neutral n=${count} ev=${expectancy.toFixed(2)}`
-  };
-}
-
-function getSetupRiskMultiplier(state, setupType) {
-  const stats = getSetupStats(state.trades || [], setupType);
-
-  if (!stats || stats.count < 20) return 1.0;
-  if (stats.expectancy > 8) return 1.25;
-  if (stats.expectancy > 3) return 1.10;
-  if (stats.expectancy < 0) return 0.75;
-  return 1.0;
-}
-
 function updateCoinHistory(state, symbol, trade) {
   if (!state.coinHistory) state.coinHistory = {};
   if (!state.coinHistory[symbol]) state.coinHistory[symbol] = [];
@@ -2155,61 +1981,6 @@ function getAdaptiveThreshold(state, currentRegime) {
 
 // -----------------------------------------------------------------------------
 
-function getAdaptiveClaudeThreshold(state, currentRegime) {
-  if (!state.regimeStats) return CLAUDE_THRESHOLD;
-
-  const rs = state.regimeStats[currentRegime];
-  if (!rs || rs.count < 15) return CLAUDE_THRESHOLD;
-
-  const winRate = rs.wins / rs.count;
-  const claudeStats = getApprovalStats(state.trades || [], "claude");
-  const autoStats = getApprovalStats(state.trades || [], "auto");
-  let adaptive = CLAUDE_THRESHOLD;
-
-  // Bad regime → use Claude MORE (lower threshold)
-  if (winRate < 0.40) adaptive -= 1;
-
-  // Good regime → trust system MORE
-  if (winRate > 0.55) adaptive += 1;
-
-  if (claudeStats && claudeStats.count >= 15) {
-    if (claudeStats.expectancy < 0) adaptive += 1;
-    else if (claudeStats.expectancy > 0 && (!autoStats || autoStats.count < 15 || claudeStats.expectancy > autoStats.expectancy)) adaptive -= 1;
-  }
-
-  return Math.max(CLAUDE_THRESHOLD - 2, Math.min(CLAUDE_THRESHOLD + 2, adaptive));
-}
-// =============================================================================
-// PERFORMANCE METRICS
-// =============================================================================
-function calculatePerformanceMetrics(trades) {
-  if (trades.length < 5) return null;
-
-  const returns = trades.map(t => (t.pnl / (t.notional || 500)) * 100);
-  const avg = mean(returns);
-  const sd  = std(returns);
-
-  const sharpe  = sd > 0 ? (avg / sd) * Math.sqrt(365) : 0;
-  const negRet  = returns.filter(r => r < 0);
-  const downDev = negRet.length > 0 ? std(negRet) : 0.001;
-  const sortino = (avg / downDev) * Math.sqrt(365);
-
-  let peak = 0, maxDD = 0, eq = 0;
-  for (const r of returns) { eq += r; peak = Math.max(peak, eq); maxDD = Math.max(maxDD, peak - eq); }
-
-  const gp = returns.filter(r => r > 0).reduce((a, b) => a + b, 0);
-  const gl = Math.abs(returns.filter(r => r < 0).reduce((a, b) => a + b, 0));
-  const pf = gl > 0 ? gp / gl : gp > 0 ? 999 : 0;
-
-  return {
-    totalTrades: trades.length,
-    winRate:     ((trades.filter(t => t.pnl > 0).length / trades.length) * 100).toFixed(1),
-    sharpe:      sharpe.toFixed(2),
-    sortino:     sortino.toFixed(2),
-    maxDrawdown: maxDD.toFixed(2),
-    profitFactor: pf.toFixed(2)
-  };
-}
 
 // =============================================================================
 // POSITION MANAGEMENT
@@ -3698,11 +3469,6 @@ async function fetchWithRetry(url, retries = 2) {
 // =============================================================================
 // CLAUDE API — BUDGET GUARDED
 // =============================================================================
-function estimateMonthlySpend(usage) {
-  if (!usage) return 0;
-  return ((usage.input || 0) / 1_000_000) * INPUT_COST_PER_MTOK +
-         ((usage.output || 0) / 1_000_000) * OUTPUT_COST_PER_MTOK;
-}
 
 function initTokenUsage(state) {
   const now = new Date();
@@ -3921,9 +3687,6 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 export {
   fetchAllTickers,
-  estimateMonthlySpend,
-  PAPER_CASH,
-  MONTHLY_BUDGET_USD,
   runBot,
   sendDailyReport,
   sendWeeklyReview,

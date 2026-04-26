@@ -1,11 +1,10 @@
 import express from "express";
 import { initDb } from "./db.js";
+import { MONTHLY_BUDGET_USD, PAPER_CASH } from "./bot/config.js";
+import { estimateMonthlySpend } from "./bot/stats.js";
 import { loadState } from "./state-store.js";
 import {
   fetchAllTickers,
-  estimateMonthlySpend,
-  MONTHLY_BUDGET_USD,
-  PAPER_CASH,
   runBot
 } from "./bot.js";
 
