@@ -20,7 +20,7 @@
 // =============================================================================
 
 import {
-  API_BASE, ANTHROPIC_API, LUNARCRUSH_API, CLAUDE_MODEL,
+  ANTHROPIC_API, CLAUDE_MODEL,
   PAPER_CASH, RISK_PCT, MAX_LEVERAGE, MAX_POSITION_SHARE,
   ATR_SL_MULT, ATR_TP_MULT, MAX_POSITIONS, ENTRY_THRESHOLD,
   CANDLE_LIMIT, DRAWDOWN_LIMIT,
@@ -38,6 +38,15 @@ import {
   getSetupRiskMultiplier,
   getSetupStats
 } from "./bot/stats.js";
+import {
+  fetchAllContracts,
+  fetchAllTickers,
+  fetchCandles,
+  fetchCryptoPanicNews,
+  fetchFundingRate,
+  fetchLivePrices,
+  fetchLunarCrush
+} from "./bot/market-data.js";
 
 function getTimeFilter() {
   const now     = new Date();
@@ -842,136 +851,6 @@ async function phaseScan(env, state, startFrac, endFrac) {
   console.log(`[SCAN] Qualified:${qualified.length} Auto:${autoList.length} Claude:${claudeList.length}`);
 }
 
-// =============================================================================
-// NEWS — RULE-BASED + CACHED (no API key needed)
-// =============================================================================
-async function fetchCryptoPanicNews(state) {
-  const result = { blockedCoins: [], boostedCoins: [], headlines: [], needsClaude: false };
-
-  try {
-    const url = "https://cryptopanic.com/api/v1/posts/?auth_token=anonymous&public=true&kind=news&filter=hot";
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
-    if (!res.ok) {
-      result.blockedCoins = state.newsBlocked || [];
-      result.boostedCoins = state.newsBoosted || [];
-      return result;
-    }
-    const data = await res.json();
-    if (!data.results) return result;
-
-    const headlines = data.results.slice(0, 15).map(post => ({
-      title:     post.title || "",
-      coins:     (post.currencies || []).map(c => c.code?.toUpperCase()).filter(Boolean),
-      sentiment: post.votes?.negative > post.votes?.positive ? "negative"
-               : post.votes?.positive > post.votes?.negative ? "positive" : "neutral",
-      id:        post.id
-    }));
-    result.headlines = headlines;
-
-    // Cache check
-    const ids = headlines.map(h => h.id).sort().join(",");
-    if (ids === state.lastHeadlineIds) {
-      result.blockedCoins = state.newsBlocked || [];
-      result.boostedCoins = state.newsBoosted || [];
-      result.needsClaude  = false;
-      return result;
-    }
-    state.lastHeadlineIds = ids;
-
-    // Rule-based classification
-    const neg = ["hack","exploit","breach","lawsuit","ban","delist","bankrupt","freeze","suspend","scam","rug","sec","charged","fraud","investigation","stolen"];
-    const pos = ["etf","approval","partnership","listing","upgrade","launch","integration","institutional","adoption","bullish","milestone","record","rally"];
-
-    for (const h of headlines) {
-      const lower = h.title.toLowerCase();
-      for (const coin of h.coins) {
-        if (neg.some(k => lower.includes(k))) result.blockedCoins.push(coin);
-        if (pos.some(k => lower.includes(k))) result.boostedCoins.push(coin);
-      }
-    }
-    result.blockedCoins = [...new Set(result.blockedCoins)];
-    result.boostedCoins = [...new Set(result.boostedCoins)];
-
-    const notable = headlines.filter(h => h.sentiment !== "neutral" || h.coins.length > 0).length;
-    result.needsClaude = notable >= 3;
-  } catch (err) {
-    console.error("[NEWS]", err.message);
-    result.blockedCoins = state.newsBlocked || [];
-    result.boostedCoins = state.newsBoosted || [];
-  }
-
-  return result;
-}
-
-// =============================================================================
-// LUNARCRUSH
-// =============================================================================
-async function fetchLunarCrush(symbols, env, state) {
-  const result = {};
-  if (!env.LUNARCRUSH_API_KEY || symbols.length === 0) return result;
-  const now = Date.now();
-  const ttlMs = 30 * 60 * 1000;
-
-  if (
-    state.lunarCache &&
-    state.lunarCache.ts &&
-    now - state.lunarCache.ts < ttlMs &&
-    state.lunarCache.data
-  ) {
-    for (const symbol of symbols) {
-      if (state.lunarCache.data[symbol]) {
-        result[symbol] = state.lunarCache.data[symbol];
-      }
-    }
-    if (Object.keys(result).length > 0) return result;
-  }
-
-  try {
-    const url = `${LUNARCRUSH_API}/list/v1?symbols=${symbols.join(",")}`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${env.LUNARCRUSH_API_KEY}`, Accept: "application/json" }
-    });
-    if (!res.ok) return result;
-    const data = await res.json();
-    if (!data.data) return result;
-
-    const fetched = {};
-    for (const coin of data.data) {
-      const sym = coin.symbol?.toUpperCase();
-      if (!sym) continue;
-      const lunarPoint = {
-        galaxyScore:  coin.galaxy_score      ?? 50,
-        sentiment:    coin.sentiment         ?? 50,
-        socialVolume: coin.social_volume_24h ?? 0,
-        altRank:      coin.alt_rank          ?? 999
-      };
-      fetched[sym] = lunarPoint;
-      if (symbols.includes(sym)) result[sym] = lunarPoint;
-    }
-    state.lunarCache = {
-      ts: now,
-      data: {
-        ...(state.lunarCache?.data || {}),
-        ...fetched
-      }
-    };
-  } catch (err) {
-    console.error("[LUNAR]", err.message);
-    if (
-      state.lunarCache &&
-      state.lunarCache.data &&
-      state.lunarCache.ts &&
-      now - state.lunarCache.ts < ttlMs
-    ) {
-      for (const symbol of symbols) {
-        if (state.lunarCache.data[symbol]) {
-          result[symbol] = state.lunarCache.data[symbol];
-        }
-      }
-    }
-  }
-  return result;
-}
 
 // =============================================================================
 // SIGNAL SCORING — MULTI-TIMEFRAME + WEIGHTED
@@ -2000,19 +1879,6 @@ function portfolioValue(state, livePrices = null) {
   return state.cash + reserved + unrealizedPnl;
 }
 
-async function fetchLivePrices(state) {
-  const prices = {};
-  const symbols = Object.keys(state.positions);
-  if (symbols.length === 0) return prices;
-  const tickers = await fetchAllTickers();
-  if (!tickers) return prices;
-  for (const t of tickers) {
-    if (state.positions[t.contract]) {
-      prices[t.contract] = parseFloat(t.last);
-    }
-  }
-  return prices;
-}
 
 // =============================================================================
 // GRADUAL ENTRY — SCALED POSITION BUILDING
@@ -3379,92 +3245,6 @@ function fundingRateSignal(rate) {
   return { signal: "neutral", score: 0, reason: "" };
 }
 
-// =============================================================================
-// OKX API
-// =============================================================================
-async function fetchAllContracts() {
-  try {
-    const data = await fetchWithRetry(`${API_BASE}/api/v5/public/instruments?instType=SWAP`);
-    if (!data?.data) return null;
-    return data.data
-      .filter(c => c.state === "live" && c.settleCcy === "USDT" && c.ctType === "linear")
-      .map(c => c.instId); // e.g. "BTC-USDT-SWAP"
-  } catch (err) {
-    console.error("[API] contracts:", err.message);
-    return null;
-  }
-}
-
-async function fetchAllTickers() {
-  try {
-    const data = await fetchWithRetry(`${API_BASE}/api/v5/market/tickers?instType=SWAP`);
-    if (!data?.data) return null;
-    return data.data
-      .filter(t => t.instId.endsWith("-USDT-SWAP"))
-      .map(t => ({
-        contract: t.instId,
-        volume_24h_quote: parseFloat(t.volCcy24h || 0),
-        last: parseFloat(t.last || 0)
-      }));
-  } catch (err) {
-    console.error("[API] tickers:", err.message);
-    return null;
-  }
-}
-
-async function fetchCandles(symbol, interval, limit = 200) {
-  try {
-    const intervalMap = { "1h": "1H", "4h": "4H", "1d": "1D", "15m": "15m" };
-    const okxInterval = intervalMap[interval] || "1H";
-    const raw = await fetchWithRetry(
-      `${API_BASE}/api/v5/market/candles?instId=${symbol}&bar=${okxInterval}&limit=${limit}`
-    );
-    if (!raw?.data || raw.data.length === 0) return null;
-    return raw.data.map(c => ({
-      time:   parseInt(c[0]),
-      open:   parseFloat(c[1]),
-      high:   parseFloat(c[2]),
-      low:    parseFloat(c[3]),
-      close:  parseFloat(c[4]),
-      volume: parseFloat(c[5])
-    })).sort((a, b) => a.time - b.time);
-  } catch (err) {
-    return null;
-  }
-}
-
-async function fetchFundingRate(symbol) {
-  try {
-    const data = await fetchWithRetry(
-      `${API_BASE}/api/v5/public/funding-rate-history?instId=${symbol}&limit=1`
-    );
-    if (!data?.data?.[0]) return null;
-    return parseFloat(data.data[0].fundingRate);
-  } catch (_) {
-    return null;
-  }
-}
-
-async function fetchWithRetry(url, retries = 2) {
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    try {
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
-      if (res.status === 429) {
-        await sleep(Math.pow(2, attempt) * 500);
-        continue;
-      }
-      if (!res.ok) {
-        if (attempt < retries) { await sleep(500 * attempt); continue; }
-        return null;
-      }
-      return await res.json();
-    } catch (err) {
-      if (attempt === retries) return null;
-      await sleep(500 * attempt);
-    }
-  }
-  return null;
-}
 
 // =============================================================================
 // CLAUDE API — BUDGET GUARDED
@@ -3686,7 +3466,6 @@ function logGaussian(x, mu, sigma) { if (sigma <= 0) sigma = 1e-6; return -0.5 *
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 export {
-  fetchAllTickers,
   runBot,
   sendDailyReport,
   sendWeeklyReview,

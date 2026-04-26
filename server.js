@@ -1,12 +1,10 @@
 import express from "express";
 import { initDb } from "./db.js";
 import { MONTHLY_BUDGET_USD, PAPER_CASH } from "./bot/config.js";
+import { fetchAllTickers } from "./bot/market-data.js";
 import { estimateMonthlySpend } from "./bot/stats.js";
 import { loadState } from "./state-store.js";
-import {
-  fetchAllTickers,
-  runBot
-} from "./bot.js";
+import { runBot } from "./bot.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
