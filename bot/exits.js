@@ -3,33 +3,6 @@ import { ATR_SL_MULT } from "./config.js";
 export function checkGraduatedExit(pos, price, high, low, currentAtr) {
   const { direction, entryPrice } = pos;
   if (!pos.maxFavorable) pos.maxFavorable = entryPrice;
-
-  console.log(
-    `[EXIT CHECK] ${pos.symbol} ${direction.toUpperCase()} ` +
-    `live=${price.toFixed(6)} high=${high.toFixed(6)} low=${low.toFixed(6)} ` +
-    `sl=${pos.sl.toFixed(6)} tp=${pos.tp.toFixed(6)}`
-  );
-
-  if (direction === "long" && low <= pos.sl) {
-    console.log(`[SL HIT] ${pos.symbol} LONG | low=${low.toFixed(6)} <= sl=${pos.sl.toFixed(6)}`);
-    return { exit: true, reason: "stop-loss-hit" };
-  }
-
-  if (direction === "short" && high >= pos.sl) {
-    console.log(`[SL HIT] ${pos.symbol} SHORT | high=${high.toFixed(6)} >= sl=${pos.sl.toFixed(6)}`);
-    return { exit: true, reason: "stop-loss-hit" };
-  }
-
-  if (direction === "long" && high >= pos.tp) {
-    console.log(`[TP HIT] ${pos.symbol} LONG | high=${high.toFixed(6)} >= tp=${pos.tp.toFixed(6)}`);
-    return { exit: true, reason: "take-profit-hit" };
-  }
-
-  if (direction === "short" && low <= pos.tp) {
-    console.log(`[TP HIT] ${pos.symbol} SHORT | low=${low.toFixed(6)} <= tp=${pos.tp.toFixed(6)}`);
-    return { exit: true, reason: "take-profit-hit" };
-  }
-
   const entryAtr = pos.atrVal || currentAtr;
 
   if (!pos.tpLevels) {

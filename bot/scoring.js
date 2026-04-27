@@ -115,8 +115,10 @@ export async function scoreSymbol(symbol, regime, state) {
 
     const add = (cond, name, isLong, weight = TIERS.medium) => {
       if (!cond || disabled.includes(name)) return;
-      if (isLong) longScore += weight;
-      else shortScore += weight;
+      const dynamicW = state.dynamicWeights?.[name];
+      const finalWeight = dynamicW !== undefined ? dynamicW : weight;
+      if (isLong) longScore += finalWeight;
+      else shortScore += finalWeight;
       reasons.push(name);
     };
 
