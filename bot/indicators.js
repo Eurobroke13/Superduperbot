@@ -206,11 +206,25 @@ export function emaRibbon(closes) {
     ? Math.abs(prevLast[0] - prevLast[prevLast.length - 1]) / closes[n - 2]
     : 0;
 
+  let wasCompressed = false;
+  for (let lookback = 2; lookback <= 10; lookback++) {
+    const idx = n - lookback;
+    if (idx < 0 || closes[idx] === undefined || closes[idx] === 0) continue;
+    const histLast = emas.map((series) => series[idx]);
+    if (histLast.some((value) => value === undefined)) continue;
+    const histWidth = Math.abs(histLast[0] - histLast[histLast.length - 1]) / closes[idx];
+    if (histWidth < 0.005) {
+      wasCompressed = true;
+      break;
+    }
+  }
+
   return {
     bullishAligned: bullishOrder,
     bearishAligned: bearishOrder,
     width,
     expanding: width > prevWidth,
+    wasCompressed,
     priceAboveAll: closes[n - 1] > Math.max(...last),
     priceBelowAll: closes[n - 1] < Math.min(...last)
   };

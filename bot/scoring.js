@@ -15,10 +15,12 @@ import {
   emaRibbon,
   findSupportResistance,
   fisher,
+  ichimoku,
   macd,
   obv,
   rsiSeries,
   sma,
+  stochRSI,
   volumeConfirmation,
   volumeProfile,
   vwap
@@ -44,10 +46,12 @@ export async function scoreSymbol(symbol, regime, state) {
     const price = closes[n - 1];
 
     const atrVal = atr(highs, lows, closes, 14);
+    const ichi = ichimoku(highs, lows, closes);
     const obvSeries = obv(closes, volumes);
     const obvDiv = detectOBVDivergence(closes, obvSeries, 20);
     const fisherArr = fisher(highs, lows, 10);
     const fisherVal = fisherArr[n - 1];
+    const fisherPrev = fisherArr[n - 2] ?? fisherVal;
     const vwapVal = vwap(highs, lows, closes, volumes, 24);
     const vpvr = volumeProfile(closes, volumes, 20);
     const srLevels = findSupportResistance(highs, lows, 50) || { supports: [], resistances: [] };
@@ -63,6 +67,7 @@ export async function scoreSymbol(symbol, regime, state) {
       crossUp: !!macdRaw.crossUp,
       crossDown: !!macdRaw.crossDown
     };
+    const stochResult = stochRSI(closes);
     const adxResultRaw = adx(highs, lows, closes, 14) || {};
     const adxResult = {
       strongTrend: !!adxResultRaw.strongTrend,
@@ -163,6 +168,29 @@ export async function scoreSymbol(symbol, regime, state) {
     add(trap === "bull-trap" && volConfirm.isClimax, "trap-vol-bear", false, TIERS.strong);
     add(macdResult.crossUp, "macd-cross-up", true, TIERS.medium);
     add(macdResult.crossDown, "macd-cross-down", false, TIERS.medium);
+    if (!isTrending) {
+      add(stochResult.oversold, "stochrsi-oversold", true, TIERS.weak);
+      add(stochResult.overbought, "stochrsi-overbought", false, TIERS.weak);
+    }
+    add(stochResult.crossUp && stochResult.k < 50, "stochrsi-cross-up", true, TIERS.weak);
+    add(stochResult.crossDown && stochResult.k > 50, "stochrsi-cross-down", false, TIERS.weak);
+
+    add(ichi.tkCross > 0, "TK-bull", true, TIERS.medium);
+    add(ichi.tkCross < 0, "TK-bear", false, TIERS.medium);
+    if (isTrending) {
+      add(price > ichi.senkouA && price > ichi.senkouB, "above-cloud", true, TIERS.medium);
+      add(price < ichi.senkouA && price < ichi.senkouB, "below-cloud", false, TIERS.medium);
+    }
+    add(n > 27 && ichi.chikou > ichi.chikouCompare, "chikou-bull", true, TIERS.weak);
+    add(n > 27 && ichi.chikou < ichi.chikouCompare, "chikou-bear", false, TIERS.weak);
+
+    add(fisherVal > 0 && fisherVal > fisherPrev, "fisher-rising", true, TIERS.weak);
+    add(fisherVal < 0 && fisherVal < fisherPrev, "fisher-falling", false, TIERS.weak);
+    if (!isTrending) {
+      add(fisherVal < -2.0, "fisher-oversold", true, TIERS.medium);
+      add(fisherVal > 2.0, "fisher-overbought", false, TIERS.medium);
+    }
+
     add(price > vwapVal, "above-VWAP", true, TIERS.medium);
     add(price < vwapVal, "below-VWAP", false, TIERS.medium);
     add(
@@ -251,7 +279,8 @@ export async function scoreSymbol(symbol, regime, state) {
       (h4Trend !== "neutral" ? 1 : 0) +
       (Math.abs(price - vwapVal) / price > 0.002 ? 1 : 0);
 
-    if (quality < 2) return null;
+    if (setupType !== "mean-reversion" && quality < 2) return null;
+    if (setupType === "mean-reversion" && quality < 1) return null;
 
     const structured = calculateStructuredSLTP(
       signal, price, atrVal, highs, lows, closes, volumes

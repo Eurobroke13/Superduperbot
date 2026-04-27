@@ -113,8 +113,42 @@ export default {
       });
     }
     if (path === "/reset") {
-      await env.PAPER_TRADES.delete(KV_KEY);
-      return new Response("State reset. Bot will start fresh on next run.");
+      const freshState = {
+        cash: PAPER_CASH,
+        positions: {},
+        trades: [],
+        lastRegime: null,
+        hmmParams: null,
+        markovChain: null,
+        peakValue: PAPER_CASH,
+        circuitBreakerActive: false,
+        startedAt: new Date().toISOString(),
+        lastPhase: 0,
+        lastHeadlineIds: null,
+        newsBlocked: [],
+        newsBoosted: [],
+        newsHeadlines: [],
+        newsNeedsClaude: false,
+        tokenUsage: null,
+        signalStats: {},
+        disabledSignals: [],
+        dynamicWeights: {},
+        lastWeightUpdate: 0,
+        coinHistory: {},
+        dailyBias: null,
+        weeklyReviews: [],
+        lunarCache: null,
+        lastPeriodicReportAt: null,
+        lastRunAt: null,
+        runCount: 0,
+        regimeStats: {
+          bull: { wins: 0, losses: 0, totalPnl: 0, count: 0 },
+          bear: { wins: 0, losses: 0, totalPnl: 0, count: 0 },
+          sideways: { wins: 0, losses: 0, totalPnl: 0, count: 0 }
+        }
+      };
+      await saveStateToDb(freshState);
+      return new Response("State reset.");
     }
     if (path === "/positions") {
       const state = await loadState(env);
