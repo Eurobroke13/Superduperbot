@@ -1,22 +1,7 @@
 // =============================================================================
-// QUANT PAPER-TRADING BOT — Cloudflare Worker (v4-free)
-//
-// Cloudflare FREE tier compliant:
-//   • 5 cron triggers (max on free plan)
-//   • KV: <1000 writes/day, <100k reads/day
-//   • CPU: kept lean with batched API calls + phase execution
-//   • Claude: $40/month budget guard
-//
-// Crons (5 max for free tier):
-//   Main bot cadence should match wrangler: */15 * * * *
-//   "*/20 * * * *"  — main bot (3 phases per hour)
-//   "0 0 * * *"     — pre-market scan
-//   "0 8 * * *"     — daily report + risk assessment combined
-//   "0 */4 * * *"   — position re-evaluation
-//   "0 10 * * 6"    — weekly strategy review (Saturday)
-//
-// KV binding: PAPER_TRADES
-// Secrets: ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, LUNARCRUSH_API_KEY
+// QUANT PAPER-TRADING BOT
+// Railway runtime module: strategy/reporting helpers used by server.js and
+// task-runner.js. This file no longer owns HTTP routing or cron entrypoints.
 // =============================================================================
 
 import {
@@ -41,303 +26,17 @@ import {
   sendWeeklyReview as sendWeeklyReviewCore
 } from "./bot/reports.js";
 import { runBot as runBotCore } from "./bot/runner.js";
-import { loadState as loadStateFromDb, saveState as saveStateToDb } from "./state-store.js";
+import {
+  loadState as loadPersistedState,
+  saveState as savePersistedState
+} from "./state-store.js";
 
 // =============================================================================
-// ENTRY POINT
+// RAILWAY ENTRY SURFACE
+// The active HTTP service lives in server.js and cron entrypoints live in task-runner.js.
+// This module only exports bot/report functions used by those Railway wrappers.
 // =============================================================================
-export default {
-  async scheduled(event, env, ctx) {
-    try {
-      const hour   = new Date().getUTCHours();
-      const minute = new Date().getUTCMinutes();
 
-      if (event.cron === "0 10 * * 6") {
-        await sendWeeklyReview(env);
-      } else if (event.cron === "0 0 * * *") {
-        await premarketScan(env);
-      } else if (event.cron === "0 8 * * *") {
-        await sendDailyReport(env);
-      } else if (event.cron === "0 */4 * * *") {
-        // Skip if it's 0 or 8 UTC (handled by other crons)
-        if (hour !== 0 && hour !== 8) {
-          await reevaluatePositions(env);
-        }
-      } else {
-        // */20 * * * * — main bot run
-        // Main bot cadence is expected to be driven by a */15 wrangler cron.
-        await runBotRailway(env);
-      }
-    } catch (err) {
-      console.error("[BOT] Fatal:", err.message || err);
-    }
-  },
-
-  async fetch(request, env) {
-    const path = new URL(request.url).pathname;
-    if (path === "/run") {
-      await runBotRailway(env);
-      const state = await loadState(env);
-      return jsonResponse(state);
-    }
-    if (path === "/report") {
-      await sendDailyReport(env, { force: true });
-      return new Response("Report sent.");
-    }
-    if (path === "/risk") {
-      await sendRiskAssessment(env);
-      return new Response("Risk assessment sent.");
-    }
-    if (path === "/weekly") {
-      await sendWeeklyReview(env);
-      return new Response("Weekly review sent.");
-    }
-    if (path === "/premarket") {
-      await premarketScan(env);
-      return new Response("Pre-market scan sent.");
-    }
-    if (path === "/state") {
-      return jsonResponse(await loadState(env));
-    }
-    if (path === "/budget") {
-      const state = await loadState(env);
-      const spend = estimateMonthlySpend(state.tokenUsage || { input: 0, output: 0 });
-      return jsonResponse({
-        month: state.tokenUsage?.month || "none",
-        calls: state.tokenUsage?.calls || 0,
-        inputTokens: state.tokenUsage?.input || 0,
-        outputTokens: state.tokenUsage?.output || 0,
-        spent: `$${spend.toFixed(2)}`,
-        budget: `$${MONTHLY_BUDGET_USD}`,
-        remaining: `$${Math.max(0, MONTHLY_BUDGET_USD - spend).toFixed(2)}`
-      });
-    }
-    if (path === "/reset") {
-      const freshState = {
-        cash: PAPER_CASH,
-        positions: {},
-        trades: [],
-        lastRegime: null,
-        hmmParams: null,
-        markovChain: null,
-        peakValue: PAPER_CASH,
-        circuitBreakerActive: false,
-        startedAt: new Date().toISOString(),
-        lastPhase: 0,
-        lastHeadlineIds: null,
-        newsBlocked: [],
-        newsBoosted: [],
-        newsHeadlines: [],
-        newsNeedsClaude: false,
-        tokenUsage: null,
-        signalStats: {},
-        disabledSignals: [],
-        dynamicWeights: {},
-        lastWeightUpdate: 0,
-        coinHistory: {},
-        dailyBias: null,
-        weeklyReviews: [],
-        lunarCache: null,
-        lastPeriodicReportAt: null,
-        lastRunAt: null,
-        runCount: 0,
-        regimeStats: {
-          bull: { wins: 0, losses: 0, totalPnl: 0, count: 0 },
-          bear: { wins: 0, losses: 0, totalPnl: 0, count: 0 },
-          sideways: { wins: 0, losses: 0, totalPnl: 0, count: 0 }
-        }
-      };
-      await saveStateToDb(freshState);
-      return new Response("State reset.");
-    }
-    if (path === "/positions") {
-      const state = await loadState(env);
-      const tickers = await fetchAllTickers();
-      const priceMap = {};
-      if (tickers) for (const t of tickers) priceMap[t.contract] = t.last;
-
-      const positions = Object.values(state.positions).map(pos => {
-        const currentPrice = priceMap[pos.symbol] || pos.entryPrice;
-        const rawPnl = pos.direction === "long"
-          ? (currentPrice - pos.entryPrice) * pos.size
-          : (pos.entryPrice - currentPrice) * pos.size;
-        const clampPnl = Math.max(rawPnl, -pos.notional);
-        const pnlPct = pos.notional > 0 ? (clampPnl / pos.notional) * 100 : 0;
-        const hoursOpen = ((Date.now() - new Date(pos.openedAt).getTime()) / 3600000).toFixed(1);
-
-        // Tranche info
-        const trancheFilled = pos.tranches?.plan
-          ? [pos.tranches.plan.tranche1?.filled, pos.tranches.plan.tranche2?.filled, pos.tranches.plan.tranche3?.filled]
-          .filter(Boolean).length
-          : "?";
-
-        // TP levels hit
-        const tpHit = pos.tpLevels
-          ? [pos.tpLevels.tp1?.hit ? "TP1" : null, pos.tpLevels.tp2?.hit ? "TP2" : null]
-          .filter(Boolean).join(",") || "none"
-          : "n/a";
-
-        // Distance to SL and TP
-        const slDist = pos.direction === "long"
-          ? ((currentPrice - pos.sl) / currentPrice * 100).toFixed(2)
-          : ((pos.sl - currentPrice) / currentPrice * 100).toFixed(2);
-        const tpDist = pos.direction === "long"
-          ? ((pos.tp - currentPrice) / currentPrice * 100).toFixed(2)
-          : ((currentPrice - pos.tp) / currentPrice * 100).toFixed(2);
-
-        return {
-          symbol: pos.symbol,
-          direction: pos.direction,
-          entryPrice: pos.entryPrice,
-          currentPrice,
-          pnl: parseFloat(clampPnl.toFixed(2)),
-          pnlPct: parseFloat(pnlPct.toFixed(2)),
-          status: clampPnl >= 0 ? "✅ PROFIT" : "❌ LOSS",
-          notional: parseFloat(pos.notional.toFixed(2)),
-          exposure: parseFloat(pos.effectiveExposure?.toFixed(2) || 0),
-          leverage: pos.leverage,
-          sl: pos.sl,
-          tp: pos.tp,
-          slDistance: `${slDist}%`,
-          tpDistance: `${tpDist}%`,
-          hoursOpen: `${hoursOpen}h`,
-          score: pos.score,
-          tranches: `${trancheFilled}/3`,
-          tpLevelsHit: tpHit,
-          dcaApplied: pos.dcaApplied || false,
-          reasons: (pos.reasons || []).slice(0, 6)
-        };
-      });
-
-      // Sort: biggest loss first
-      positions.sort((a, b) => a.pnl - b.pnl);
-
-      // Portfolio summary
-      const totalUnrealizedPnl = positions.reduce((s, p) => s + p.pnl, 0);
-      const totalRealizedPnl = state.trades.reduce((s, t) => s + t.pnl, 0);
-      const portfolioVal = state.cash + Object.values(state.positions).reduce((s, p) => s + p.notional, 0) + totalUnrealizedPnl;
-
-      const summary = {
-        portfolio: {
-          value: parseFloat(portfolioVal.toFixed(2)),
-          cash: parseFloat(state.cash.toFixed(2)),
-          unrealizedPnl: parseFloat(totalUnrealizedPnl.toFixed(2)),
-          realizedPnl: parseFloat(totalRealizedPnl.toFixed(2)),
-          totalPnl: parseFloat((totalUnrealizedPnl + totalRealizedPnl).toFixed(2)),
-          drawdownFromPeak: state.peakValue
-            ? `${((state.peakValue - portfolioVal) / state.peakValue * 100).toFixed(2)}%`
-            : "0%",
-          startingCapital: PAPER_CASH,
-          overallReturn: `${(((portfolioVal + totalRealizedPnl - PAPER_CASH) / PAPER_CASH) * 100).toFixed(2)}%`,
-          regime: state.lastRegime?.label || "unknown",
-          circuitBreaker: state.circuitBreakerActive || false
-        },
-        openPositions: positions.length,
-        maxPositions: MAX_POSITIONS,
-        positions,
-        recentClosedTrades: state.trades.slice(-5).map(t => ({
-          symbol: t.symbol,
-          direction: t.direction,
-          pnl: t.pnl,
-          pnlPct: t.pnlPct,
-          reason: t.reason,
-          closedAt: t.closedAt
-        }))
-      };
-
-      return new Response(JSON.stringify(summary, null, 2), {
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
-    }
-    if (path === "/pnl") {
-  const state = await loadState(env);
-  const tickers = await fetchAllTickers();
-  const priceMap = {};
-  if (tickers) for (const t of tickers) priceMap[t.contract] = t.last;
-
-  let text = `=== PORTFOLIO ===\n`;
-  text += `Cash: $${state.cash.toFixed(2)}\n`;
-  text += `Regime: ${state.lastRegime?.label || "?"}\n\n`;
-
-  let totalUnrealized = 0;
-  const positions = Object.values(state.positions);
-
-  if (positions.length === 0) {
-    text += `No open positions.\n`;
-  } else {
-    text += `=== ${positions.length} OPEN POSITIONS ===\n\n`;
-
-    for (const pos of positions) {
-      const cp = priceMap[pos.symbol] || pos.entryPrice;
-      const pnl = pos.direction === "long"
-        ? (cp - pos.entryPrice) * pos.size
-        : (pos.entryPrice - cp) * pos.size;
-      const clamped = Math.max(pnl, -pos.notional);
-      const pct = pos.notional > 0 ? (clamped / pos.notional) * 100 : 0;
-      totalUnrealized += clamped;
-      const hours = ((Date.now() - new Date(pos.openedAt).getTime()) / 3600000).toFixed(1);
-      const icon = clamped >= 0 ? "✅" : "❌";
-      const trFilled = pos.tranches?.plan
-        ? [pos.tranches.plan.tranche1?.filled, pos.tranches.plan.tranche2?.filled, pos.tranches.plan.tranche3?.filled].filter(Boolean).length
-        : "?";
-
-      text += `${icon} ${pos.symbol}\n`;
-      text += `   ${pos.direction.toUpperCase()} ${pos.leverage}x | Score:${pos.score}\n`;
-      text += `   Entry: $${pos.entryPrice.toFixed(4)}  Now: $${cp.toFixed(4)}\n`;
-      text += `   PnL: $${clamped.toFixed(2)} (${pct.toFixed(1)}%)\n`;
-      text += `   SL: $${pos.sl.toFixed(4)}  TP: $${pos.tp.toFixed(4)}\n`;
-      text += `   Margin: $${pos.notional.toFixed(2)} | Tranches: ${trFilled}/3\n`;
-      text += `   DCA: ${pos.dcaApplied ? "yes @$" + (pos.dcaPrice || 0).toFixed(4) : "no"}\n`;
-      text += `   Open: ${hours}h\n\n`;
-    }
-  }
-
-  const totalRealized = state.trades.reduce((s, t) => s + t.pnl, 0);
-  const portfolioVal = state.cash + positions.reduce((s, p) => s + p.notional, 0) + totalUnrealized;
-
-  text += `=== TOTALS ===\n`;
-  text += `Unrealized PnL: $${totalUnrealized.toFixed(2)}\n`;
-  text += `Realized PnL:   $${totalRealized.toFixed(2)}\n`;
-  text += `Total PnL:      $${(totalUnrealized + totalRealized).toFixed(2)}\n`;
-  text += `Portfolio Value: $${portfolioVal.toFixed(2)}\n`;
-  text += `Started:         $${PAPER_CASH.toFixed(2)}\n`;
-  text += `Return:          ${(((portfolioVal - PAPER_CASH + totalRealized) / PAPER_CASH) * 100).toFixed(2)}%\n`;
-
-  const wins = state.trades.filter(t => t.pnl > 0).length;
-  const total = state.trades.length;
-  text += `\n=== STATS ===\n`;
-  text += `Trades: ${total} | Wins: ${wins} | WR: ${total > 0 ? ((wins/total)*100).toFixed(1) : "N/A"}%\n`;
-  text += `Claude: $${estimateMonthlySpend(state.tokenUsage || {input:0,output:0}).toFixed(2)}/$${MONTHLY_BUDGET_USD}\n`;
-
-  return new Response(text, { headers: { "Content-Type": "text/plain" } });
-}
-    
-    return new Response(
-      "Quant Bot v4\n\n" +
-      "GET /run        — trigger scan\n" +
-      "GET /positions  — live P&L (JSON)\n" +
-      "GET /pnl        — live P&L (text)\n" +
-      "GET /report     — daily report\n" +
-      "GET /risk       — risk check\n" +
-      "GET /weekly     — weekly review\n" +
-      "GET /premarket  — pre-market scan\n" +
-      "GET /state      — raw state\n" +
-      "GET /budget     — Claude spend\n" +
-      "GET /reset      — factory reset"
-        );
-      }
-    };
-
-function jsonResponse(data) {
-  return new Response(JSON.stringify(data, null, 2), {
-    headers: { "Content-Type": "application/json" }
-  });
-}
-
-// =============================================================================
 async function claudeBatchAnalysis({ headlines, candidatesToValidate, positionsToClose, regime, env, state }) {
   if (!env.ANTHROPIC_API_KEY) return fallbackResult(candidatesToValidate);
   if (headlines.length === 0 && candidatesToValidate.length === 0 && positionsToClose.length === 0) {
@@ -437,8 +136,8 @@ async function sendRegimeChangeAlert(env, state, prevLabel, regime) {
 const reportDeps = {
   callClaudeBudgeted,
   callClaudePlaintext,
-  loadState,
-  saveState,
+  loadState: loadBotState,
+  saveState: saveBotState,
   sendTelegram,
   trackSignalPerformance
 };
@@ -844,16 +543,16 @@ async function notifyTrade(action, details, state, env) {
 // =============================================================================
 // STATE PERSISTENCE
 // =============================================================================
-async function loadState(env) {
+async function loadBotState(env) {
   try {
-    return await loadStateFromDb();
+    return await loadPersistedState();
   } catch (err) {
     console.error("[DB] CRITICAL: Failed to load state:", err.message);
     throw new Error("State load failed - aborting: " + err.message);
   }
 }
 
-async function saveState(env, state) {
+async function saveBotState(env, state) {
   try {
     if (state.trades.length > 500) state.trades = state.trades.slice(-500);
     if (state.weeklyReviews && state.weeklyReviews.length > 12) state.weeklyReviews = state.weeklyReviews.slice(-12);
@@ -869,7 +568,7 @@ async function saveState(env, state) {
         }
       }
     }
-    await saveStateToDb(state);
+    await savePersistedState(state);
   } catch (err) {
     console.error("[DB]", err.message);
   }
@@ -898,10 +597,10 @@ async function runBotRailway(env) {
     claudeBatchAnalysis,
     getAdaptiveThreshold,
     getWeight,
-    loadState,
+    loadState: loadBotState,
     notifyTrade,
     printPortfolioSummary,
-    saveState,
+    saveState: saveBotState,
     sendRegimeChangeAlert,
     sendTelegram,
     sleep,
