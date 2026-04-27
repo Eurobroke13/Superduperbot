@@ -10,7 +10,12 @@
     "task:daily-report": "node task-runner.js daily-report",
     "task:weekly-review": "node task-runner.js weekly-review",
     "task:premarket": "node task-runner.js premarket",
-    "task:reevaluate": "node task-runner.js reevaluate"
+    "task:reevaluate": "node task-runner.js reevaluate",
+    "backtest": "node backtest.js",
+    "backtest:seed": "node backtest.js --seed",
+    "backtest:dry": "node backtest.js --no-db",
+    "backtest:3m": "node backtest.js --months 3",
+    "backtest:seed:3m": "node backtest.js --months 3 --seed"
   },
   "dependencies": {
     "express": "^4.18.2",
