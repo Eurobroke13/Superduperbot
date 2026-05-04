@@ -66,7 +66,7 @@ export async function sendDailyReport(env, deps, options = {}) {
     `Portfolio:$${currVal.toFixed(2)} Cash:$${state.cash.toFixed(2)} Open:${openCount}/${MAX_POSITIONS}\n` +
     `Today:${recentTrades.length} trades PnL:$${recentTrades.reduce((s, t) => s + t.pnl, 0).toFixed(2)}\n` +
     `All-time:${state.trades.length} trades $${totalPnL.toFixed(2)} PnL ${winRate}%WR\n` +
-    `${metrics ? `Sharpe:${metrics.sharpe} Sortino:${metrics.sortino} PF:${metrics.profitFactor} MaxDD:${metrics.maxDrawdown}%` : ""}\n` +
+    `${metrics ? `Sharpe:${metrics.sharpe} Sortino:${metrics.sortino} PF:${metrics.profitFactor} Worst single-trade margin loss:${metrics.maxDrawdown}%` : ""}\n` +
     `Cover: regime, health, one suggestion.`;
 
   try {
