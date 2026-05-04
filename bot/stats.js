@@ -198,7 +198,7 @@ export function getAdaptiveClaudeThreshold(state, currentRegime) {
   if (winRate < 0.40) adaptive -= 1;
   if (winRate > 0.55) adaptive += 1;
 
-  if (claudeStats && claudeStats.count >= 15) {
+  if (claudeStats && claudeStats.count >= 8) {
     if (claudeStats.expectancy < 0) adaptive += 1;
     else if (
       claudeStats.expectancy > 0 &&

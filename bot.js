@@ -13,6 +13,8 @@ import {
 } from "./bot/config.js";
 import {
   estimateMonthlySpend,
+  getApprovalStats,
+  getSetupStats,
 } from "./bot/stats.js";
 import {
   fetchAllTickers
@@ -52,6 +54,13 @@ async function claudeBatchAnalysis({ headlines, candidatesToValidate, positionsT
 
   if (candidatesToValidate.length > 0) {
     const regimePerf = getRegimePerformance(state, regime.label);
+    const autoWR = getApprovalStats(state.trades || [], "auto");
+    const claudeWR = getApprovalStats(state.trades || [], "claude");
+    const setupLines = ["trend", "breakout", "liquidity-trap", "mean-reversion"].map(t => {
+      const s = getSetupStats(state.trades || [], t);
+      if (!s || s.count < 5) return `${t}:insufficient`;
+      return `${t}:WR=${(s.winRate * 100).toFixed(0)}%,EV=$${s.expectancy.toFixed(2)}`;
+    }).join(" | ");
 
     const candidateLines = candidatesToValidate.map((c, i) => {
       const memory = getCoinMemory(state, c.symbol);
@@ -59,20 +68,45 @@ async function claudeBatchAnalysis({ headlines, candidatesToValidate, positionsT
       const adxVal = c.adxResult?.adx?.toFixed(0) || "?";
       const galaxyText = c.lunarGalaxyScore ? ` Galaxy:${c.lunarGalaxyScore}` : "";
       const fundText = c.fundingRate != null ? ` Fund:${(c.fundingRate * 100).toFixed(3)}%` : "";
+      const signalPerf = (c.reasons || []).slice(0, 6).map(sig => {
+        const stats = state.signalStats?.[sig];
+        if (!stats || stats.count < 5) return sig;
+        const wr = ((stats.wins / stats.count) * 100).toFixed(0);
+        const totalPnl = Number.isFinite(stats.totalPnl) ? stats.totalPnl : 0;
+        const ev = (totalPnl / stats.count).toFixed(2);
+        return `${sig}(WR:${wr}%,EV:$${ev},n=${stats.count})`;
+      }).join(",");
+      const regimeSignalPerf = (c.reasons || []).slice(0, 4).map(sig => {
+        const key = `${sig}:${regime.label}`;
+        const stats = state.signalStats?.[key];
+        if (!stats || stats.count < 3) return null;
+        return `${sig}@${regime.label}:${((stats.wins / stats.count) * 100).toFixed(0)}%WR`;
+      }).filter(Boolean).join(",");
 
       return (
         `${i + 1}. ${c.symbol} ${c.signal.toUpperCase()} @$${c.price.toFixed(4)} ` +
         `Score:${c.score} RSI:${c.rsiVal.toFixed(0)} Fisher:${c.fisherVal.toFixed(2)} OBV:${c.obvDiv} ` +
-        `ADX:${adxVal} 4h:${c.h4Trend} [${c.reasons.slice(0, 6).join(",")}]` +
-        `${galaxyText}${fundText}\n${memText}`
+        `ADX:${adxVal} 4h:${c.h4Trend} Setup:${c.setupType}${galaxyText}${fundText}\n` +
+        `Signals: [${signalPerf}]\n` +
+        `RegimeSignals: [${regimeSignalPerf || "insufficient data"}]\n` +
+        `${memText}`
       );
     }).join("\n");
 
     sections.push(
       `=== VALIDATE ===\n` +
       `Regime:${regime.label} HMM:${regime.hmmLabel} PI:${regime.piCycle}\n` +
-      `StrategyStats: trades=${regimePerf.total} winRate=${regimePerf.winRate} avgPnl=${regimePerf.avgPnl}\n\n` +
-      `IMPORTANT: Use coin history to identify repeating failure patterns. Reject trades matching historically losing setups.\n\n` +
+      `StrategyStats: trades=${regimePerf.total} winRate=${regimePerf.winRate} avgPnl=${regimePerf.avgPnl}\n` +
+      `System WR baseline: auto=${autoWR?.winRate !== undefined ? (autoWR.winRate * 100).toFixed(0) : "?"}% (n=${autoWR?.count ?? 0}) ` +
+      `claude=${claudeWR?.winRate !== undefined ? (claudeWR.winRate * 100).toFixed(0) : "?"}% (n=${claudeWR?.count ?? 0})\n` +
+      `You must beat auto-approval WR of ${autoWR?.winRate !== undefined ? (autoWR.winRate * 100).toFixed(0) : 43}% to add value.\n\n` +
+      `DEFAULT: REJECT. Only approve if ALL of:\n` +
+      `1. Signal WRs shown are above 48% OR signal is regime-specific positive\n` +
+      `2. Coin history in this regime shows positive expectancy\n` +
+      `3. No repeating failure pattern in coin history\n` +
+      `4. Setup type has positive expectancy: ${setupLines}\n\n` +
+      `REJECT if: signals are purely context (TK-bull/chikou-bull/above-VWAP/ema-ribbon-bull) ` +
+      `with no reversal signal AND those signals show <48% WR in regime.\n\n` +
       candidateLines
     );
   }

@@ -32,6 +32,32 @@ import {
   scoreSymbol
 } from "./scoring.js";
 
+const CONTEXT_ONLY_SIGNALS = new Set([
+  "TK-bull",
+  "chikou-bull",
+  "above-VWAP",
+  "ema-ribbon-bull",
+  "TK-bear",
+  "chikou-bear",
+  "below-VWAP",
+  "ema-ribbon-bear"
+]);
+const REVERSAL_SIGNALS = new Set([
+  "rsi-bull-div",
+  "rsi-bear-div",
+  "trap-detected",
+  "liquidity-bull",
+  "liquidity-bear",
+  "trap-bull-confirm",
+  "trap-bear-confirm",
+  "fisher-rising",
+  "fisher-falling",
+  "4h-macd-cross-up",
+  "4h-macd-cross-down",
+  "OBV-bull-div",
+  "OBV-bear-div"
+]);
+
 export async function runBot(env, deps) {
   const {
     loadState,
@@ -498,8 +524,18 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       continue;
     }
 
-    if (c.score >= claudeThreshold) claudeList.push(c);
-    else autoList.push(c);
+    if (c.score >= claudeThreshold) {
+      const reasons = c.reasons || [];
+      const contextOnlyCount = reasons.filter(r => CONTEXT_ONLY_SIGNALS.has(r)).length;
+      const hasReversalSignal = reasons.some(r => REVERSAL_SIGNALS.has(r));
+      if (contextOnlyCount >= 3 && !hasReversalSignal) {
+        autoList.push(c);
+        continue;
+      }
+      claudeList.push(c);
+    } else {
+      autoList.push(c);
+    }
   }
 
   for (const c of autoList) {
