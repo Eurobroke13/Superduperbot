@@ -27,6 +27,128 @@ import {
 } from "./indicators.js";
 import { portfolioValue } from "./execution.js";
 
+function getSignalMultiplier(name, state, regimeLabel) {
+  const weights = state?.dynamicWeights || {};
+  const sigStats = state?.signalStats || {};
+
+  const regimeKey = regimeLabel ? `${name}:${regimeLabel}` : null;
+  if (regimeKey && sigStats[regimeKey] && sigStats[regimeKey].count >= 8) {
+    const { wins, count } = sigStats[regimeKey];
+    const wr = wins / count;
+    if (wr >= 0.60) return 1.35;
+    if (wr >= 0.50) return 1.10;
+    if (wr >= 0.47) return 0.90;
+    if (wr < 0.35) return 0.55;
+    if (wr < 0.42) return 0.75;
+  }
+
+  if (weights[name] !== undefined) {
+    return Math.max(0.2, Math.min(weights[name], 1.6));
+  }
+
+  if (sigStats[name] && sigStats[name].count >= 10) {
+    const { wins, count } = sigStats[name];
+    const wr = wins / count;
+    if (wr >= 0.60) return 1.30;
+    if (wr >= 0.50) return 1.10;
+    if (wr >= 0.47) return 0.90;
+    if (wr < 0.35) return 0.55;
+    if (wr < 0.42) return 0.75;
+  }
+
+  return 1.0;
+}
+
+function score4H(candles4h) {
+  if (!candles4h || candles4h.length < 100) {
+    return { bullScore: 0, bearScore: 0, signals: [], aligned: () => false };
+  }
+
+  const c4 = candles4h.map(c => c.close);
+  const h4 = candles4h.map(c => c.high);
+  const l4 = candles4h.map(c => c.low);
+  const v4 = candles4h.map(c => c.volume);
+  const n = c4.length;
+
+  const signals = [];
+  let bullScore = 0;
+  let bearScore = 0;
+
+  const rsi4 = rsiSeries(c4, 14);
+  const rsiDiv4 = detectRSIDivergence(c4, rsi4, 30);
+  const last4 = c4.length - 1;
+  const strongDiv4 = rsiDiv4.strength >= 8;
+  const rsiWasOversold = Math.min(...rsi4.slice(-30)) < 42;
+  const rsiWasOverbought = Math.max(...rsi4.slice(-30)) > 58;
+  const rsi4TurningUp =
+    rsi4[last4] > rsi4[last4 - 1] &&
+    rsi4[last4 - 1] > rsi4[last4 - 2];
+  const rsi4TurningDown =
+    rsi4[last4] < rsi4[last4 - 1] &&
+    rsi4[last4 - 1] < rsi4[last4 - 2];
+  if (rsiDiv4.type === "bullish" && strongDiv4 && rsiWasOversold && rsi4TurningUp) {
+    bullScore += 2;
+    signals.push("4h-rsi-div-bull");
+  }
+  if (rsiDiv4.type === "bearish" && strongDiv4 && rsiWasOverbought && rsi4TurningDown) {
+    bearScore += 2;
+    signals.push("4h-rsi-div-bear");
+  }
+
+  const macd4 = macd(c4) || {};
+  const macd4Prev = macd(c4.slice(0, -1)) || {};
+  const macdZeroCrossUp = (macd4.macd ?? 0) > 0 && (macd4Prev.macd ?? 0) <= 0;
+  const macdZeroCrossDown = (macd4.macd ?? 0) < 0 && (macd4Prev.macd ?? 0) >= 0;
+  const prevHist4 = macd4Prev.histogram ?? 0;
+  const macdAccelUp =
+    (macd4.histogram ?? 0) > 0 &&
+    prevHist4 > 0 &&
+    (macd4.histogram ?? 0) > prevHist4 * 1.4;
+  const macdAccelDown =
+    (macd4.histogram ?? 0) < 0 &&
+    prevHist4 < 0 &&
+    (macd4.histogram ?? 0) < prevHist4 * 1.4;
+  if (macdZeroCrossUp || macdAccelUp) {
+    bullScore += 2;
+    signals.push("4h-macd-cross-up");
+  }
+  if (macdZeroCrossDown || macdAccelDown) {
+    bearScore += 2;
+    signals.push("4h-macd-cross-down");
+  }
+
+  const bb4 = bollingerBands(c4, 20, 2);
+  const bbWidth4 = bb4?.width?.[n - 1] ?? 0;
+  const bbPrev4 = bb4?.width?.[Math.max(0, n - 6)] ?? bbWidth4;
+  const bbMiddle4 = bb4?.middle?.[n - 1] ?? c4[n - 1];
+  if (bbWidth4 > bbPrev4 * 1.3 && c4[n - 1] > bbMiddle4) {
+    bullScore += 1;
+    signals.push("4h-bb-expansion-bull");
+  }
+  if (bbWidth4 > bbPrev4 * 1.3 && c4[n - 1] < bbMiddle4) {
+    bearScore += 1;
+    signals.push("4h-bb-expansion-bear");
+  }
+
+  const obv4 = obv(c4, v4);
+  const obvDiv4 = detectOBVDivergence(c4, obv4, 30);
+  if (obvDiv4.type === "bullish") {
+    bullScore += 1;
+    signals.push("4h-obv-div-bull");
+  }
+  if (obvDiv4.type === "bearish") {
+    bearScore += 1;
+    signals.push("4h-obv-div-bear");
+  }
+
+  return {
+    bullScore,
+    bearScore,
+    signals,
+    aligned: (dir) => dir === "long" ? bullScore > bearScore : bearScore > bullScore
+  };
+}
+
 export async function scoreSymbol(symbol, regime, state) {
   try {
     const disabled = state.disabledSignals || [];
@@ -57,7 +179,7 @@ export async function scoreSymbol(symbol, regime, state) {
     const srLevels = findSupportResistance(highs, lows, 50) || { supports: [], resistances: [] };
     const supports = Array.isArray(srLevels.supports) ? srLevels.supports : [];
     const resistances = Array.isArray(srLevels.resistances) ? srLevels.resistances : [];
-    const trap = detectLiquidityTrap(price, closes, { supports, resistances });
+    const trap = detectLiquidityTrap(price, closes, { supports, resistances }, highs, lows);
     const rsiArr = rsiSeries(closes, 14);
     const rsiVal = rsiArr[n - 1];
     const rsiDiv = detectRSIDivergence(closes, rsiArr, 20);
@@ -93,19 +215,48 @@ export async function scoreSymbol(symbol, regime, state) {
     const atrPct = atrVal / price;
 
     let h4Trend = "neutral";
-    if (candles4h && candles4h.length >= 50) {
+    let h4RecentCross = false;
+    let h4PullbackEntry = false;
+    let h4BearStrong = false;
+    if (candles4h && candles4h.length >= 60) {
       const c4 = candles4h.map(c => c.close);
+      const h4h = candles4h.map(c => c.high);
       const e20 = ema(c4, 20);
       const e50 = ema(c4, 50);
+      const e200 = ema(c4, Math.min(200, c4.length - 1));
       const last = c4.length - 1;
 
-      if (e20[last] > e50[last] && c4[last] > e20[last]) h4Trend = "bullish";
-      else if (e20[last] < e50[last] && c4[last] < e20[last]) h4Trend = "bearish";
+      if (e20[last] > e50[last] && c4[last] > e20[last]) {
+        h4Trend = "bullish";
+        for (let i = 1; i <= Math.min(20, last - 1); i++) {
+          if (e20[last - i] <= e50[last - i] && e20[last - i + 1] > e50[last - i + 1]) {
+            h4RecentCross = true;
+            break;
+          }
+        }
+        h4PullbackEntry = (c4[last] - e20[last]) / e20[last] < 0.015;
+      } else if (e20[last] < e50[last] && c4[last] < e20[last]) {
+        h4Trend = "bearish";
+        for (let i = 1; i <= Math.min(20, last - 1); i++) {
+          if (e20[last - i] >= e50[last - i] && e20[last - i + 1] < e50[last - i + 1]) {
+            h4RecentCross = true;
+            break;
+          }
+        }
+        h4PullbackEntry = (e20[last] - c4[last]) / e20[last] < 0.015;
+        const belowE200 = e200[last] && c4[last] < e200[last];
+        const lowerHighs =
+          last >= 8 &&
+          h4h[last] < h4h[last - 4] &&
+          h4h[last - 4] < h4h[last - 8];
+        h4BearStrong = !!belowE200 && lowerHighs;
+      }
     }
 
     let longScore = 0;
     let shortScore = 0;
     const reasons = [];
+    const hasReason = (list, name) => list.includes(name);
 
     const TIERS = {
       weak: 0.5,
@@ -115,35 +266,69 @@ export async function scoreSymbol(symbol, regime, state) {
 
     const add = (cond, name, isLong, weight = TIERS.medium) => {
       if (!cond || disabled.includes(name)) return;
-      const dynamicW = state.dynamicWeights?.[name];
-      const finalWeight = dynamicW !== undefined ? dynamicW : weight;
-      if (isLong) longScore += finalWeight;
-      else shortScore += finalWeight;
+      const dynMult = getSignalMultiplier(name, state, regime?.label);
+      const effectiveWeight = weight * dynMult;
+      if (effectiveWeight < 0.12) return;
+      if (isLong) longScore += effectiveWeight;
+      else shortScore += effectiveWeight;
       reasons.push(name);
     };
 
     if (isStrongTrend) {
       add(ribbon.bullishAligned && ribbon.expanding && ribbon.priceAboveAll, "ema-ribbon-bull", true, TIERS.strong);
       add(ribbon.bearishAligned && ribbon.expanding && ribbon.priceBelowAll, "ema-ribbon-bear", false, TIERS.strong);
-      add(h4Trend === "bullish", "h4-bull", true, TIERS.strong);
-      add(h4Trend === "bearish", "h4-bear", false, TIERS.strong);
+      add(h4Trend === "bullish" && h4RecentCross, "h4-bull", true, TIERS.strong);
+      add(h4Trend === "bullish" && h4PullbackEntry && !h4RecentCross, "h4-bull-pb", true, TIERS.medium);
+      add(h4BearStrong, "h4-bear-strong", false, TIERS.strong);
+      add(h4Trend === "bearish" && h4RecentCross && !h4BearStrong, "h4-bear", false, TIERS.strong);
+      add(h4Trend === "bearish" && h4PullbackEntry && !h4RecentCross, "h4-bear-pb", false, TIERS.medium);
     } else if (!isTrending) {
       const isGoodRange =
-        (adxResult?.adx ?? 0) < 20 &&
-        bbWidth > 0.02;
+        (adxResult?.adx ?? 0) < 18 &&
+        bbWidth > 0.03;
 
-      const nearSupport = supports.some(s => Math.abs(price - s) / price < 0.005);
-      const nearResistance = resistances.some(r => Math.abs(price - r) / price < 0.005);
+      const nearSupport = supports.some(s => Math.abs(price - s) / price < 0.003);
+      const nearResistance = resistances.some(r => Math.abs(price - r) / price < 0.003);
+
+      const mrBullConfirm = [
+        rsiDiv.type === "bullish",
+        stochResult.crossUp && stochResult.k < 30,
+        volConfirm.isSignificant && pctB < 0.10,
+        fisherVal < -1.8 && fisherVal > fisherPrev
+      ].filter(Boolean).length;
+
+      const mrBearConfirm = [
+        rsiDiv.type === "bearish",
+        stochResult.crossDown && stochResult.k > 70,
+        volConfirm.isSignificant && pctB > 0.90,
+        fisherVal > 1.8 && fisherVal < fisherPrev
+      ].filter(Boolean).length;
 
       if (isGoodRange) {
-        add(rsiVal < 35 && nearSupport, "rsi-support-bounce", true, TIERS.medium);
-        add(rsiVal > 65 && nearResistance, "rsi-resistance-reject", false, TIERS.medium);
+        const supportActuallyTested = nearSupport && supports.some(s =>
+          lows.slice(-4).some(l => l <= s * 1.002) &&
+          closes[n - 1] > s
+        );
+        add(rsiVal < 35 && supportActuallyTested && mrBullConfirm >= 1, "rsi-support-bounce", true, TIERS.medium);
+        add(rsiVal > 68 && nearResistance && mrBearConfirm >= 1, "rsi-resistance-reject", false, TIERS.medium);
 
         if (!nearSupport && !nearResistance) {
-          add(rsiVal < 35, "rsi-oversold", true, TIERS.weak);
-          add(rsiVal > 65, "rsi-overbought", false, TIERS.weak);
-          add(pctB < 0.05, "bb-oversold", true, TIERS.weak);
-          add(pctB > 0.95, "bb-overbought", false, TIERS.weak);
+          const rsiPrev2 = rsiArr[n - 3] ?? rsiVal;
+          const rsiTurningDown = rsiArr[n - 1] < rsiArr[n - 2] && rsiArr[n - 2] < rsiPrev2;
+          const rsiTurningUp = rsiArr[n - 1] > rsiArr[n - 2] && rsiArr[n - 2] > rsiPrev2;
+          const bbRejectionBear =
+            pctB > 0.90 &&
+            closes[n - 1] < bb.upper[n - 1] &&
+            closes[n - 2] >= bb.upper[n - 2];
+          const bbRejectionBull =
+            pctB < 0.10 &&
+            closes[n - 1] > bb.lower[n - 1] &&
+            closes[n - 2] <= bb.lower[n - 2];
+
+          add(rsiVal < 32 && rsiTurningUp && mrBullConfirm >= 2, "rsi-oversold", true, TIERS.weak);
+          add(rsiVal > 68 && rsiTurningDown && mrBearConfirm >= 2, "rsi-overbought", false, TIERS.weak);
+          add(bbRejectionBull && mrBullConfirm >= 2, "bb-oversold", true, TIERS.weak);
+          add(bbRejectionBear && mrBearConfirm >= 2, "bb-overbought", false, TIERS.weak);
         }
       } else {
         longScore *= 0.7;
@@ -158,20 +343,181 @@ export async function scoreSymbol(symbol, regime, state) {
       reasons.push("transition-market");
     }
 
-    add(rsiDiv.type === "bullish", "rsi-bull-div", true, TIERS.strong);
-    add(rsiDiv.type === "bearish", "rsi-bear-div", false, TIERS.strong);
-    add(obvDiv.type === "bullish", "OBV-bull-div", true, TIERS.strong);
-    add(obvDiv.type === "bearish", "OBV-bear-div", false, TIERS.strong);
-    add(trap === "bear-trap", "liquidity-bull", true, TIERS.strong);
-    add(trap === "bull-trap", "liquidity-bear", false, TIERS.strong);
-    add(trap === "bear-trap" && rsiVal < 40, "trap-bull-confirm", true, TIERS.strong);
-    add(trap === "bull-trap" && rsiVal > 60, "trap-bear-confirm", false, TIERS.strong);
-    add(trap === "bear-trap" && volConfirm.isClimax, "trap-vol-bull", true, TIERS.strong);
-    add(trap === "bull-trap" && volConfirm.isClimax, "trap-vol-bear", false, TIERS.strong);
-    add(macdResult.crossUp, "macd-cross-up", true, TIERS.medium);
-    add(macdResult.crossDown, "macd-cross-down", false, TIERS.medium);
+    const rsiDivBullConfirmed =
+      rsiDiv.type === "bullish" &&
+      rsiDiv.strength >= 8.0 &&
+      rsiVal < 42 &&
+      price > vwapVal &&
+      h4Trend !== "bearish" &&
+      rsiArr[n - 1] > rsiArr[n - 2] &&
+      rsiArr[n - 2] > (rsiArr[n - 3] ?? rsiVal);
+    add(rsiDivBullConfirmed, "rsi-bull-div", true, TIERS.weak);
+    add(
+      rsiDiv.type === "bearish" &&
+      rsiDiv.strength >= 8 &&
+      rsiVal > 58 &&
+      price < vwapVal,
+      "rsi-bear-div",
+      false,
+      TIERS.weak
+    );
+    add(
+      obvDiv.type === "bullish" &&
+      price > vwapVal &&
+      rsiVal < 50 &&
+      h4Trend !== "bearish",
+      "OBV-bull-div",
+      true,
+      TIERS.weak
+    );
+    add(
+      obvDiv.type === "bearish" &&
+      price < vwapVal &&
+      h4Trend !== "bullish",
+      "OBV-bear-div",
+      false,
+      TIERS.weak
+    );
+    const rsiTurningUp = rsiArr[n - 1] > rsiArr[n - 2];
+    const rsiTurningDown = rsiArr[n - 1] < rsiArr[n - 2];
+    const strongBounce =
+      closes[n - 1] > closes[n - 2] &&
+      (closes[n - 1] - lows[n - 1]) > (highs[n - 1] - closes[n - 1]);
+    const candleRange = highs[n - 1] - lows[n - 1];
+    const upperWick = highs[n - 1] - closes[n - 1];
+    const bearishCandle = candleRange > 0 && upperWick / candleRange > 0.5;
+    const lastVolumes = volumes.slice(-5);
+    const maxVolIdx = lastVolumes.indexOf(Math.max(...lastVolumes));
+    const climaxBarIndex = Math.max(0, n - 5 + maxVolIdx);
+    const climaxBarBearish =
+      closes[climaxBarIndex] < (candles1h[climaxBarIndex]?.open ?? closes[climaxBarIndex]);
+    const climaxBarBullish =
+      closes[climaxBarIndex] > (candles1h[climaxBarIndex]?.open ?? closes[climaxBarIndex]);
+    const trapFreshBear = srLevels.resistances.some((resistance) =>
+      highs.slice(-3).some((high) => high > resistance)
+    );
+    const trapFreshBull = srLevels.supports.some((support) =>
+      lows.slice(-3).some((low) => low < support)
+    );
+    const bullTrapRsiLayer = trap === "bear-trap" && rsiVal < 38 && rsiTurningUp;
+    const bullTrapCandleLayer = trap === "bear-trap" && strongBounce;
+    const bullTrapVolumeLayer =
+      trap === "bear-trap" &&
+      volConfirm.isClimax &&
+      climaxBarBullish &&
+      trapFreshBull;
+    const bearTrapRsiLayer = trap === "bull-trap" && rsiVal > 62 && rsiTurningDown;
+    const bearTrapCandleLayer = trap === "bull-trap" && bearishCandle;
+    const bearTrapVolumeLayer =
+      trap === "bull-trap" &&
+      volConfirm.isClimax &&
+      climaxBarBearish &&
+      trapFreshBear;
+    const bullTrapLayers = [
+      trap === "bear-trap",
+      bullTrapRsiLayer,
+      bullTrapCandleLayer,
+      bullTrapVolumeLayer
+    ].filter(Boolean).length;
+    const bearTrapLayers = [
+      trap === "bull-trap",
+      bearTrapRsiLayer,
+      bearTrapCandleLayer,
+      bearTrapVolumeLayer
+    ].filter(Boolean).length;
+    const trapBearQuality =
+      trap === "bull-trap" &&
+      price < vwapVal &&
+      h4Trend === "bearish" &&
+      adxResult.pdi < adxResult.mdi &&
+      rsiVal < 55;
+    const liquidityBearQuality =
+      regime.label !== "sideways" &&
+      regime.label !== "chop" &&
+      bearTrapLayers >= 3 &&
+      h4Trend === "bearish" &&
+      price < vwapVal &&
+      price < ichi.senkouA &&
+      price < ichi.senkouB &&
+      adxResult.mdi > adxResult.pdi &&
+      rsiVal < 58 &&
+      bearishCandle;
+    const allowLiquidityBearReason =
+      liquidityBearQuality &&
+      h4Trend === "bearish" &&
+      price < vwapVal &&
+      ribbon.bearishAligned &&
+      adxResult.mdi > adxResult.pdi &&
+      shortScore >= 4;
+    const liquidityBullValid =
+      bullTrapLayers >= 2 &&
+      h4Trend !== "bearish";
+    add(liquidityBullValid, "liquidity-bull", true, TIERS.medium);
+    if (allowLiquidityBearReason) {
+      reasons.push("liquidity-bear");
+    }
+    add(
+      bullTrapLayers >= 3 &&
+      bullTrapRsiLayer &&
+      bullTrapCandleLayer &&
+      trap === "bear-trap" &&
+      rsiVal > 42 &&
+      price >= vwapVal * 0.995,
+      "trap-bull-confirm",
+      true,
+      TIERS.weak
+    );
+    add(
+      bearTrapLayers >= 3 &&
+      bearTrapRsiLayer &&
+      bearTrapCandleLayer &&
+      trapBearQuality,
+      "trap-bear-confirm",
+      false,
+      TIERS.weak
+    );
+    add(
+      bullTrapLayers >= 3 &&
+      bullTrapVolumeLayer &&
+      trap === "bear-trap" &&
+      volConfirm.isClimax &&
+      price >= vwapVal * 0.995,
+      "trap-vol-bull",
+      true,
+      TIERS.weak
+    );
+    const macdCrossUpValid =
+      macdResult.crossUp &&
+      isTrending &&
+      (macdRaw.signal ?? 0) < 0 &&
+      Math.abs(macdRaw.histogram ?? 0) > Math.abs((macd(closes.slice(0, -1)) || {}).histogram ?? 0) * 1.2 &&
+      h4Trend === "bullish" &&
+      price > vwapVal &&
+      price > ichi.senkouA &&
+      price > ichi.senkouB &&
+      ribbon.bullishAligned;
+
+    const macdCrossDownValid =
+      macdResult.crossDown &&
+      isTrending &&
+      (macdRaw.signal ?? 0) > 0 &&
+      Math.abs(macdRaw.histogram ?? 0) > Math.abs((macd(closes.slice(0, -1)) || {}).histogram ?? 0) * 1.2 &&
+      h4Trend === "bearish" &&
+      price < vwapVal &&
+      price < ichi.senkouA &&
+      price < ichi.senkouB &&
+      ribbon.bearishAligned;
+
+    add(macdCrossUpValid, "macd-cross-up", true, TIERS.medium);
+    add(macdCrossDownValid, "macd-cross-down", false, TIERS.medium);
+    const stochOversoldConfirmed =
+      stochResult.oversold &&
+      stochResult.crossUp &&
+      rsiVal < 45 &&
+      price > vwapVal &&
+      h4Trend !== "bearish";
     if (!isTrending) {
-      add(stochResult.oversold, "stochrsi-oversold", true, TIERS.weak);
+      add(stochOversoldConfirmed, "stochrsi-oversold", true, TIERS.weak);
       add(stochResult.overbought, "stochrsi-overbought", false, TIERS.weak);
     }
     add(stochResult.crossUp && stochResult.k < 50, "stochrsi-cross-up", true, TIERS.weak);
@@ -179,17 +525,64 @@ export async function scoreSymbol(symbol, regime, state) {
 
     add(ichi.tkCross > 0, "TK-bull", true, TIERS.medium);
     add(ichi.tkCross < 0, "TK-bear", false, TIERS.medium);
+    const cloudTop = Math.max(ichi.senkouA, ichi.senkouB);
+    const aboveCloudBreakout =
+      price > cloudTop &&
+      closes[n - 2] <= cloudTop &&
+      ribbon.bullishAligned &&
+      h4Trend === "bullish";
     if (isTrending) {
-      add(price > ichi.senkouA && price > ichi.senkouB, "above-cloud", true, TIERS.medium);
+      add(aboveCloudBreakout, "above-cloud", true, TIERS.weak);
       add(price < ichi.senkouA && price < ichi.senkouB, "below-cloud", false, TIERS.medium);
     }
     add(n > 27 && ichi.chikou > ichi.chikouCompare, "chikou-bull", true, TIERS.weak);
     add(n > 27 && ichi.chikou < ichi.chikouCompare, "chikou-bear", false, TIERS.weak);
 
-    add(fisherVal > 0 && fisherVal > fisherPrev, "fisher-rising", true, TIERS.weak);
-    add(fisherVal < 0 && fisherVal < fisherPrev, "fisher-falling", false, TIERS.weak);
+    const fisherCrossUp = fisherPrev <= 0 && fisherVal > 0;
+    const fisherCrossDown = fisherPrev >= 0 && fisherVal < 0;
+    const fisherTurnBull = fisherPrev < -1.5 && fisherVal > fisherPrev;
+    const fisherTurnBear = fisherPrev > 1.5 && fisherVal < fisherPrev;
+    const fisherBullZeroCross =
+      fisherCrossUp &&
+      price > vwapVal &&
+      h4Trend === "bullish" &&
+      adxResult.pdi > adxResult.mdi;
+    const fisherBearZeroCross =
+      fisherCrossDown &&
+      price < vwapVal &&
+      h4Trend === "bearish" &&
+      adxResult.mdi > adxResult.pdi;
+    const fisherBullMomentum =
+      fisherVal > fisherPrev &&
+      fisherVal < -0.5 &&
+      price > vwapVal &&
+      h4Trend === "bullish" &&
+      adxResult.pdi > adxResult.mdi;
+    const fisherBearMomentum =
+      fisherVal < fisherPrev &&
+      fisherVal > 0.5 &&
+      price < vwapVal &&
+      h4Trend === "bearish" &&
+      adxResult.mdi > adxResult.pdi;
+    const fisherBullReversal =
+      fisherVal < -1.8 &&
+      fisherVal > fisherPrev &&
+      price > vwapVal * 0.995 &&
+      (rsiVal < 40 || stochResult.crossUp);
+    add(
+      fisherBullZeroCross || (fisherTurnBull && fisherBullMomentum),
+      "fisher-rising",
+      true,
+      TIERS.weak
+    );
+    add(
+      fisherBearZeroCross || (fisherTurnBear && fisherBearMomentum),
+      "fisher-falling",
+      false,
+      TIERS.weak
+    );
     if (!isTrending) {
-      add(fisherVal < -2.0, "fisher-oversold", true, TIERS.medium);
+      add(fisherBullReversal, "fisher-oversold", true, TIERS.weak);
       add(fisherVal > 2.0, "fisher-overbought", false, TIERS.medium);
     }
 
@@ -202,10 +595,14 @@ export async function scoreSymbol(symbol, regime, state) {
       TIERS.strong
     );
     add(
-      ribbon.wasCompressed && ribbon.expanding && ribbon.bearishAligned,
+      ribbon.wasCompressed &&
+      ribbon.expanding &&
+      ribbon.bearishAligned &&
+      price < vwapVal &&
+      adxResult.mdi > adxResult.pdi,
       "ribbon-expansion-bear",
       false,
-      TIERS.strong
+      TIERS.medium
     );
 
     if (ribbon.bullishAligned && h4Trend === "bullish") longScore += 3;
@@ -238,12 +635,19 @@ export async function scoreSymbol(symbol, regime, state) {
       shortScore *= 0.7;
       reasons.push("trend-vs-oversold");
     }
-    if (h4Trend === "bullish" && price < vwapVal) {
-      longScore *= 0.7;
+    const isTrendChaseLong = reasons.includes("ema-ribbon-bull") || reasons.includes("h4-bull");
+    const isTrendChaseShort =
+      reasons.includes("ema-ribbon-bear") ||
+      reasons.includes("h4-bear") ||
+      reasons.includes("h4-bear-strong");
+    const isDipBuy = h4PullbackEntry || reasons.includes("rsi-support-bounce");
+    const isDipSell = h4PullbackEntry || reasons.includes("rsi-resistance-reject");
+    if (h4Trend === "bullish" && price < vwapVal && isTrendChaseLong && !isDipBuy) {
+      longScore *= 0.75;
       reasons.push("htf-vs-vwap");
     }
-    if (h4Trend === "bearish" && price > vwapVal) {
-      shortScore *= 0.7;
+    if (h4Trend === "bearish" && price > vwapVal && isTrendChaseShort && !isDipSell) {
+      shortScore *= 0.75;
       reasons.push("htf-vs-vwap");
     }
 
@@ -251,7 +655,19 @@ export async function scoreSymbol(symbol, regime, state) {
     const minDiff = regime.label === "chop" ? 1.5 : 1.0;
     if (scoreDiff < minDiff) return null;
 
-    const minScore = regime.label === "chop" ? 4 : 3;
+    let setupType = "unknown";
+    if (ribbon.wasCompressed && ribbon.expanding) {
+      setupType = "breakout";
+    } else if (trap !== "none") {
+      setupType = "liquidity-trap";
+    } else if (!isTrending) {
+      setupType = "mean-reversion";
+    } else if (isStrongTrend) {
+      setupType = "trend";
+    }
+
+    const baseMinScore = regime.label === "chop" ? 4 : 3;
+    const minScore = setupType === "mean-reversion" ? Math.max(baseMinScore, 4.5) : baseMinScore;
     let signal = null;
     let score = 0;
 
@@ -265,24 +681,113 @@ export async function scoreSymbol(symbol, regime, state) {
 
     if (!signal) return null;
 
-    let setupType = "unknown";
-    if (trap !== "none") {
-      setupType = "liquidity-trap";
-    } else if (ribbon.wasCompressed && ribbon.expanding) {
-      setupType = "breakout";
-    } else if (!isTrending) {
-      setupType = "mean-reversion";
-    } else if (isStrongTrend) {
-      setupType = "trend";
+    const candidateBullContinuation =
+      setupType === "unknown" &&
+      regime.label === "bull" &&
+      signal === "long" &&
+      h4Trend === "bullish" &&
+      h4PullbackEntry &&
+      trap === "none" &&
+      isTrending;
+
+    if (candidateBullContinuation) {
+      setupType = "bull-continuation";
     }
+
+    if (
+      signal === "short" &&
+      reasons.includes("trap-bear-confirm") &&
+      (
+        h4Trend !== "bearish" ||
+        price > vwapVal ||
+        adxResult.pdi > adxResult.mdi ||
+        rsiVal > 60
+      )
+    ) {
+      return null;
+    }
+
+    const h4Score = score4H(candles4h);
+
+    if ((setupType === "trend" || setupType === "breakout") && !h4Score.aligned(signal)) {
+      return null;
+    }
+
+    reasons.push(...h4Score.signals);
+    if (signal === "long") score += h4Score.bullScore * 0.5;
+    if (signal === "short") score += h4Score.bearScore * 0.5;
 
     const quality =
       (ribbon.bullishAligned || ribbon.bearishAligned ? 1 : 0) +
       (h4Trend !== "neutral" ? 1 : 0) +
       (Math.abs(price - vwapVal) / price > 0.002 ? 1 : 0);
 
-    if (setupType !== "mean-reversion" && quality < 2) return null;
-    if (setupType === "mean-reversion" && quality < 1) return null;
+    const nearSupport = supports.some(s => Math.abs(price - s) / price < 0.005);
+    const nearResistance = resistances.some(r => Math.abs(price - r) / price < 0.005);
+    const inHVN = highVolumeNodes.some(node => price >= node.low && price <= node.high);
+
+    if (setupType === "liquidity-trap" && reasons.includes("transition-market")) {
+      return null;
+    }
+
+    if (setupType === "mean-reversion") {
+      const isSidewaysRegime = regime?.label === "sideways";
+      const extremeOscillatorLong =
+        stochResult.oversold || fisherVal < -2.0 || rsiVal < 35 || pctB < 0.05;
+      const extremeOscillatorShort =
+        stochResult.overbought || fisherVal > 2.0 || rsiVal > 65 || pctB > 0.95;
+      const hasLocationEdge =
+        (signal === "long" && nearSupport) ||
+        (signal === "short" && nearResistance);
+      const hasExtreme =
+        (signal === "long" && extremeOscillatorLong) ||
+        (signal === "short" && extremeOscillatorShort);
+      const h4AlignedAgainstMr =
+        (signal === "long" && h4Trend === "bearish") ||
+        (signal === "short" && h4Trend === "bullish");
+
+      if (!isSidewaysRegime) return null;
+      if (!hasLocationEdge || !hasExtreme) return null;
+      if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) return null;
+    }
+
+    if (setupType === "breakout") {
+      const h4Aligned =
+        (signal === "long" && h4Trend === "bullish") ||
+        (signal === "short" && h4Trend === "bearish");
+      const cloudAligned =
+        (signal === "long" && price > ichi.senkouA && price > ichi.senkouB) ||
+        (signal === "short" && price < ichi.senkouA && price < ichi.senkouB);
+      const vwapAligned =
+        (signal === "long" && price > vwapVal) ||
+        (signal === "short" && price < vwapVal);
+      const activeHVN = highVolumeNodes.find(node => price >= node.low && price <= node.high) || null;
+      const deepInHVN = !!activeHVN && (() => {
+        const nodeDepth = activeHVN.high - activeHVN.low;
+        return price >= activeHVN.low + nodeDepth * 0.15 &&
+               price <= activeHVN.high - nodeDepth * 0.15;
+      })();
+      const hvnEdgeEscape = !!activeHVN && (() => {
+        const nodeDepth = activeHVN.high - activeHVN.low;
+        const atTopEdge = price >= activeHVN.high - nodeDepth * 0.15 && signal === "long";
+        const atBottomEdge = price <= activeHVN.low + nodeDepth * 0.15 && signal === "short";
+        return atTopEdge || atBottomEdge;
+      })();
+
+      if (!ribbon.wasCompressed || !ribbon.expanding) return null;
+      if (!volConfirm.isSignificant) return null;
+      if (!h4Aligned || !cloudAligned || !vwapAligned) return null;
+      if (deepInHVN && !hvnEdgeEscape) return null;
+    }
+
+    if (setupType === "bull-continuation") {
+      if (!h4Score.aligned("long")) return null;
+      const hasEntry = rsiTurningUp || stochResult.crossUp || macdCrossUpValid;
+      if (!hasEntry) return null;
+    }
+
+    if (quality < 2) return null;
+    if (setupType === "unknown") return null;
 
     const structured = calculateStructuredSLTP(
       signal, price, atrVal, highs, lows, closes, volumes
