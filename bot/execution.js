@@ -13,30 +13,7 @@ import {
 import { fetchCandles } from "./market-data.js";
 import { ema, emaRibbon, ichimoku, macd, rsiSeries, vwap } from "./indicators.js";
 
-function getTrancheDistribution(setupType, regime) {
-  if ((setupType === "trend" || setupType === "bull-pullback") && regime?.label === "bull") {
-    return { t1: 0.55, t2: 0.30, t3: 0.15, t2Mult: 0.4, t3Mult: 1.0 };
-  }
-  if (setupType === "breakout") {
-    return { t1: 0.35, t2: 0.40, t3: 0.25, t2Mult: 0.7, t3Mult: 1.8 };
-  }
-  if (setupType === "liquidity-trap") {
-    return { t1: 0.60, t2: 0.25, t3: 0.15, t2Mult: 0.6, t3Mult: 1.5 };
-  }
-  if (setupType === "mean-reversion") {
-    return { t1: 0.50, t2: 0.30, t3: 0.20, t2Mult: 0.3, t3Mult: 0.8 };
-  }
-  return { t1: 0.40, t2: 0.35, t3: 0.25, t2Mult: 0.5, t3Mult: 1.5 };
-}
-
-function isTrancheTriggerConfirmed(pos, tranche, price, state) {
-  const lastClose = state.lastClosePrices?.[pos.symbol];
-  return pos.direction === "long"
-    ? (Number.isFinite(lastClose) && lastClose >= tranche.triggerPrice) ||
-      price >= tranche.triggerPrice * 1.002
-    : (Number.isFinite(lastClose) && lastClose <= tranche.triggerPrice) ||
-      price <= tranche.triggerPrice * 0.998;
-}
+const DEFAULT_TRANCHE_DISTRIBUTION = { t1: 0.40, t2: 0.35, t3: 0.25 };
 
 async function isTrancheStillValid(pos) {
   try {
@@ -157,7 +134,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     totalSize = totalNotional / price;
   }
 
-  const trancheDist = getTrancheDistribution(setupType, state.lastRegime);
+  const trancheDist = DEFAULT_TRANCHE_DISTRIBUTION;
   const tranche1Pct = trancheDist.t1;
   const tranche1Notional = totalNotional * tranche1Pct;
   const tranche1Size = totalSize * tranche1Pct * leverage;
@@ -172,11 +149,11 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     : price * (1 + 1 / leverage - 0.005);
 
   const tranche2Trigger = signal === "long"
-    ? price + atrVal * trancheDist.t2Mult
-    : price - atrVal * trancheDist.t2Mult;
+    ? price + atrVal * 0.5
+    : price - atrVal * 0.5;
   const tranche3Trigger = signal === "long"
-    ? price + atrVal * trancheDist.t3Mult
-    : price - atrVal * trancheDist.t3Mult;
+    ? price + atrVal * 1.5
+    : price - atrVal * 1.5;
 
   state.cash -= tranche1Notional;
 
@@ -207,7 +184,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
       plan: {
         totalSize: totalSize * leverage,
         totalNotional,
-        distribution: trancheDist,
+        distribution: { ...trancheDist },
         tranche1: { pct: trancheDist.t1, filled: true, price, size: tranche1Size, notional: tranche1Notional },
         tranche2: { pct: trancheDist.t2, filled: false, triggerPrice: tranche2Trigger, size: 0, notional: 0 },
         tranche3: { pct: trancheDist.t3, filled: false, triggerPrice: tranche3Trigger, size: 0, notional: 0 }
@@ -238,7 +215,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
 
   console.log(
     `🟢 [${symbol}] OPEN ${signal.toUpperCase()} T1/3 @$${price.toFixed(6)} | ` +
-    `$${tranche1Notional.toFixed(2)} margin (${(trancheDist.t1 * 100).toFixed(0)}% of $${totalNotional.toFixed(2)}) | ` +
+    `$${tranche1Notional.toFixed(2)} margin (40% of $${totalNotional.toFixed(2)}) | ` +
     `T2@$${tranche2Trigger.toFixed(6)} T3@$${tranche3Trigger.toFixed(6)} | ` +
     `Score:${score} [${reasons.join(",")}]`
   );
@@ -295,7 +272,10 @@ export async function checkTranches(pos, price, state) {
   const plan = pos.tranches.plan;
 
   if (!plan.tranche2.filled) {
-    if (isTrancheTriggerConfirmed(pos, plan.tranche2, price, state)) {
+    const triggered = pos.direction === "long"
+      ? price >= plan.tranche2.triggerPrice
+      : price <= plan.tranche2.triggerPrice;
+    if (triggered) {
       if (!(await isTrancheStillValid(pos))) {
         console.log(`[${pos.symbol}] Tranche 2 skipped: setup no longer valid.`);
         return;
@@ -305,7 +285,10 @@ export async function checkTranches(pos, price, state) {
   }
 
   if (plan.tranche2.filled && !plan.tranche3.filled) {
-    if (isTrancheTriggerConfirmed(pos, plan.tranche3, price, state)) {
+    const triggered = pos.direction === "long"
+      ? price >= plan.tranche3.triggerPrice
+      : price <= plan.tranche3.triggerPrice;
+    if (triggered) {
       if (!(await isTrancheStillValid(pos))) {
         console.log(`[${pos.symbol}] Tranche 3 skipped: setup no longer valid.`);
         return;
