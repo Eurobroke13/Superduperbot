@@ -140,6 +140,8 @@ async function checkAllExits(env, state, deps) {
       const low = last.low;
       const atrVal = atr(highs, lows, closes, 14);
       const pos = state.positions[symbol];
+      if (!state.lastClosePrices) state.lastClosePrices = {};
+      state.lastClosePrices[symbol] = last.close;
 
       const hoursOpen = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
       if (hoursOpen > 168) {
@@ -155,7 +157,7 @@ async function checkAllExits(env, state, deps) {
         continue;
       }
 
-      checkTranches(pos, price, state);
+      await checkTranches(pos, price, state);
       await checkDCA(pos, price, atrVal, state, env, { notifyTrade });
 
       const exit = checkGraduatedExit(pos, price, high, low, atrVal);
