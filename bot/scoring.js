@@ -336,31 +336,53 @@ export async function scoreSymbol(symbol, regime, state) {
         reasons.push("dead-range");
       }
     } else {
-      add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.weak);
-      add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.weak);
+      add(
+        ribbon.bullishAligned && ribbon.expanding && ribbon.priceAboveAll,
+        "ema-ribbon-bull",
+        true,
+        TIERS.weak
+      );
+      add(
+        ribbon.bearishAligned && ribbon.expanding && ribbon.priceBelowAll,
+        "ema-ribbon-bear",
+        false,
+        TIERS.weak
+      );
       longScore *= 0.85;
       shortScore *= 0.85;
       reasons.push("transition-market");
     }
 
-    const rsiDivBullConfirmed =
-      rsiDiv.type === "bullish" &&
-      rsiDiv.strength >= 8.0 &&
-      rsiVal < 42 &&
-      price > vwapVal &&
-      h4Trend !== "bearish" &&
-      rsiArr[n - 1] > rsiArr[n - 2] &&
-      rsiArr[n - 2] > (rsiArr[n - 3] ?? rsiVal);
-    add(rsiDivBullConfirmed, "rsi-bull-div", true, TIERS.weak);
-    add(
-      rsiDiv.type === "bearish" &&
-      rsiDiv.strength >= 8 &&
-      rsiVal > 58 &&
-      price < vwapVal,
-      "rsi-bear-div",
-      false,
-      TIERS.weak
-    );
+    const rsiPrev2Global = rsiArr[n - 3] ?? rsiVal;
+    const rsiTurningUp = rsiArr[n - 1] > rsiArr[n - 2] && rsiArr[n - 2] > rsiPrev2Global;
+    const rsiTurningDown = rsiArr[n - 1] < rsiArr[n - 2] && rsiArr[n - 2] < rsiPrev2Global;
+    const isInBullRegime = regime?.label === "bull";
+    const recentRsi = rsiArr.slice(-15).filter(Number.isFinite);
+    const minRecentRsi = recentRsi.length ? Math.min(...recentRsi) : rsiVal;
+    const maxRecentRsi = recentRsi.length ? Math.max(...recentRsi) : rsiVal;
+    const rsiDivBullConfirmed = isInBullRegime
+      ? rsiDiv.type === "bullish" &&
+        rsiDiv.strength >= 6 &&
+        rsiTurningUp &&
+        minRecentRsi < 38 &&
+        h4Trend !== "bearish"
+      : rsiDiv.type === "bullish" &&
+        rsiDiv.strength >= 8.0 &&
+        rsiVal < 42 &&
+        price > vwapVal &&
+        h4Trend !== "bearish" &&
+        rsiTurningUp;
+    const rsiDivBearConfirmed = isInBullRegime
+      ? rsiDiv.type === "bearish" &&
+        rsiDiv.strength >= 8 &&
+        maxRecentRsi > 65 &&
+        h4Trend !== "bullish"
+      : rsiDiv.type === "bearish" &&
+        rsiDiv.strength >= 8 &&
+        rsiVal > 58 &&
+        price < vwapVal;
+    add(rsiDivBullConfirmed, "rsi-bull-div", true, isInBullRegime ? TIERS.medium : TIERS.weak);
+    add(rsiDivBearConfirmed, "rsi-bear-div", false, isInBullRegime ? TIERS.medium : TIERS.weak);
     add(
       obvDiv.type === "bullish" &&
       price > vwapVal &&
@@ -378,8 +400,6 @@ export async function scoreSymbol(symbol, regime, state) {
       false,
       TIERS.weak
     );
-    const rsiTurningUp = rsiArr[n - 1] > rsiArr[n - 2];
-    const rsiTurningDown = rsiArr[n - 1] < rsiArr[n - 2];
     const strongBounce =
       closes[n - 1] > closes[n - 2] &&
       (closes[n - 1] - lows[n - 1]) > (highs[n - 1] - closes[n - 1]);
@@ -516,27 +536,63 @@ export async function scoreSymbol(symbol, regime, state) {
       rsiVal < 45 &&
       price > vwapVal &&
       h4Trend !== "bearish";
+    const rsiBullRegimeOversold = isInBullRegime
+      ? rsiVal < 42 && rsiTurningUp && price >= vwapVal * 0.995
+      : rsiVal < 35 && rsiTurningUp;
+    const bbRejectBull =
+      pctB < 0.10 &&
+      closes[n - 1] > bb.lower[n - 1] &&
+      closes[n - 2] <= bb.lower[n - 2];
     if (!isTrending) {
       add(stochOversoldConfirmed, "stochrsi-oversold", true, TIERS.weak);
       add(stochResult.overbought, "stochrsi-overbought", false, TIERS.weak);
     }
+    add(
+      !hasReason(reasons, "rsi-oversold") && rsiBullRegimeOversold && h4Trend !== "bearish",
+      "rsi-oversold",
+      true,
+      TIERS.weak
+    );
+    add(
+      !hasReason(reasons, "bb-oversold") && bbRejectBull && rsiTurningUp && h4Trend !== "bearish",
+      "bb-oversold",
+      true,
+      TIERS.weak
+    );
     add(stochResult.crossUp && stochResult.k < 50, "stochrsi-cross-up", true, TIERS.weak);
     add(stochResult.crossDown && stochResult.k > 50, "stochrsi-cross-down", false, TIERS.weak);
 
-    add(ichi.tkCross > 0, "TK-bull", true, TIERS.medium);
-    add(ichi.tkCross < 0, "TK-bear", false, TIERS.medium);
+    const ichiPrev = n > 53 ? ichimoku(highs.slice(0, -1), lows.slice(0, -1), closes.slice(0, -1)) : null;
+    const tkBullCross = ichi.tkCross > 0 && (ichiPrev?.tkCross ?? 0) <= 0;
+    const tkBearCross = ichi.tkCross < 0 && (ichiPrev?.tkCross ?? 0) >= 0;
+    add(tkBullCross, "TK-bull", true, TIERS.medium);
+    add(tkBearCross, "TK-bear", false, TIERS.medium);
     const cloudTop = Math.max(ichi.senkouA, ichi.senkouB);
+    const cloudBottom = Math.min(ichi.senkouA, ichi.senkouB);
+    const aboveCloud = price > cloudTop;
+    const belowCloud = price < cloudBottom;
+    const wasBelowCloud = closes.slice(-8, -1).some(c => c < cloudTop);
+    const wasAboveCloud = closes.slice(-8, -1).some(c => c > cloudBottom);
     const aboveCloudBreakout =
-      price > cloudTop &&
-      closes[n - 2] <= cloudTop &&
+      aboveCloud &&
+      wasBelowCloud &&
       ribbon.bullishAligned &&
       h4Trend === "bullish";
+    const belowCloudBreakdown =
+      belowCloud &&
+      wasAboveCloud &&
+      ribbon.bearishAligned &&
+      h4Trend === "bearish";
     if (isTrending) {
       add(aboveCloudBreakout, "above-cloud", true, TIERS.weak);
-      add(price < ichi.senkouA && price < ichi.senkouB, "below-cloud", false, TIERS.medium);
+      add(belowCloudBreakdown, "below-cloud", false, TIERS.medium);
     }
-    add(n > 27 && ichi.chikou > ichi.chikouCompare, "chikou-bull", true, TIERS.weak);
-    add(n > 27 && ichi.chikou < ichi.chikouCompare, "chikou-bear", false, TIERS.weak);
+    const chikouAbove = n > 27 && ichi.chikou > ichi.chikouCompare;
+    const chikouBelow = n > 27 && ichi.chikou < ichi.chikouCompare;
+    const chikouWasBelow = n > 32 && [1, 2, 3, 4].some(i => closes[n - 1 - i] <= closes[n - 27 - i]);
+    const chikouWasAbove = n > 32 && [1, 2, 3, 4].some(i => closes[n - 1 - i] >= closes[n - 27 - i]);
+    add(chikouAbove && chikouWasBelow, "chikou-bull", true, TIERS.weak);
+    add(chikouBelow && chikouWasAbove, "chikou-bear", false, TIERS.weak);
 
     const fisherCrossUp = fisherPrev <= 0 && fisherVal > 0;
     const fisherCrossDown = fisherPrev >= 0 && fisherVal < 0;
@@ -586,8 +642,22 @@ export async function scoreSymbol(symbol, regime, state) {
       add(fisherVal > 2.0, "fisher-overbought", false, TIERS.medium);
     }
 
-    add(price > vwapVal, "above-VWAP", true, TIERS.medium);
-    add(price < vwapVal, "below-VWAP", false, TIERS.medium);
+    const vwapCrossUp =
+      price > vwapVal &&
+      closes.slice(-5, -1).some(c => c < vwapVal);
+    const vwapCrossDown =
+      price < vwapVal &&
+      closes.slice(-5, -1).some(c => c > vwapVal);
+    const vwapBounce =
+      price > vwapVal &&
+      lows[n - 1] < vwapVal * 1.003 &&
+      closes[n - 1] > vwapVal;
+    const vwapReject =
+      price < vwapVal &&
+      highs[n - 1] > vwapVal * 0.997 &&
+      closes[n - 1] < vwapVal;
+    add(vwapCrossUp || vwapBounce, "above-VWAP", true, TIERS.medium);
+    add(vwapCrossDown || vwapReject, "below-VWAP", false, TIERS.medium);
     add(
       ribbon.wasCompressed && ribbon.expanding && ribbon.bullishAligned,
       "ribbon-expansion-bull",
@@ -655,8 +725,21 @@ export async function scoreSymbol(symbol, regime, state) {
     const minDiff = regime.label === "chop" ? 1.5 : 1.0;
     if (scoreDiff < minDiff) return null;
 
+    const isBullPullback =
+      regime?.label === "bull" &&
+      h4Trend === "bullish" &&
+      trap === "none" &&
+      isTrending &&
+      (
+        Math.abs(price - vwapVal) / price < 0.005 ||
+        (!ribbon.priceAboveAll && ribbon.bullishAligned)
+      ) &&
+      (rsiTurningUp || stochResult.crossUp || vwapBounce);
+
     let setupType = "unknown";
-    if (ribbon.wasCompressed && ribbon.expanding) {
+    if (isBullPullback) {
+      setupType = "bull-pullback";
+    } else if (ribbon.wasCompressed && ribbon.expanding) {
       setupType = "breakout";
     } else if (trap !== "none") {
       setupType = "liquidity-trap";
@@ -667,7 +750,11 @@ export async function scoreSymbol(symbol, regime, state) {
     }
 
     const baseMinScore = regime.label === "chop" ? 4 : 3;
-    const minScore = setupType === "mean-reversion" ? Math.max(baseMinScore, 4.5) : baseMinScore;
+    const minScore = setupType === "mean-reversion"
+      ? Math.max(baseMinScore, 4.5)
+      : setupType === "bull-pullback"
+        ? 3.5
+        : baseMinScore;
     let signal = null;
     let score = 0;
 
@@ -680,19 +767,6 @@ export async function scoreSymbol(symbol, regime, state) {
     }
 
     if (!signal) return null;
-
-    const candidateBullContinuation =
-      setupType === "unknown" &&
-      regime.label === "bull" &&
-      signal === "long" &&
-      h4Trend === "bullish" &&
-      h4PullbackEntry &&
-      trap === "none" &&
-      isTrending;
-
-    if (candidateBullContinuation) {
-      setupType = "bull-continuation";
-    }
 
     if (
       signal === "short" &&
@@ -780,6 +854,16 @@ export async function scoreSymbol(symbol, regime, state) {
       if (deepInHVN && !hvnEdgeEscape) return null;
     }
 
+    if (setupType === "bull-pullback") {
+      if (signal !== "long") return null;
+      if (!h4Score.aligned("long")) return null;
+      const hasPullbackTrigger = rsiTurningUp || stochResult.crossUp || vwapBounce;
+      const hasPullbackLocation =
+        Math.abs(price - vwapVal) / price < 0.005 ||
+        (!ribbon.priceAboveAll && ribbon.bullishAligned);
+      if (!hasPullbackTrigger || !hasPullbackLocation) return null;
+    }
+
     if (setupType === "bull-continuation") {
       if (!h4Score.aligned("long")) return null;
       const hasEntry = rsiTurningUp || stochResult.crossUp || macdCrossUpValid;
@@ -836,6 +920,8 @@ export function autoApproveSignal(candidate) {
   let conf = 0;
 
   if (setupType === "liquidity-trap") {
+    conf += 2;
+  } else if (setupType === "bull-pullback") {
     conf += 2;
   } else if (setupType === "breakout") {
     if (

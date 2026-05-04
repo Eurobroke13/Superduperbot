@@ -281,7 +281,7 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
     : "insufficient data";
 
   // Setup type performance system-wide
-  const setupPerf = ["trend","breakout","liquidity-trap","mean-reversion"].map(t => {
+  const setupPerf = ["trend","breakout","liquidity-trap","mean-reversion","bull-pullback"].map(t => {
     const s = getSetupStats(state.trades || [], t);
     if (!s || s.count < 5) return `${t}:no data`;
     return `${t}:${(s.winRate*100).toFixed(0)}%WR EV=$${s.expectancy.toFixed(1)} n=${s.count}`;
