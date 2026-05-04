@@ -32,6 +32,12 @@ import {
   loadState as loadPersistedState,
   saveState as savePersistedState
 } from "./state-store.js";
+import {
+  updateCoinHistory,
+  getCoinMemory,
+  formatCoinMemoryForClaude,
+  claudeBatchAnalysis as claudeBatchAnalysisNew
+} from "./coin-memory.js";
 
 // =============================================================================
 // RAILWAY ENTRY SURFACE
@@ -39,108 +45,24 @@ import {
 // This module only exports bot/report functions used by those Railway wrappers.
 // =============================================================================
 
-async function claudeBatchAnalysis({ headlines, candidatesToValidate, positionsToClose, regime, env, state }) {
-  if (!env.ANTHROPIC_API_KEY) return fallbackResult(candidatesToValidate);
-  if (headlines.length === 0 && candidatesToValidate.length === 0 && positionsToClose.length === 0) {
-    return { newsBlocked: [], newsBoosted: [], newsSummary: "", validations: {}, journals: {} };
-  }
-
-  const sections = [];
-
-  if (headlines.length > 0) {
-    sections.push(`=== NEWS ===\nIdentify coins to BLOCK or BOOST:\n${headlines.slice(0, 10).map(h =>
-      `- [${h.sentiment}] ${h.title} (${h.coins.join(",") || "general"})`).join("\n")}`);
-  }
-
-  if (candidatesToValidate.length > 0) {
-    const regimePerf = getRegimePerformance(state, regime.label);
-    const autoWR = getApprovalStats(state.trades || [], "auto");
-    const claudeWR = getApprovalStats(state.trades || [], "claude");
-    const setupLines = ["trend", "breakout", "liquidity-trap", "mean-reversion"].map(t => {
-      const s = getSetupStats(state.trades || [], t);
-      if (!s || s.count < 5) return `${t}:insufficient`;
-      return `${t}:WR=${(s.winRate * 100).toFixed(0)}%,EV=$${s.expectancy.toFixed(2)}`;
-    }).join(" | ");
-
-    const candidateLines = candidatesToValidate.map((c, i) => {
-      const memory = getCoinMemory(state, c.symbol);
-      const memText = formatCoinMemoryForClaude(memory, regime.label);
-      const adxVal = c.adxResult?.adx?.toFixed(0) || "?";
-      const galaxyText = c.lunarGalaxyScore ? ` Galaxy:${c.lunarGalaxyScore}` : "";
-      const fundText = c.fundingRate != null ? ` Fund:${(c.fundingRate * 100).toFixed(3)}%` : "";
-      const signalPerf = (c.reasons || []).slice(0, 6).map(sig => {
-        const stats = state.signalStats?.[sig];
-        if (!stats || stats.count < 5) return sig;
-        const wr = ((stats.wins / stats.count) * 100).toFixed(0);
-        const totalPnl = Number.isFinite(stats.totalPnl) ? stats.totalPnl : 0;
-        const ev = (totalPnl / stats.count).toFixed(2);
-        return `${sig}(WR:${wr}%,EV:$${ev},n=${stats.count})`;
-      }).join(",");
-      const regimeSignalPerf = (c.reasons || []).slice(0, 4).map(sig => {
-        const key = `${sig}:${regime.label}`;
-        const stats = state.signalStats?.[key];
-        if (!stats || stats.count < 3) return null;
-        return `${sig}@${regime.label}:${((stats.wins / stats.count) * 100).toFixed(0)}%WR`;
-      }).filter(Boolean).join(",");
-
-      return (
-        `${i + 1}. ${c.symbol} ${c.signal.toUpperCase()} @$${c.price.toFixed(4)} ` +
-        `Score:${c.score} RSI:${c.rsiVal.toFixed(0)} Fisher:${c.fisherVal.toFixed(2)} OBV:${c.obvDiv} ` +
-        `ADX:${adxVal} 4h:${c.h4Trend} Setup:${c.setupType}${galaxyText}${fundText}\n` +
-        `Signals: [${signalPerf}]\n` +
-        `RegimeSignals: [${regimeSignalPerf || "insufficient data"}]\n` +
-        `${memText}`
-      );
-    }).join("\n");
-
-    sections.push(
-      `=== VALIDATE ===\n` +
-      `Regime:${regime.label} HMM:${regime.hmmLabel} PI:${regime.piCycle}\n` +
-      `StrategyStats: trades=${regimePerf.total} winRate=${regimePerf.winRate} avgPnl=${regimePerf.avgPnl}\n` +
-      `System WR baseline: auto=${autoWR?.winRate !== undefined ? (autoWR.winRate * 100).toFixed(0) : "?"}% (n=${autoWR?.count ?? 0}) ` +
-      `claude=${claudeWR?.winRate !== undefined ? (claudeWR.winRate * 100).toFixed(0) : "?"}% (n=${claudeWR?.count ?? 0})\n` +
-      `You must beat auto-approval WR of ${autoWR?.winRate !== undefined ? (autoWR.winRate * 100).toFixed(0) : 43}% to add value.\n\n` +
-      `DEFAULT: REJECT. Only approve if ALL of:\n` +
-      `1. Signal WRs shown are above 48% OR signal is regime-specific positive\n` +
-      `2. Coin history in this regime shows positive expectancy\n` +
-      `3. No repeating failure pattern in coin history\n` +
-      `4. Setup type has positive expectancy: ${setupLines}\n\n` +
-      `REJECT if: signals are purely context (TK-bull/chikou-bull/above-VWAP/ema-ribbon-bull) ` +
-      `with no reversal signal AND those signals show <48% WR in regime.\n\n` +
-      candidateLines
-    );
-  }
-  
-  
-
-  if (positionsToClose.length > 0) {
-    sections.push(`=== JOURNALS ===\n2-sentence journal each:\n${positionsToClose.slice(0, 5).map((p, i) => {
-      const pnl = p.direction === "long" ? (p.exitPrice - p.entryPrice) * p.size : (p.entryPrice - p.exitPrice) * p.size;
-      return `${i + 1}. ${p.symbol} ${p.direction.toUpperCase()} entry:$${p.entryPrice.toFixed(4)} exit:$${p.exitPrice.toFixed(4)} PnL:$${pnl.toFixed(2)} reason:${p.exitReason} [${(p.reasons || []).slice(0, 4).join(",")}]`;
-    }).join("\n")}`);
-  }
-
-  const prompt = `Quant crypto analyst. Respond ALL sections in JSON. Concise.\n\n${sections.join("\n\n")}\n\nJSON only:\n{"news":{"blocked":[],"boosted":[],"summary":""},"validations":{"SYM_USDT":{"approved":true,"reason":"..."}},"journals":{"SYM_USDT":"..."}}`;
-
-  try {
-    const raw    = await callClaudeBudgeted(prompt, env, state, 1000);
-    const parsed = JSON.parse(raw);
-    return {
-      newsBlocked: parsed.news?.blocked || [],
-      newsBoosted: parsed.news?.boosted || [],
-      newsSummary: parsed.news?.summary || "",
-      validations: parsed.validations || {},
-      journals:    parsed.journals || {}
-    };
-  } catch (err) {
-    console.error("[CLAUDE BATCH]", err.message);
-    return fallbackResult(candidatesToValidate);
-  }
+async function claudeBatchAnalysis(params) {
+  return claudeBatchAnalysisNew({
+    ...params,
+    deps: {
+      callClaudeBudgeted,
+      getCoinMemory,
+      formatCoinMemory: formatCoinMemoryForClaude,
+      getApprovalStats,
+      getSetupStats,
+      getWeight,
+      fallbackResult
+    }
+  });
 }
 
 function fallbackResult(candidates) {
   const v = {};
-  for (const c of (candidates || [])) v[c.symbol] = { approved: c.score >= 9, reason: "auto-fallback" };
+  for (const c of (candidates || [])) v[c.symbol] = { approved: c.score >= 10, reason: "auto-fallback" };
   return { newsBlocked: [], newsBoosted: [], newsSummary: "", validations: v, journals: {} };
 }
 
@@ -258,61 +180,6 @@ function getWeight(signal, state) {
     return state.dynamicWeights[signal];
   }
   return SIGNAL_WEIGHTS[signal] || 1.0;
-}
-
-// =============================================================================
-// UPGRADE 2 — PER-COIN TRADE MEMORY
-// =============================================================================
-function updateCoinHistory(state, symbol, trade) {
-  if (!state.coinHistory) state.coinHistory = {};
-  if (!state.coinHistory[symbol]) state.coinHistory[symbol] = [];
-  state.coinHistory[symbol].push({
-    direction:  trade.direction,
-    pnl:        parseFloat(trade.pnl.toFixed(2)),
-    pnlPct:     trade.pnlPct || 0,
-    regime:     state.lastRegime?.label || "unknown",
-    reasons:    (trade.reasons || []).slice(0, 6),
-    date:       new Date().toISOString().split("T")[0],
-    result:     trade.pnl > 0 ? "win" : "loss",
-    exitReason: trade.reason
-  });
-  if (state.coinHistory[symbol].length > 10) {
-    state.coinHistory[symbol] = state.coinHistory[symbol].slice(-10);
-  }
-}
-
-function getCoinMemory(state, symbol) {
-  const history = (state.coinHistory || {})[symbol];
-  if (!history || history.length === 0) return null;
-  const wins   = history.filter(h => h.result === "win").length;
-  const total  = history.length;
-  const avgPnl = history.reduce((s, h) => s + h.pnl, 0) / total;
-  const regimeStats = {};
-  for (const h of history) {
-    if (!regimeStats[h.regime]) regimeStats[h.regime] = { wins: 0, total: 0 };
-    regimeStats[h.regime].total++;
-    if (h.result === "win") regimeStats[h.regime].wins++;
-  }
-  return {
-    trades: history,
-    summary: { total, wins, winRate: ((wins / total) * 100).toFixed(0), avgPnl: avgPnl.toFixed(2), regimeStats }
-  };
-}
-
-function formatCoinMemoryForClaude(memory, currentRegime) {
-  if (!memory) return "No prior trades on this coin.";
-  const s = memory.summary;
-  let text = `COIN HISTORY: ${s.total} trades, ${s.winRate}% WR, avg PnL $${s.avgPnl}\n`;
-  const regimeStat = s.regimeStats[currentRegime];
-  if (regimeStat) {
-    const rwr = ((regimeStat.wins / regimeStat.total) * 100).toFixed(0);
-    text += `In ${currentRegime} regime: ${regimeStat.total} trades, ${rwr}% WR\n`;
-  }
-  text += `Recent:\n`;
-  for (const t of memory.trades.slice(-5)) {
-    text += `  ${t.date} ${t.direction} ${t.result.toUpperCase()} $${t.pnl} (${t.regime}) exit:${t.exitReason} [${t.reasons.join(",")}]\n`;
-  }
-  return text;
 }
 
 function getRegimePerformance(state, regimeLabel) {

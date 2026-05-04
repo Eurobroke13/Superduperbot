@@ -139,6 +139,7 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
     : (pos.entryPrice - price) * closeSize;
   const clampPnl = Math.max(rawPnl, -closeNotional);
   const pnlPct = closeNotional > 0 ? (clampPnl / closeNotional) * 100 : 0;
+  const holdHours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
 
   state.cash += closeNotional + clampPnl;
 
@@ -164,6 +165,8 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
     setupType: pos.setupType || "unknown",
     approvalType: pos.approvalType || "unknown",
     signalSet: [...(pos.signalSet || [])],
+    h4Trend: pos.h4Trend || "unknown",
+    holdHours: parseFloat(holdHours.toFixed(2)),
     journal: null,
     wasLiquidated: false,
     isPartial: true,
@@ -171,13 +174,7 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
   });
 
   const tradeRecord = state.trades[state.trades.length - 1];
-  updateCoinHistory(state, symbol, {
-    direction: pos.direction,
-    pnl: clampPnl,
-    pnlPct,
-    reasons: pos.reasons,
-    reason: `partial-${reason}`
-  });
+  updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
 
   console.log(
@@ -218,21 +215,15 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
     signalSet: [...(pos.signalSet || [])],
     holdHours: parseFloat(holdHours.toFixed(2)),
     score: pos.score,
+    h4Trend: pos.h4Trend || "unknown",
     atrVal: pos.atrVal,
     riskReward: pos.riskReward,
     journal: journal || null,
     wasLiquidated: rawPnl <= -pos.notional
   });
 
-  updateCoinHistory(state, symbol, {
-    direction: pos.direction,
-    pnl: clampPnl,
-    pnlPct,
-    reasons: pos.reasons,
-    reason
-  });
-
   const tradeRecord = state.trades[state.trades.length - 1];
+  updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
   delete state.positions[symbol];
   updateDynamicWeights(state);
