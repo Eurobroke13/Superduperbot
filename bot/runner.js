@@ -155,7 +155,7 @@ async function checkAllExits(env, state, deps) {
         continue;
       }
 
-      await checkTranches(pos, price, state);
+      checkTranches(pos, price, state);
       await checkDCA(pos, price, atrVal, state, env, { notifyTrade });
 
       const exit = checkGraduatedExit(pos, price, high, low, atrVal);

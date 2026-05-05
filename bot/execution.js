@@ -11,28 +11,7 @@ import {
   getSetupRiskMultiplier
 } from "./stats.js";
 import { fetchCandles } from "./market-data.js";
-import { ema, emaRibbon, ichimoku, macd, rsiSeries, vwap } from "./indicators.js";
-
-const DEFAULT_TRANCHE_DISTRIBUTION = { t1: 0.40, t2: 0.35, t3: 0.25 };
-
-async function isTrancheStillValid(pos) {
-  try {
-    const candles = await fetchCandles(pos.symbol, "1h", 50);
-    if (!candles || candles.length < 30) return true;
-
-    const closes = candles.map(c => c.close);
-    const rsiArr = rsiSeries(closes, 14);
-    const rsiVal = rsiArr[rsiArr.length - 1];
-    const ribbon = emaRibbon(closes);
-
-    if (pos.direction === "long") {
-      return ribbon.bullishAligned && rsiVal < 75;
-    }
-    return ribbon.bearishAligned && rsiVal > 25;
-  } catch (_) {
-    return true;
-  }
-}
+import { ichimoku, macd, rsiSeries, vwap } from "./indicators.js";
 
 export function portfolioValue(state, livePrices = null) {
   let unrealizedPnl = 0;
@@ -134,8 +113,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     totalSize = totalNotional / price;
   }
 
-  const trancheDist = DEFAULT_TRANCHE_DISTRIBUTION;
-  const tranche1Pct = trancheDist.t1;
+  const tranche1Pct = 0.40;
   const tranche1Notional = totalNotional * tranche1Pct;
   const tranche1Size = totalSize * tranche1Pct * leverage;
 
@@ -184,10 +162,9 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
       plan: {
         totalSize: totalSize * leverage,
         totalNotional,
-        distribution: { ...trancheDist },
-        tranche1: { pct: trancheDist.t1, filled: true, price, size: tranche1Size, notional: tranche1Notional },
-        tranche2: { pct: trancheDist.t2, filled: false, triggerPrice: tranche2Trigger, size: 0, notional: 0 },
-        tranche3: { pct: trancheDist.t3, filled: false, triggerPrice: tranche3Trigger, size: 0, notional: 0 }
+        tranche1: { pct: 0.40, filled: true, price, size: tranche1Size, notional: tranche1Notional },
+        tranche2: { pct: 0.35, filled: false, triggerPrice: tranche2Trigger, size: 0, notional: 0 },
+        tranche3: { pct: 0.25, filled: false, triggerPrice: tranche3Trigger, size: 0, notional: 0 }
       },
       filledCount: 1,
       avgEntryPrice: price
@@ -222,51 +199,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   return true;
 }
 
-function fillTranche(pos, price, state, trancheName) {
-  const plan = pos.tranches.plan;
-  const tranche = plan[trancheName];
-  const trancheNumber = trancheName === "tranche2" ? 2 : 3;
-  const trancheNotional = plan.totalNotional * tranche.pct;
-  const trancheSize = plan.totalSize * tranche.pct;
-
-  if (trancheNotional > state.cash) return false;
-
-  state.cash -= trancheNotional;
-  pos.size += trancheSize;
-  pos.notional += trancheNotional;
-  pos.effectiveExposure = pos.notional * pos.leverage;
-
-  tranche.filled = true;
-  tranche.price = price;
-  tranche.size = trancheSize;
-  tranche.notional = trancheNotional;
-  pos.tranches.filledCount = trancheNumber;
-
-  const filled = [plan.tranche1, plan.tranche2, plan.tranche3].filter(t => t.filled);
-  const totalFilledSize = filled.reduce((sum, t) => sum + t.size, 0);
-  pos.tranches.avgEntryPrice = filled.reduce((sum, t) => sum + t.price * t.size, 0) / totalFilledSize;
-  pos.entryPrice = pos.tranches.avgEntryPrice;
-
-  if (trancheName === "tranche2") {
-    if (pos.direction === "long") {
-      pos.sl = Math.max(pos.sl, plan.tranche1.price);
-    } else {
-      pos.sl = Math.min(pos.sl, plan.tranche1.price);
-    }
-  } else if (pos.direction === "long") {
-    pos.sl = Math.max(pos.sl, plan.tranche1.price + pos.atrVal * 0.3);
-  } else {
-    pos.sl = Math.min(pos.sl, plan.tranche1.price - pos.atrVal * 0.3);
-  }
-
-  console.log(
-    `📈 [${pos.symbol}] TRANCHE ${trancheNumber} filled @$${price.toFixed(6)} | ` +
-    `+$${trancheNotional.toFixed(2)} | Total:$${pos.notional.toFixed(2)} | SL→$${pos.sl.toFixed(6)}`
-  );
-  return true;
-}
-
-export async function checkTranches(pos, price, state) {
+export function checkTranches(pos, price, state) {
   if (!pos.tranches) return;
 
   const plan = pos.tranches.plan;
@@ -275,12 +208,39 @@ export async function checkTranches(pos, price, state) {
     const triggered = pos.direction === "long"
       ? price >= plan.tranche2.triggerPrice
       : price <= plan.tranche2.triggerPrice;
+
     if (triggered) {
-      if (!(await isTrancheStillValid(pos))) {
-        console.log(`[${pos.symbol}] Tranche 2 skipped: setup no longer valid.`);
-        return;
+      const t2Notional = plan.totalNotional * plan.tranche2.pct;
+      const t2Size = plan.totalSize * plan.tranche2.pct;
+
+      if (t2Notional <= state.cash) {
+        state.cash -= t2Notional;
+        pos.size += t2Size;
+        pos.notional += t2Notional;
+        pos.effectiveExposure = pos.notional * pos.leverage;
+
+        plan.tranche2.filled = true;
+        plan.tranche2.price = price;
+        plan.tranche2.size = t2Size;
+        plan.tranche2.notional = t2Notional;
+        pos.tranches.filledCount = 2;
+
+        const t1 = plan.tranche1;
+        const t2 = plan.tranche2;
+        pos.tranches.avgEntryPrice = (t1.price * t1.size + t2.price * t2.size) / (t1.size + t2.size);
+        pos.entryPrice = pos.tranches.avgEntryPrice;
+
+        if (pos.direction === "long") {
+          pos.sl = Math.max(pos.sl, plan.tranche1.price);
+        } else {
+          pos.sl = Math.min(pos.sl, plan.tranche1.price);
+        }
+
+        console.log(
+          `📈 [${pos.symbol}] TRANCHE 2 filled @$${price.toFixed(6)} | ` +
+          `+$${t2Notional.toFixed(2)} | Total:$${pos.notional.toFixed(2)} | SL→$${pos.sl.toFixed(6)}`
+        );
       }
-      fillTranche(pos, price, state, "tranche2");
     }
   }
 
@@ -288,12 +248,39 @@ export async function checkTranches(pos, price, state) {
     const triggered = pos.direction === "long"
       ? price >= plan.tranche3.triggerPrice
       : price <= plan.tranche3.triggerPrice;
+
     if (triggered) {
-      if (!(await isTrancheStillValid(pos))) {
-        console.log(`[${pos.symbol}] Tranche 3 skipped: setup no longer valid.`);
-        return;
+      const t3Notional = plan.totalNotional * plan.tranche3.pct;
+      const t3Size = plan.totalSize * plan.tranche3.pct;
+
+      if (t3Notional <= state.cash) {
+        state.cash -= t3Notional;
+        pos.size += t3Size;
+        pos.notional += t3Notional;
+        pos.effectiveExposure = pos.notional * pos.leverage;
+
+        plan.tranche3.filled = true;
+        plan.tranche3.price = price;
+        plan.tranche3.size = t3Size;
+        plan.tranche3.notional = t3Notional;
+        pos.tranches.filledCount = 3;
+
+        const sizes = [plan.tranche1, plan.tranche2, plan.tranche3].filter((tranche) => tranche.filled);
+        const totalSize = sizes.reduce((sum, tranche) => sum + tranche.size, 0);
+        pos.tranches.avgEntryPrice = sizes.reduce((sum, tranche) => sum + tranche.price * tranche.size, 0) / totalSize;
+        pos.entryPrice = pos.tranches.avgEntryPrice;
+
+        if (pos.direction === "long") {
+          pos.sl = Math.max(pos.sl, plan.tranche1.price + pos.atrVal * 0.3);
+        } else {
+          pos.sl = Math.min(pos.sl, plan.tranche1.price - pos.atrVal * 0.3);
+        }
+
+        console.log(
+          `📈 [${pos.symbol}] TRANCHE 3 filled @$${price.toFixed(6)} | ` +
+          `FULL POSITION $${pos.notional.toFixed(2)} | SL→$${pos.sl.toFixed(6)}`
+        );
       }
-      fillTranche(pos, price, state, "tranche3");
     }
   }
 }
@@ -316,23 +303,6 @@ export async function checkDCA(pos, price, currentAtr, state, env, deps = {}) {
   if (state.peakValue && (state.peakValue - currVal) / state.peakValue > 0.08) return;
 
   try {
-    const regime = state.lastRegime;
-    if (regime?.label === "bear" && pos.direction === "long") return;
-    if (regime?.label === "bull" && pos.direction === "short") return;
-
-    const candles4h = await fetchCandles(pos.symbol, "4h", 60);
-    if (candles4h && candles4h.length >= 50) {
-      const c4 = candles4h.map(c => c.close);
-      const e20 = ema(c4, 20);
-      const e50 = ema(c4, 50);
-      const last4 = c4.length - 1;
-      const h4Bullish = e20[last4] > e50[last4] && c4[last4] > e20[last4];
-      const h4Bearish = e20[last4] < e50[last4] && c4[last4] < e20[last4];
-
-      if (pos.direction === "long" && h4Bearish) return;
-      if (pos.direction === "short" && h4Bullish) return;
-    }
-
     const candles = await fetchCandles(pos.symbol, "1h", 100);
     if (!candles || candles.length < 50) return;
 
