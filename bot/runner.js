@@ -57,6 +57,7 @@ const REVERSAL_SIGNALS = new Set([
   "OBV-bull-div",
   "OBV-bear-div"
 ]);
+const BLACKLISTED_COINS = new Set(["AVAX-USDT-SWAP", "LINK-USDT-SWAP"]);
 
 export async function runBot(env, deps) {
   const {
@@ -348,6 +349,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   const tradeable = allContracts
     .filter(c => (volumeMap[c] || 0) > 450_000)
+    .filter(c => !BLACKLISTED_COINS.has(c))
     .filter(c => !state.positions[c])
     .filter(c => !blocked.includes(c.replace("-USDT-SWAP", "")));
 

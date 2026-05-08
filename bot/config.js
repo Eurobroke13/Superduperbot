@@ -22,7 +22,7 @@ export const ATR_SL_MULT        = 2.0;
 export const ATR_TP_MULT        = 4.0;
 export const MAX_POSITIONS      = 10;
 export const ENTRY_THRESHOLD    = 4;
-export const CLAUDE_THRESHOLD   = 8;
+export const CLAUDE_THRESHOLD   = 6;
 export const CANDLE_LIMIT       = 500;
 export const DRAWDOWN_LIMIT     = 0.15;
 

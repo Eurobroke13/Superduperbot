@@ -72,6 +72,9 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
     if (hours > 48 && profitATRs > 1) {
       pos.sl = Math.max(pos.sl, entryPrice + currentAtr * 0.5);
     }
+    if (pos.setupType === "mean-reversion" && hours > 8 && profitATRs < 0.5) {
+      return { exit: true, reason: "mr-time-expired", partial: false };
+    }
 
     if (pos.tp && high >= pos.tp) {
       return { exit: true, reason: "take-profit-full", partial: false };
@@ -115,6 +118,9 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
     const hours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
     if (hours > 48 && profitATRs > 1) {
       pos.sl = Math.min(pos.sl, entryPrice - currentAtr * 0.5);
+    }
+    if (pos.setupType === "mean-reversion" && hours > 8 && profitATRs < 0.5) {
+      return { exit: true, reason: "mr-time-expired", partial: false };
     }
 
     if (pos.tp && low <= pos.tp) {

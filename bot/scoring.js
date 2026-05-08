@@ -819,10 +819,23 @@ export async function scoreSymbol(symbol, regime, state) {
       const h4AlignedAgainstMr =
         (signal === "long" && h4Trend === "bearish") ||
         (signal === "short" && h4Trend === "bullish");
+      const recentVols = volumes.slice(-5);
+      const priorVols = volumes.slice(-10, -5);
+      const recentAvgVol = recentVols.reduce((a, b) => a + b, 0) / Math.max(recentVols.length, 1);
+      const priorAvgVol = priorVols.reduce((a, b) => a + b, 0) / Math.max(priorVols.length, 1);
+      const volumeDeclining = recentVols.length === 5 &&
+        priorVols.length === 5 &&
+        priorAvgVol > 0 &&
+        recentAvgVol < priorAvgVol * 0.8;
+      const bbWidthPrev = bb.width?.[n - 5] ?? bbWidth;
+      const bandwidthContracting = Number.isFinite(bbWidth) &&
+        Number.isFinite(bbWidthPrev) &&
+        bbWidth < bbWidthPrev;
 
       if (!isSidewaysRegime) return null;
       if (!hasLocationEdge || !hasExtreme) return null;
       if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) return null;
+      if (!volumeDeclining || !bandwidthContracting) return null;
     }
 
     if (setupType === "breakout") {
@@ -874,7 +887,14 @@ export async function scoreSymbol(symbol, regime, state) {
     if (setupType === "unknown") return null;
 
     const structured = calculateStructuredSLTP(
-      signal, price, atrVal, highs, lows, closes, volumes
+      signal,
+      price,
+      atrVal,
+      highs,
+      lows,
+      closes,
+      volumes,
+      { symbol, setupType, vwapVal }
     );
 
     return {
@@ -978,7 +998,8 @@ export function checkCorrelationExposure(candidate, state) {
   return { allowed: true };
 }
 
-export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, closes, volumes) {
+export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, closes, volumes, context = {}) {
+  const { symbol, setupType, vwapVal } = context;
   const n = closes.length;
   const sr = findSupportResistance(highs, lows, 80);
   const ma50 = sma(closes, 50);
@@ -1097,14 +1118,41 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
     }
   }
 
-  const risk = Math.abs(price - sl);
-  const reward = Math.abs(tp - price);
+  if (setupType === "mean-reversion") {
+    if (signal === "long") {
+      const meanTarget = Math.min(
+        currentEMA20 || price * 1.02,
+        vwapVal || price * 1.02
+      );
+      tp = meanTarget - atrVal * 0.1;
+      if (tp <= price) tp = price + atrVal * 1.2;
+      sl = price - atrVal * 1.2;
+      tpType = "mean-reversion-target";
+      slType = "mean-reversion-atr-1.2";
+    } else {
+      const meanTarget = Math.max(
+        currentEMA20 || price * 0.98,
+        vwapVal || price * 0.98
+      );
+      tp = meanTarget + atrVal * 0.1;
+      if (tp >= price) tp = price - atrVal * 1.2;
+      sl = price + atrVal * 1.2;
+      tpType = "mean-reversion-target";
+      slType = "mean-reversion-atr-1.2";
+    }
+  }
 
-  if ((risk > 0 ? reward / risk : 0) < 1.5) {
+  let risk = Math.abs(price - sl);
+  let reward = Math.abs(tp - price);
+  const riskReward = risk > 0 ? reward / risk : 0;
+
+  if (setupType !== "mean-reversion" && riskReward < 1.5) {
     sl = atrSL;
     tp = atrTP;
     slType = "atr-fallback(rr-too-low)";
     tpType = "atr-fallback(rr-too-low)";
+    risk = Math.abs(price - sl);
+    reward = Math.abs(tp - price);
   }
 
   return {
