@@ -31,6 +31,16 @@ import {
   fundingRateSignal,
   scoreSymbol
 } from "./scoring.js";
+import {
+  applyEntryFilters,
+  cooldownDecision,
+  ensureEntryPolicyState,
+  pendingEntrySymbols,
+  pruneEntryCooldowns,
+  queueEntry,
+  tickEntryPolicy,
+  tickRetestPaper
+} from "./entry-policy.js";
 
 const CONTEXT_ONLY_SIGNALS = new Set([
   "TK-bull",
@@ -77,8 +87,10 @@ export async function runBot(env, deps) {
 
   state.runCount = (state.runCount || 0) + 1;
   state.lastRunAt = new Date().toISOString();
+  ensureEntryPolicyState(state);
 
   await checkAllExits(env, state, deps);
+  await processPendingEntries(env, state, deps);
 
   const phase = state.lastPhase || 0;
   console.log(`[PHASE ${phase}]`);
@@ -107,6 +119,61 @@ export async function runBot(env, deps) {
 
   await saveState(env, state);
   printPortfolioSummary(state);
+}
+
+async function processPendingEntries(env, state, deps) {
+  const { notifyTrade = async () => {}, sendTelegram = async () => {} } = deps;
+  ensureEntryPolicyState(state);
+
+  const symbols = pendingEntrySymbols(state);
+  if (symbols.length === 0) return;
+
+  const tickers = await fetchAllTickers();
+  const livePrices = {};
+  if (tickers) {
+    for (const t of tickers) {
+      if (t.last) livePrices[t.contract] = t.last;
+    }
+  }
+
+  for (const symbol of symbols) {
+    if (state.positions[symbol]) {
+      delete state.pendingLimits[symbol];
+      delete state.decayingLimits[symbol];
+      delete state.pendingRetests[symbol];
+      continue;
+    }
+
+    try {
+      const candles = await fetchCandles(symbol, "15m", 5);
+      if (!candles || candles.length === 0) continue;
+      const candle = candles[candles.length - 1];
+
+      tickRetestPaper(state, symbol, candle);
+      const result = tickEntryPolicy(state, symbol, candle);
+
+      if (result.action === "fill") {
+        if (Object.keys(state.positions).length >= MAX_POSITIONS) {
+          console.log(`[${symbol}] Limit filled but skipped: all slots full`);
+          continue;
+        }
+
+        const opened = openPositionGradual(result.candidate, state, livePrices, env, {
+          sendTelegram
+        });
+        if (opened) {
+          await notifyTrade("OPEN", result.candidate, state, env);
+          console.log(`[${symbol}] Limit entry filled @$${result.fillPrice}`);
+        }
+      }
+
+      if (result.action === "cancel") {
+        console.log(`[${symbol}] Pending limit cancelled: ${result.reason}`);
+      }
+    } catch (err) {
+      console.error(`[PENDING ${symbol}]`, err.message || err);
+    }
+  }
 }
 
 async function checkAllExits(env, state, deps) {
@@ -313,6 +380,8 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   } = deps;
 
   const regime = state.lastRegime;
+  ensureEntryPolicyState(state);
+  pruneEntryCooldowns(state);
   if (!regime) {
     console.warn("[SCAN] No regime, skip.");
     return;
@@ -328,7 +397,10 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const claudeThreshold = getAdaptiveClaudeThreshold(state, regime.label);
 
   console.log(`[SCAN] Regime:${regime.label} Entry:${entryThreshold} Claude:${claudeThreshold} TimeAdj:${timeFilter.scoreAdjustment.toFixed(1)}`);
-  const slotsAvailable = MAX_POSITIONS - Object.keys(state.positions).length;
+  const slotsAvailable = MAX_POSITIONS
+    - Object.keys(state.positions).length
+    - Object.keys(state.pendingLimits || {}).length
+    - Object.keys(state.decayingLimits || {}).length;
   if (slotsAvailable <= 0) {
     console.log("[SCAN] All slots full.");
     return;
@@ -351,6 +423,9 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     .filter(c => (volumeMap[c] || 0) > 450_000)
     .filter(c => !BLACKLISTED_COINS.has(c))
     .filter(c => !state.positions[c])
+    .filter(c => !state.pendingLimits[c])
+    .filter(c => !state.decayingLimits[c])
+    .filter(c => !cooldownDecision(state, c).onCooldown)
     .filter(c => !blocked.includes(c.replace("-USDT-SWAP", "")));
 
   const tickerMap = {};
@@ -542,10 +617,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   for (const c of autoList) {
     if (autoApproveSignal(c, regime)) {
-      const opened = openPositionGradual({ ...c, approvalType: "auto" }, state, livePrices, env, {
-        sendTelegram
-      });
-      if (opened) await notifyTrade("OPEN", c, state, env);
+      await stageCandidateEntry(c, "auto", state, livePrices, env, { notifyTrade, sendTelegram });
     }
   }
 
@@ -563,11 +635,8 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       for (const c of claudeList) {
         const v = claudeResult.validations[c.symbol];
         if (v?.approved === true) {
-          const opened = openPositionGradual({ ...c, approvalType: "claude" }, state, livePrices, env, {
-            sendTelegram
-          });
-          if (opened) {
-            await notifyTrade("OPEN", c, state, env);
+          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram });
+          if (staged) {
             console.log(`[${c.symbol}] Claude approved: ${v.reason}`);
           }
         } else {
@@ -582,11 +651,8 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       console.error("[CLAUDE VALIDATE]", err.message);
       for (const c of claudeList) {
         if (c.score >= 9 && autoApproveSignal(c, regime)) {
-          const opened = openPositionGradual({ ...c, approvalType: "claude" }, state, livePrices, env, {
-            sendTelegram
-          });
-          if (opened) {
-            await notifyTrade("OPEN", c, state, env);
+          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram });
+          if (staged) {
             console.log(`[${c.symbol}] Claude unavailable, fallback decision: auto-fallback`);
           }
         } else {
@@ -607,6 +673,33 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     console.log(`[SCAN] Zero candidates passed indicator filters. ${batch.length} contracts scanned.`);
   }
   console.log(`[SCAN] Qualified:${qualified.length} Auto:${autoList.length} Claude:${claudeList.length}`);
+}
+
+async function stageCandidateEntry(candidate, approvalType, state, livePrices, env, deps) {
+  const { notifyTrade = async () => {}, sendTelegram = async () => {} } = deps;
+  const withApproval = { ...candidate, approvalType };
+  const filter = applyEntryFilters(withApproval);
+
+  if (filter.action === "block") {
+    console.log(`[${candidate.symbol}] Entry blocked: ${filter.reason}`);
+    return false;
+  }
+
+  const result = queueEntry(filter.candidate, state, livePrices);
+
+  if (result.action === "enter-market") {
+    const opened = openPositionGradual(result.candidate, state, livePrices, env, {
+      sendTelegram
+    });
+    if (opened) await notifyTrade("OPEN", result.candidate, state, env);
+    return opened;
+  }
+
+  console.log(
+    `[${candidate.symbol}] Queued limit entry @$${result.limitPrice} ` +
+    `(${result.improvement.toFixed(2)}% better, ${result.maxCandles} candles)`
+  );
+  return true;
 }
 
 function getTimeFilter() {

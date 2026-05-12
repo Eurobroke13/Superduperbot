@@ -203,6 +203,8 @@ export async function scoreSymbol(symbol, regime, state) {
     const bbWidth = bb?.width?.[n - 1] ?? 0;
 
     const ribbon = emaRibbon(closes);
+    const ema21Series = ema(closes, 21);
+    const ema21Val = ema21Series[n - 1] ?? null;
     const volConfirmRaw = volumeConfirmation(volumes) || {};
     const volConfirm = {
       isSignificant: !!volConfirmRaw.isSignificant,
@@ -904,6 +906,10 @@ export async function scoreSymbol(symbol, regime, state) {
       setupType,
       price,
       atrVal,
+      ema21: ema21Val,
+      signalCandleHigh: highs[n - 1],
+      signalCandleLow: lows[n - 1],
+      signalCandleClose: closes[n - 1],
       rsiVal,
       fisherVal,
       obvDiv: obvDiv.type,

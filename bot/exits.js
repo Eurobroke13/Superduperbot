@@ -1,4 +1,5 @@
 import { ATR_SL_MULT } from "./config.js";
+import { registerExit } from "./symbol-cooldown.js";
 
 export function checkGraduatedExit(pos, price, high, low, currentAtr) {
   const { direction, entryPrice } = pos;
@@ -182,6 +183,11 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
   const tradeRecord = state.trades[state.trades.length - 1];
   updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
+  registerExit(state.cooldowns || (state.cooldowns = {}), {
+    symbol,
+    reason: tradeRecord.reason,
+    closedAt: tradeRecord.closedAt
+  });
 
   console.log(
     `📊 [${symbol}] PARTIAL CLOSE ${(pct * 100).toFixed(0)}% @$${price.toFixed(6)} | ` +
@@ -231,6 +237,14 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
   const tradeRecord = state.trades[state.trades.length - 1];
   updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
+  const cooldown = registerExit(state.cooldowns || (state.cooldowns = {}), {
+    symbol,
+    reason: tradeRecord.reason,
+    closedAt: tradeRecord.closedAt
+  });
+  if (cooldown.applied) {
+    console.log(`[COOLDOWN] ${cooldown.symbol} -> ${cooldown.reason}`);
+  }
   delete state.positions[symbol];
   updateDynamicWeights(state);
 

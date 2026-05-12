@@ -6,6 +6,11 @@ function defaultState() {
   return {
     cash: 10000,
     positions: {},
+    pendingLimits: {},
+    decayingLimits: {},
+    pendingRetests: {},
+    cooldowns: {},
+    paperTrades: [],
     trades: [],
     lastRegime: null,
     hmmParams: null,
