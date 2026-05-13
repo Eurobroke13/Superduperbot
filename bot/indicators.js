@@ -150,10 +150,10 @@ export function detectRSIDivergence(closes, rsiArr, lookback = 20) {
 
   const priceSlice = closes.slice(n - lookback);
   const rsiSlice = rsiArr.slice(n - lookback);
-  const priceLows = findSwingPoints(priceSlice, "low", 2);
-  const priceHighs = findSwingPoints(priceSlice, "high", 2);
-  const rsiLows = findSwingPoints(rsiSlice, "low", 2);
-  const rsiHighs = findSwingPoints(rsiSlice, "high", 2);
+  const priceLows = findSwingPoints(priceSlice, "low", 3);
+  const priceHighs = findSwingPoints(priceSlice, "high", 3);
+  const rsiLows = findSwingPoints(rsiSlice, "low", 3);
+  const rsiHighs = findSwingPoints(rsiSlice, "high", 3);
 
   if (priceLows.length >= 2 && rsiLows.length >= 2) {
     const pLL = priceLows[priceLows.length - 1].value < priceLows[priceLows.length - 2].value;
@@ -488,18 +488,29 @@ export function volumeConfirmation(volumes, lookback = 20) {
   };
 }
 
-export function detectLiquidityTrap(price, closes, srLevels) {
-  const recent = closes.slice(-5);
-  const brokeAbove = srLevels.resistances.some((resistance) =>
-    recent.some((close) => close > resistance)
-  );
-  const backBelow = srLevels.resistances.some((resistance) => price < resistance);
-  const brokeBelow = srLevels.supports.some((support) =>
-    recent.some((close) => close < support)
-  );
-  const backAbove = srLevels.supports.some((support) => price > support);
+export function detectLiquidityTrap(price, closes, srLevels, highs = [], lows = []) {
+  const recentCloses = closes.slice(-5);
+  const recentLows = lows.length ? lows.slice(-5) : recentCloses;
+  const recentHighs = highs.length ? highs.slice(-5) : recentCloses;
 
-  if (brokeAbove && backBelow) return "bull-trap";
-  if (brokeBelow && backAbove) return "bear-trap";
+  const brokeAbove = srLevels.resistances.some((resistance) =>
+    recentHighs.some((high) => high > resistance)
+  );
+  const closedBelow = srLevels.resistances.some((resistance) => price < resistance);
+
+  const brokeBelow = srLevels.supports.some((support) =>
+    recentLows.some((low) => low < support)
+  );
+  const closedAbove = srLevels.supports.some((support) => price > support);
+
+  const significantBreakBelow = srLevels.supports.some((support) =>
+    recentLows.some((low) => low < support * 0.997)
+  );
+  const significantBreakAbove = srLevels.resistances.some((resistance) =>
+    recentHighs.some((high) => high > resistance * 1.003)
+  );
+
+  if (brokeAbove && closedBelow && significantBreakAbove) return "bull-trap";
+  if (brokeBelow && closedAbove && significantBreakBelow) return "bear-trap";
   return "none";
 }

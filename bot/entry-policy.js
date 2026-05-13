@@ -16,7 +16,7 @@ import {
 import {
   isOnCooldown,
   pruneExpired
-} from "./symbol-cooldown.js";
+} from "./cooldown.js";
 
 const DEFAULT_POLICY = {
   enableLimitEntries: false,
@@ -94,7 +94,8 @@ export function queueEntry(candidate, state, livePrices = {}, config = {}) {
   const signalSet = getSignalSet(candidate);
   const currentPrice = Number(livePrices[candidate.symbol] || candidate.price);
 
-  if (!policy.enableLimitEntries || !Number.isFinite(candidate.atrVal) || candidate.atrVal <= 0) {
+  const wantsLimitHandling = policy.enableLimitEntries || policy.enableDecayingLimits;
+  if (!wantsLimitHandling || !Number.isFinite(candidate.atrVal) || candidate.atrVal <= 0) {
     return { action: "enter-market", candidate: { ...candidate, price: currentPrice } };
   }
 
@@ -128,6 +129,14 @@ export function queueEntry(candidate, state, livePrices = {}, config = {}) {
         maxCandles: order.offsets.length
       };
     }
+  }
+
+  if (!policy.enableLimitEntries) {
+    return {
+      action: "enter-market",
+      candidate: withCurrentPrice,
+      reason: "limit-entries-disabled"
+    };
   }
 
   const entry = decideEntry({

@@ -1,4 +1,12 @@
 import { initDb, pool } from "./db.js";
+import {
+  initTradesTable,
+  insertTrade,
+  loadRecentTrades,
+  migrateTradesFromState
+} from "./trade-store.js";
+
+export { insertTrade };
 
 const STATE_KEY = "bot_state_v1";
 
@@ -46,6 +54,7 @@ function defaultState() {
 
 export async function loadState() {
   await initDb();
+  await initTradesTable();
 
   const result = await pool.query(
     "SELECT state FROM bot_state WHERE state_key = $1",
@@ -58,14 +67,30 @@ export async function loadState() {
     return state;
   }
 
-  return {
+  const state = {
     ...defaultState(),
     ...result.rows[0].state
   };
+
+  if (state.trades && state.trades.length > 0) {
+    const migrated = await migrateTradesFromState(state.trades);
+    if (migrated > 0) {
+      console.log(`[STATE] Migrated ${migrated} trades to trades table`);
+    }
+  }
+
+  state.trades = await loadRecentTrades(500);
+  if (!state.cooldowns) state.cooldowns = {};
+  if (!state.decayingLimits) state.decayingLimits = {};
+
+  return state;
 }
 
 export async function saveState(state) {
   await initDb();
+
+  const stateForBlob = { ...state };
+  delete stateForBlob.trades;
 
   await pool.query(
     `
@@ -76,7 +101,7 @@ export async function saveState(state) {
         state = EXCLUDED.state,
         updated_at = NOW()
     `,
-    [STATE_KEY, JSON.stringify(state)]
+    [STATE_KEY, JSON.stringify(stateForBlob)]
   );
 
   return state;

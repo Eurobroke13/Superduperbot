@@ -1,14 +1,14 @@
 // =============================================================================
-// BACKTEST ENGINE — SuperDuperBot
+// BACKTEST ENGINE - SuperDuperBot
 // Replicates the exact scoring, entry, and exit logic from the live bot.
 // Runs on historical OKX data for high / mid / low cap coins.
 //
 // Usage:
-//   node backtest.js              — run backtest, save results to DB
-//   node backtest.js --seed       — also seed bot state with results
-//   node backtest.js --no-db      — skip DB write (dry run)
-//   node backtest.js --months 3   — override lookback period (default: 6)
-// =============================================================================
+//   node backtest.js                 - run backtest, save results to DB
+//   node backtest.js --seed          - also seed bot state with results
+//   node backtest.js --seed-safe     - seed only regimeStats and signalStats
+//   node backtest.js --no-db         - skip DB write (dry run)
+//   node backtest.js --months 3      - override lookback period (default: 6)
 
 import fs from "fs/promises";
 import path from "path";
@@ -22,26 +22,179 @@ import {
   ichimoku, macd, obv, rsiSeries, sma, stochRSI, volumeConfirmation,
   volumeProfile, vwap
 } from "./bot/indicators.js";
-import { calculateStructuredSLTP, autoApproveSignal } from "./bot/scoring.js";
-import { initDb, pool } from "./db.js";
-import { loadState, saveState } from "./state-store.js";
 import {
-  ENTRY_THRESHOLD, RISK_PCT, PAPER_CASH,
-  ATR_SL_MULT, ATR_TP_MULT, SIGNAL_WEIGHTS
+  calculateStructuredSLTP,
+  autoApproveSignal,
+  fundingRateSignal
+} from "./bot/scoring.js";
+import {
+  API_BASE, CLAUDE_THRESHOLD, ENTRY_THRESHOLD, MAX_POSITIONS,
+  MAX_POSITION_SHARE, RISK_PCT, PAPER_CASH, SIGNAL_WEIGHTS
 } from "./bot/config.js";
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR  = path.join(__dirname, ".backtest-cache");
 
-// ─── CLI args ─────────────────────────────────────────────────────────────────
+// CLI args
 const ARGS         = process.argv.slice(2);
 const SEED_MODE    = ARGS.includes("--seed");
+const SAFE_SEED_MODE = ARGS.includes("--seed-safe");
+const FORCE_REPLACE_REGIMES = ARGS.includes("--force-replace-regimes");
 const NO_DB        = ARGS.includes("--no-db");
+const DIAGNOSTIC_GATES = ARGS.includes("--diagnostic-gates");
 const monthsFlag   = ARGS.indexOf("--months");
 const BACKTEST_MONTHS = monthsFlag !== -1 ? parseInt(ARGS[monthsFlag + 1]) || 6 : 6;
 const WARM_UP      = 520; // bars needed for SMA200 + buffer
 
-// ─── Coin universe ─────────────────────────────────────────────────────────────
+let dbModulePromise = null;
+let stateStoreModulePromise = null;
+
+const gateDiagnostics = {
+  breakout: {
+    assigned: 0,
+    h4ScoreMisaligned: 0,
+    lowVolume: 0,
+    h4TrendMisaligned: 0,
+    cloudMisaligned: 0,
+    vwapMisaligned: 0,
+    inHVN: 0,
+    inHVNEdgeAligned: 0,
+    inHVNDeep: 0,
+    inHVNLong: 0,
+    inHVNShort: 0,
+    qualityTooLow: 0,
+    passed: 0
+  },
+  bullContinuation: {
+    candidateChecks: 0,
+    blockedSetupKnown: 0,
+    blockedNonBullRegime: 0,
+    blockedShortSignal: 0,
+    blockedH4Trend: 0,
+    blockedNoH4Pullback: 0,
+    blockedTrapPresent: 0,
+    blockedNotTrending: 0,
+    assigned: 0,
+    h4ScoreMisaligned: 0,
+    missingEntryTrigger: 0,
+    qualityTooLow: 0,
+    passed: 0
+  }
+};
+
+function bumpDiagnostic(setup, key) {
+  if (!DIAGNOSTIC_GATES) return;
+  if (gateDiagnostics[setup] && gateDiagnostics[setup][key] !== undefined) {
+    gateDiagnostics[setup][key] += 1;
+  }
+}
+
+async function getDbModule() {
+  if (!dbModulePromise) dbModulePromise = import("./db.js");
+  return dbModulePromise;
+}
+
+async function getStateStoreModule() {
+  if (!stateStoreModulePromise) stateStoreModulePromise = import("./state-store.js");
+  return stateStoreModulePromise;
+}
+
+function shouldReplaceRegimeStats(current, incoming, forceReplace = false) {
+  if (forceReplace) return true;
+  return !current || current.count < incoming.count;
+}
+
+function score4H(candles4h) {
+  if (!candles4h || candles4h.length < 100) {
+    return { bullScore: 0, bearScore: 0, signals: [], aligned: () => false };
+  }
+
+  const c4 = candles4h.map(c => c.close);
+  const h4 = candles4h.map(c => c.high);
+  const l4 = candles4h.map(c => c.low);
+  const v4 = candles4h.map(c => c.volume);
+  const n = c4.length;
+
+  const signals = [];
+  let bullScore = 0;
+  let bearScore = 0;
+
+  const rsi4 = rsiSeries(c4, 14);
+  const rsiDiv4 = detectRSIDivergence(c4, rsi4, 30);
+  const last4 = c4.length - 1;
+  const strongDiv4 = rsiDiv4.strength >= 8;
+  const rsiWasOversold = Math.min(...rsi4.slice(-30)) < 42;
+  const rsiWasOverbought = Math.max(...rsi4.slice(-30)) > 58;
+  const rsi4TurningUp =
+    rsi4[last4] > rsi4[last4 - 1] &&
+    rsi4[last4 - 1] > rsi4[last4 - 2];
+  const rsi4TurningDown =
+    rsi4[last4] < rsi4[last4 - 1] &&
+    rsi4[last4 - 1] < rsi4[last4 - 2];
+  if (rsiDiv4.type === "bullish" && strongDiv4 && rsiWasOversold && rsi4TurningUp) {
+    bullScore += 2;
+    signals.push("4h-rsi-div-bull");
+  }
+  if (rsiDiv4.type === "bearish" && strongDiv4 && rsiWasOverbought && rsi4TurningDown) {
+    bearScore += 2;
+    signals.push("4h-rsi-div-bear");
+  }
+
+  const macd4 = macd(c4) || {};
+  const macd4Prev = macd(c4.slice(0, -1)) || {};
+  const macdZeroCrossUp = (macd4.macd ?? 0) > 0 && (macd4Prev.macd ?? 0) <= 0;
+  const macdZeroCrossDown = (macd4.macd ?? 0) < 0 && (macd4Prev.macd ?? 0) >= 0;
+  const prevHist4 = macd4Prev.histogram ?? 0;
+  const macdAccelUp =
+    (macd4.histogram ?? 0) > 0 &&
+    prevHist4 > 0 &&
+    (macd4.histogram ?? 0) > prevHist4 * 1.4;
+  const macdAccelDown =
+    (macd4.histogram ?? 0) < 0 &&
+    prevHist4 < 0 &&
+    (macd4.histogram ?? 0) < prevHist4 * 1.4;
+  if (macdZeroCrossUp || macdAccelUp) {
+    bullScore += 2;
+    signals.push("4h-macd-cross-up");
+  }
+  if (macdZeroCrossDown || macdAccelDown) {
+    bearScore += 2;
+    signals.push("4h-macd-cross-down");
+  }
+
+  const bb4 = bollingerBands(c4, 20, 2);
+  const bbWidth4 = bb4?.width?.[n - 1] ?? 0;
+  const bbPrev4 = bb4?.width?.[Math.max(0, n - 6)] ?? bbWidth4;
+  const bbMiddle4 = bb4?.middle?.[n - 1] ?? c4[n - 1];
+  if (bbWidth4 > bbPrev4 * 1.3 && c4[n - 1] > bbMiddle4) {
+    bullScore += 1;
+    signals.push("4h-bb-expansion-bull");
+  }
+  if (bbWidth4 > bbPrev4 * 1.3 && c4[n - 1] < bbMiddle4) {
+    bearScore += 1;
+    signals.push("4h-bb-expansion-bear");
+  }
+
+  const obv4 = obv(c4, v4);
+  const obvDiv4 = detectOBVDivergence(c4, obv4, 30);
+  if (obvDiv4.type === "bullish") {
+    bullScore += 1;
+    signals.push("4h-obv-div-bull");
+  }
+  if (obvDiv4.type === "bearish") {
+    bearScore += 1;
+    signals.push("4h-obv-div-bear");
+  }
+
+  return {
+    bullScore,
+    bearScore,
+    signals,
+    aligned: (dir) => dir === "long" ? bullScore > bearScore : bearScore > bullScore
+  };
+}
+
+// Coin universe
 export const COINS = {
   high: [
     "BTC-USDT-SWAP", "ETH-USDT-SWAP", "SOL-USDT-SWAP",
@@ -67,6 +220,17 @@ for (const [cap, coins] of Object.entries(COINS)) {
 // =============================================================================
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+async function fetchOkxJson(url) {
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    if (res.status === 429) return { rateLimited: true };
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    return { error: err.message || String(err) };
+  }
+}
+
 async function fetchHistoricalCandles(instId, bar, months) {
   await fs.mkdir(CACHE_DIR, { recursive: true });
   const slug      = instId.replace(/\//g, "_");
@@ -75,7 +239,11 @@ async function fetchHistoricalCandles(instId, bar, months) {
   try {
     const raw  = await fs.readFile(cacheFile, "utf8");
     const data = JSON.parse(raw);
-    if (Date.now() - data.fetchedAt < 6 * 3_600_000) {
+    if (
+      Date.now() - data.fetchedAt < 6 * 3_600_000 &&
+      Array.isArray(data.candles) &&
+      data.candles.length > 0
+    ) {
       process.stdout.write(`  [cache] ${instId} ${bar}\n`);
       return data.candles;
     }
@@ -88,12 +256,25 @@ async function fetchHistoricalCandles(instId, bar, months) {
 
   while (allRaw.length < barsNeeded) {
     const qs  = `instId=${instId}&bar=${bar}&limit=100${after ? `&after=${after}` : ""}`;
-    const url = `https://www.okx.com/api/v5/market/history-candles?${qs}`;
+    const historyUrl = `${API_BASE}/api/v5/market/history-candles?${qs}`;
+    const candlesUrl = `${API_BASE}/api/v5/market/candles?${qs}`;
     try {
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
-      if (res.status === 429) { await sleep(2_500); continue; }
-      if (!res.ok)             { console.error(`[fetch] ${instId} ${bar} HTTP ${res.status}`); break; }
-      const json = await res.json();
+      let json = await fetchOkxJson(historyUrl);
+      if (json?.rateLimited) {
+        await sleep(2_500);
+        continue;
+      }
+      if (!json?.data?.length) {
+        json = await fetchOkxJson(candlesUrl);
+      }
+      if (json?.rateLimited) {
+        await sleep(2_500);
+        continue;
+      }
+      if (json?.error) {
+        console.error(`[fetch] ${instId} ${bar}: ${json.error}`);
+        break;
+      }
       if (!json?.data?.length) break;
       allRaw.push(...json.data);
       after = json.data[json.data.length - 1][0];
@@ -115,9 +296,75 @@ async function fetchHistoricalCandles(instId, bar, months) {
     }))
     .filter(c => !isNaN(c.close) && c.close > 0);
 
-  await fs.writeFile(cacheFile, JSON.stringify({ fetchedAt: Date.now(), candles }));
+  if (candles.length > 0) {
+    await fs.writeFile(cacheFile, JSON.stringify({ fetchedAt: Date.now(), candles }));
+  }
   process.stdout.write(`  [fetch] ${instId} ${bar}: ${candles.length} bars\n`);
   return candles;
+}
+
+async function fetchHistoricalFundingRates(instId, months) {
+  await fs.mkdir(CACHE_DIR, { recursive: true });
+  const slug = instId.replace(/\//g, "_");
+  const cacheFile = path.join(CACHE_DIR, `${slug}_funding_${months}m.json`);
+
+  try {
+    const raw = await fs.readFile(cacheFile, "utf8");
+    const data = JSON.parse(raw);
+    if (
+      Date.now() - data.fetchedAt < 6 * 3_600_000 &&
+      Array.isArray(data.rates) &&
+      data.rates.length > 0
+    ) {
+      process.stdout.write(`  [cache] ${instId} funding\n`);
+      return data.rates;
+    }
+  } catch (_) {}
+
+  const entriesNeeded = Math.ceil(months * 30 * 3) + 30;
+  const allRows = [];
+  let before;
+
+  while (allRows.length < entriesNeeded) {
+    const qs = `instId=${instId}&limit=100${before ? `&before=${before}` : ""}`;
+    const url = `${API_BASE}/api/v5/public/funding-rate-history?${qs}`;
+    const json = await fetchOkxJson(url);
+    if (json?.rateLimited) {
+      await sleep(2_500);
+      continue;
+    }
+    if (json?.error) {
+      console.error(`[funding] ${instId}: ${json.error}`);
+      break;
+    }
+    if (!json?.data?.length) break;
+    allRows.push(...json.data);
+    before = json.data[json.data.length - 1]?.fundingTime;
+    if (json.data.length < 100) break;
+    await sleep(180);
+  }
+
+  const rates = allRows
+    .reverse()
+    .map((row) => ({
+      ts: parseInt(row.fundingTime || 0, 10),
+      rate: parseFloat(row.fundingRate || 0)
+    }))
+    .filter((row) => !Number.isNaN(row.ts) && !Number.isNaN(row.rate));
+
+  if (rates.length > 0) {
+    await fs.writeFile(cacheFile, JSON.stringify({ fetchedAt: Date.now(), rates }));
+  }
+  process.stdout.write(`  [fetch] ${instId} funding: ${rates.length} points\n`);
+  return rates;
+}
+
+function getFundingRateAtTs(fundingSeries, ts) {
+  if (!Array.isArray(fundingSeries) || fundingSeries.length === 0) return null;
+  for (let i = fundingSeries.length - 1; i >= 0; i--) {
+    if (fundingSeries[i].ts <= ts) return fundingSeries[i].rate;
+  }
+  return null;
 }
 
 // =============================================================================
@@ -168,7 +415,7 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     const srLevels    = findSupportResistance(highs, lows, 50) || { supports: [], resistances: [] };
     const supports    = Array.isArray(srLevels.supports)    ? srLevels.supports    : [];
     const resistances = Array.isArray(srLevels.resistances) ? srLevels.resistances : [];
-    const trap        = detectLiquidityTrap(price, closes, { supports, resistances });
+    const trap        = detectLiquidityTrap(price, closes, { supports, resistances }, highs, lows);
     const rsiArr      = rsiSeries(closes, 14);
     const rsiVal      = rsiArr[n - 1];
     const rsiDiv      = detectRSIDivergence(closes, rsiArr, 20);
@@ -196,13 +443,41 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     const atrPct        = atrVal / price;
 
     let h4Trend = "neutral";
-    if (candles4h && candles4h.length >= 50) {
+    let h4RecentCross = false;
+    let h4PullbackEntry = false;
+    let h4BearStrong = false;
+    if (candles4h && candles4h.length >= 60) {
       const c4   = candles4h.map(c => c.close);
+      const h4h  = candles4h.map(c => c.high);
       const e20  = ema(c4, 20);
       const e50  = ema(c4, 50);
+      const e200 = ema(c4, Math.min(200, c4.length - 1));
       const last = c4.length - 1;
-      if (e20[last] > e50[last] && c4[last] > e20[last])      h4Trend = "bullish";
-      else if (e20[last] < e50[last] && c4[last] < e20[last]) h4Trend = "bearish";
+      if (e20[last] > e50[last] && c4[last] > e20[last]) {
+        h4Trend = "bullish";
+        for (let i = 1; i <= Math.min(20, last - 1); i++) {
+          if (e20[last - i] <= e50[last - i] && e20[last - i + 1] > e50[last - i + 1]) {
+            h4RecentCross = true;
+            break;
+          }
+        }
+        h4PullbackEntry = (c4[last] - e20[last]) / e20[last] < 0.015;
+      } else if (e20[last] < e50[last] && c4[last] < e20[last]) {
+        h4Trend = "bearish";
+        for (let i = 1; i <= Math.min(20, last - 1); i++) {
+          if (e20[last - i] >= e50[last - i] && e20[last - i + 1] < e50[last - i + 1]) {
+            h4RecentCross = true;
+            break;
+          }
+        }
+        h4PullbackEntry = (e20[last] - c4[last]) / e20[last] < 0.015;
+        const belowE200 = e200[last] && c4[last] < e200[last];
+        const lowerHighs =
+          last >= 8 &&
+          h4h[last] < h4h[last - 4] &&
+          h4h[last - 4] < h4h[last - 8];
+        h4BearStrong = !!belowE200 && lowerHighs;
+      }
     }
 
     let longScore = 0, shortScore = 0;
@@ -219,20 +494,35 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     if (isStrongTrend) {
       add(ribbon.bullishAligned && ribbon.expanding && ribbon.priceAboveAll, "ema-ribbon-bull", true,  TIERS.strong);
       add(ribbon.bearishAligned && ribbon.expanding && ribbon.priceBelowAll, "ema-ribbon-bear", false, TIERS.strong);
-      add(h4Trend === "bullish", "h4-bull", true,  TIERS.strong);
-      add(h4Trend === "bearish", "h4-bear", false, TIERS.strong);
+      add(h4Trend === "bullish" && h4RecentCross, "h4-bull", true, TIERS.strong);
+      add(h4Trend === "bullish" && h4PullbackEntry && !h4RecentCross, "h4-bull-pb", true, TIERS.medium);
+      add(h4BearStrong, "h4-bear-strong", false, TIERS.strong);
+      add(h4Trend === "bearish" && h4RecentCross && !h4BearStrong, "h4-bear", false, TIERS.strong);
+      add(h4Trend === "bearish" && h4PullbackEntry && !h4RecentCross, "h4-bear-pb", false, TIERS.medium);
     } else if (!isTrending) {
-      const isGoodRange  = adxResult.adx < 20 && bbWidth > 0.02;
-      const nearSupport  = supports.some(s    => Math.abs(price - s) / price < 0.005);
-      const nearResist   = resistances.some(r => Math.abs(price - r) / price < 0.005);
+      const isGoodRange  = adxResult.adx < 18 && bbWidth > 0.03;
+      const nearSupport  = supports.some(s    => Math.abs(price - s) / price < 0.003);
+      const nearResist   = resistances.some(r => Math.abs(price - r) / price < 0.003);
+      const mrBullConfirm = [
+        rsiDiv.type === "bullish",
+        stochResult.crossUp && stochResult.k < 30,
+        volConfirm.isSignificant && pctB < 0.10,
+        fisherVal < -1.8 && fisherVal > fisherPrev
+      ].filter(Boolean).length;
+      const mrBearConfirm = [
+        rsiDiv.type === "bearish",
+        stochResult.crossDown && stochResult.k > 70,
+        volConfirm.isSignificant && pctB > 0.90,
+        fisherVal > 1.8 && fisherVal < fisherPrev
+      ].filter(Boolean).length;
       if (isGoodRange) {
-        add(rsiVal < 35 && nearSupport, "rsi-support-bounce",    true,  TIERS.medium);
-        add(rsiVal > 65 && nearResist,  "rsi-resistance-reject", false, TIERS.medium);
+        add(rsiVal < 35 && nearSupport && mrBullConfirm >= 1, "rsi-support-bounce",    true,  TIERS.medium);
+        add(rsiVal > 68 && nearResist && mrBearConfirm >= 1,  "rsi-resistance-reject", false, TIERS.medium);
         if (!nearSupport && !nearResist) {
-          add(rsiVal < 35,  "rsi-oversold",   true,  TIERS.weak);
-          add(rsiVal > 65,  "rsi-overbought", false, TIERS.weak);
-          add(pctB < 0.05,  "bb-oversold",    true,  TIERS.weak);
-          add(pctB > 0.95,  "bb-overbought",  false, TIERS.weak);
+          add(rsiVal < 32 && mrBullConfirm >= 2, "rsi-oversold",   true,  TIERS.weak);
+          add(rsiVal > 68 && mrBearConfirm >= 2, "rsi-overbought", false, TIERS.weak);
+          add(pctB < 0.03 && mrBullConfirm >= 2, "bb-oversold",    true,  TIERS.weak);
+          add(pctB > 0.97 && mrBearConfirm >= 2, "bb-overbought",  false, TIERS.weak);
         }
       } else {
         longScore  *= 0.7; shortScore *= 0.7;
@@ -246,42 +536,264 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     }
 
     // ── Universal signals ──
-    add(rsiDiv.type === "bullish",   "rsi-bull-div",   true,  TIERS.strong);
-    add(rsiDiv.type === "bearish",   "rsi-bear-div",   false, TIERS.strong);
-    add(obvDiv.type === "bullish",   "OBV-bull-div",   true,  TIERS.strong);
-    add(obvDiv.type === "bearish",   "OBV-bear-div",   false, TIERS.strong);
-    add(trap === "bear-trap",        "liquidity-bull",       true,  TIERS.strong);
-    add(trap === "bull-trap",        "liquidity-bear",       false, TIERS.strong);
-    add(trap === "bear-trap" && rsiVal < 40, "trap-bull-confirm", true,  TIERS.strong);
-    add(trap === "bull-trap" && rsiVal > 60, "trap-bear-confirm", false, TIERS.strong);
-    add(trap === "bear-trap" && volConfirm.isClimax, "trap-vol-bull", true,  TIERS.strong);
-    add(trap === "bull-trap" && volConfirm.isClimax, "trap-vol-bear", false, TIERS.strong);
-    add(macdResult.crossUp,   "macd-cross-up",   true,  TIERS.medium);
-    add(macdResult.crossDown, "macd-cross-down", false, TIERS.medium);
+    const rsiPrev2 = rsiArr[n - 3] ?? rsiVal;
+    const rsiMomentumUp = rsiArr[n - 1] > rsiArr[n - 2] && rsiArr[n - 2] > rsiPrev2;
+    const rsiMomentumDown = rsiArr[n - 1] < rsiArr[n - 2] && rsiArr[n - 2] < rsiPrev2;
+    const rsiDivBullStrong = rsiDiv.type === "bullish" && rsiDiv.strength >= 4.0;
+    const rsiDivBearStrong = rsiDiv.type === "bearish" && rsiDiv.strength >= 4.0;
+    const rsiDivBullConfirmed =
+      rsiDiv.type === "bullish" &&
+      rsiDiv.strength >= 8.0 &&
+      rsiVal < 42 &&
+      price > vwapVal &&
+      h4Trend !== "bearish" &&
+      rsiArr[n - 1] > rsiArr[n - 2] &&
+      rsiArr[n - 2] > (rsiArr[n - 3] ?? rsiVal);
+    add(rsiDivBullConfirmed, "rsi-bull-div", true, TIERS.weak);
+    add(
+      rsiDiv.type === "bearish" &&
+      rsiDiv.strength >= 8 &&
+      rsiVal > 58 &&
+      price < vwapVal,
+      "rsi-bear-div",
+      false,
+      TIERS.weak
+    );
+    add(
+      obvDiv.type === "bullish" &&
+      price > vwapVal &&
+      rsiVal < 50 &&
+      h4Trend !== "bearish",
+      "OBV-bull-div",
+      true,
+      TIERS.weak
+    );
+    add(
+      obvDiv.type === "bearish" &&
+      price < vwapVal &&
+      h4Trend !== "bullish",
+      "OBV-bear-div",
+      false,
+      TIERS.weak
+    );
+    const rsiTurningUp = rsiArr[n - 1] > rsiArr[n - 2];
+    const rsiTurningDown = rsiArr[n - 1] < rsiArr[n - 2];
+    const strongBounce =
+      closes[n - 1] > closes[n - 2] &&
+      (closes[n - 1] - lows[n - 1]) > (highs[n - 1] - closes[n - 1]);
+    const candleRange = highs[n - 1] - lows[n - 1];
+    const upperWick = highs[n - 1] - closes[n - 1];
+    const bearishCandle = candleRange > 0 && upperWick / candleRange > 0.5;
+    const lastVolumes = volumes.slice(-5);
+    const maxVolIdx = lastVolumes.indexOf(Math.max(...lastVolumes));
+    const climaxBarIndex = Math.max(0, n - 5 + maxVolIdx);
+    const climaxBarBearish =
+      closes[climaxBarIndex] < (candles1h[climaxBarIndex]?.open ?? closes[climaxBarIndex]);
+    const climaxBarBullish =
+      closes[climaxBarIndex] > (candles1h[climaxBarIndex]?.open ?? closes[climaxBarIndex]);
+    const trapFreshBear = srLevels.resistances.some((resistance) =>
+      highs.slice(-3).some((high) => high > resistance)
+    );
+    const trapFreshBull = srLevels.supports.some((support) =>
+      lows.slice(-3).some((low) => low < support)
+    );
+    const bullTrapRsiLayer = trap === "bear-trap" && rsiVal < 38 && rsiTurningUp;
+    const bullTrapCandleLayer = trap === "bear-trap" && strongBounce;
+    const bullTrapVolumeLayer =
+      trap === "bear-trap" &&
+      volConfirm.isClimax &&
+      climaxBarBullish &&
+      trapFreshBull;
+    const bearTrapRsiLayer = trap === "bull-trap" && rsiVal > 62 && rsiTurningDown;
+    const bearTrapCandleLayer = trap === "bull-trap" && bearishCandle;
+    const bearTrapVolumeLayer =
+      trap === "bull-trap" &&
+      volConfirm.isClimax &&
+      climaxBarBearish &&
+      trapFreshBear;
+    const bullTrapLayers = [
+      trap === "bear-trap",
+      bullTrapRsiLayer,
+      bullTrapCandleLayer,
+      bullTrapVolumeLayer
+    ].filter(Boolean).length;
+    const bearTrapLayers = [
+      trap === "bull-trap",
+      bearTrapRsiLayer,
+      bearTrapCandleLayer,
+      bearTrapVolumeLayer
+    ].filter(Boolean).length;
+    const trapBearQuality =
+      trap === "bull-trap" &&
+      price < vwapVal &&
+      h4Trend === "bearish" &&
+      adxResult.pdi < adxResult.mdi &&
+      rsiVal < 55;
+    const liquidityBearQuality =
+      regimeLabel !== "sideways" &&
+      regimeLabel !== "chop" &&
+      bearTrapLayers >= 3 &&
+      h4Trend === "bearish" &&
+      price < vwapVal &&
+      price < ichi.senkouA &&
+      price < ichi.senkouB &&
+      adxResult.mdi > adxResult.pdi &&
+      rsiVal < 58 &&
+      bearishCandle;
+    const allowLiquidityBearReason =
+      liquidityBearQuality &&
+      h4Trend === "bearish" &&
+      price < vwapVal &&
+      ribbon.bearishAligned &&
+      adxResult.mdi > adxResult.pdi &&
+      shortScore >= 4;
+    const liquidityBullValid =
+      bullTrapLayers >= 2 &&
+      h4Trend !== "bearish";
+    add(liquidityBullValid, "liquidity-bull", true, TIERS.medium);
+    if (allowLiquidityBearReason) {
+      reasons.push("liquidity-bear");
+    }
+    add(
+      bullTrapLayers >= 3 &&
+      bullTrapRsiLayer &&
+      bullTrapCandleLayer &&
+      trap === "bear-trap" &&
+      rsiVal > 42 &&
+      price >= vwapVal * 0.995,
+      "trap-bull-confirm",
+      true,
+      TIERS.weak
+    );
+    add(
+      bearTrapLayers >= 3 &&
+      bearTrapRsiLayer &&
+      bearTrapCandleLayer &&
+      trapBearQuality,
+      "trap-bear-confirm",
+      false,
+      TIERS.weak
+    );
+    add(
+      bullTrapLayers >= 3 &&
+      bullTrapVolumeLayer &&
+      trap === "bear-trap" &&
+      volConfirm.isClimax &&
+      price >= vwapVal * 0.995,
+      "trap-vol-bull",
+      true,
+      TIERS.weak
+    );
+    const macdCrossUpValid =
+      macdResult.crossUp &&
+      isTrending &&
+      (macdRaw.signal ?? 0) < 0 &&
+      h4Trend === "bullish" &&
+      price > vwapVal &&
+      price > ichi.senkouA &&
+      price > ichi.senkouB &&
+      ribbon.bullishAligned;
+    const macdCrossDownValid =
+      macdResult.crossDown &&
+      isTrending &&
+      (macdRaw.signal ?? 0) > 0 &&
+      h4Trend === "bearish" &&
+      price < vwapVal &&
+      price < ichi.senkouA &&
+      price < ichi.senkouB &&
+      ribbon.bearishAligned;
+    add(macdCrossUpValid,   "macd-cross-up",   true,  TIERS.medium);
+    add(macdCrossDownValid, "macd-cross-down", false, TIERS.medium);
+    const stochOversoldConfirmed =
+      stochResult.oversold &&
+      stochResult.crossUp &&
+      rsiVal < 45 &&
+      price > vwapVal &&
+      h4Trend !== "bearish";
     if (!isTrending) {
-      add(stochResult.oversold,  "stochrsi-oversold",  true,  TIERS.weak);
+      add(stochOversoldConfirmed,  "stochrsi-oversold",  true,  TIERS.weak);
       add(stochResult.overbought,"stochrsi-overbought",false, TIERS.weak);
     }
     add(stochResult.crossUp  && stochResult.k < 50, "stochrsi-cross-up",   true,  TIERS.weak);
     add(stochResult.crossDown && stochResult.k > 50, "stochrsi-cross-down", false, TIERS.weak);
     add(ichi.tkCross > 0, "TK-bull", true,  TIERS.medium);
     add(ichi.tkCross < 0, "TK-bear", false, TIERS.medium);
+    const cloudTop = Math.max(ichi.senkouA, ichi.senkouB);
+    const aboveCloudBreakout =
+      price > cloudTop &&
+      closes[n - 2] <= cloudTop &&
+      ribbon.bullishAligned &&
+      h4Trend === "bullish";
     if (isTrending) {
-      add(price > ichi.senkouA && price > ichi.senkouB, "above-cloud", true,  TIERS.medium);
+      add(aboveCloudBreakout, "above-cloud", true,  TIERS.weak);
       add(price < ichi.senkouA && price < ichi.senkouB, "below-cloud", false, TIERS.medium);
     }
     add(n > 27 && ichi.chikou > ichi.chikouCompare, "chikou-bull", true,  TIERS.weak);
     add(n > 27 && ichi.chikou < ichi.chikouCompare, "chikou-bear", false, TIERS.weak);
-    add(fisherVal > 0 && fisherVal > fisherPrev, "fisher-rising",  true,  TIERS.weak);
-    add(fisherVal < 0 && fisherVal < fisherPrev, "fisher-falling", false, TIERS.weak);
+    const fisherCrossUp = fisherPrev <= 0 && fisherVal > 0;
+    const fisherCrossDown = fisherPrev >= 0 && fisherVal < 0;
+    const fisherTurnBull = fisherPrev < -1.5 && fisherVal > fisherPrev;
+    const fisherTurnBear = fisherPrev > 1.5 && fisherVal < fisherPrev;
+    const fisherBullMomentum =
+      fisherVal > fisherPrev &&
+      fisherVal < -0.5 &&
+      price > vwapVal &&
+      h4Trend === "bullish" &&
+      adxResult.pdi > adxResult.mdi;
+    const fisherBearMomentum =
+      fisherVal < fisherPrev &&
+      fisherVal > 0.5 &&
+      price < vwapVal &&
+      h4Trend === "bearish" &&
+      adxResult.mdi > adxResult.pdi;
+    const fisherBullReversal =
+      fisherVal < -1.8 &&
+      fisherVal > fisherPrev &&
+      price > vwapVal * 0.995 &&
+      (rsiVal < 40 || stochResult.crossUp);
+    add(
+      (fisherCrossUp || fisherTurnBull) && fisherBullMomentum,
+      "fisher-rising",
+      true,
+      TIERS.weak
+    );
+    add(
+      (fisherCrossDown || fisherTurnBear) && fisherBearMomentum,
+      "fisher-falling",
+      false,
+      TIERS.weak
+    );
     if (!isTrending) {
-      add(fisherVal < -2.0, "fisher-oversold",  true,  TIERS.medium);
+      add(fisherBullReversal, "fisher-oversold",  true,  TIERS.weak);
       add(fisherVal > 2.0,  "fisher-overbought",false, TIERS.medium);
     }
-    add(price > vwapVal, "above-VWAP", true,  TIERS.medium);
-    add(price < vwapVal, "below-VWAP", false, TIERS.medium);
+    const vwapCrossUp =
+      closes.slice(-5, -1).some(c => c < vwapVal) &&
+      price > vwapVal;
+    const vwapCrossDown =
+      closes.slice(-5, -1).some(c => c > vwapVal) &&
+      price < vwapVal;
+    const vwapBounceUp =
+      price > vwapVal &&
+      lows[n - 1] < vwapVal * 1.004 &&
+      closes[n - 1] > vwapVal;
+    const vwapBounceDown =
+      price < vwapVal &&
+      highs[n - 1] > vwapVal * 0.996 &&
+      closes[n - 1] < vwapVal;
+    add(vwapCrossUp || vwapBounceUp, "above-VWAP", true, TIERS.medium);
+    add(vwapCrossDown || vwapBounceDown, "below-VWAP", false, TIERS.medium);
     add(ribbon.wasCompressed && ribbon.expanding && ribbon.bullishAligned, "ribbon-expansion-bull", true,  TIERS.strong);
-    add(ribbon.wasCompressed && ribbon.expanding && ribbon.bearishAligned, "ribbon-expansion-bear", false, TIERS.strong);
+    add(
+      ribbon.wasCompressed &&
+      ribbon.expanding &&
+      ribbon.bearishAligned &&
+      price < vwapVal &&
+      adxResult.mdi > adxResult.pdi,
+      "ribbon-expansion-bear",
+      false,
+      TIERS.medium
+    );
 
     // HTF confluence bonus
     if (ribbon.bullishAligned && h4Trend === "bullish") longScore  += 3;
@@ -297,34 +809,202 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     }
     if (ribbon.bullishAligned && rsiVal > 70)  { longScore  *= 0.7; reasons.push("trend-vs-overbought"); }
     if (ribbon.bearishAligned && rsiVal < 30)  { shortScore *= 0.7; reasons.push("trend-vs-oversold"); }
-    if (h4Trend === "bullish" && price < vwapVal) { longScore  *= 0.7; reasons.push("htf-vs-vwap"); }
-    if (h4Trend === "bearish" && price > vwapVal) { shortScore *= 0.7; reasons.push("htf-vs-vwap"); }
+    const isTrendChaseLong = reasons.includes("ema-ribbon-bull") || reasons.includes("h4-bull");
+    const isTrendChaseShort =
+      reasons.includes("ema-ribbon-bear") ||
+      reasons.includes("h4-bear") ||
+      reasons.includes("h4-bear-strong");
+    const isDipBuy = h4PullbackEntry || reasons.includes("rsi-support-bounce");
+    const isDipSell = h4PullbackEntry || reasons.includes("rsi-resistance-reject");
+    if (h4Trend === "bullish" && price < vwapVal && isTrendChaseLong && !isDipBuy) {
+      longScore *= 0.75;
+      reasons.push("htf-vs-vwap");
+    }
+    if (h4Trend === "bearish" && price > vwapVal && isTrendChaseShort && !isDipSell) {
+      shortScore *= 0.75;
+      reasons.push("htf-vs-vwap");
+    }
 
     const scoreDiff = Math.abs(longScore - shortScore);
     const minDiff   = regimeLabel === "chop" ? 1.5 : 1.0;
     if (scoreDiff < minDiff) return null;
 
-    const minScore = regimeLabel === "chop" ? 4 : 3;
+    let setupType = "unknown";
+    if      (ribbon.wasCompressed && ribbon.expanding) setupType = "breakout";
+    else if (trap !== "none")                          setupType = "liquidity-trap";
+    else if (!isTrending)                              setupType = "mean-reversion";
+    else if (isStrongTrend)                            setupType = "trend";
+    if (setupType === "breakout") bumpDiagnostic("breakout", "assigned");
+
+    const baseMinScore = regimeLabel === "chop" ? 4 : 3;
+    const minScore = setupType === "mean-reversion" ? Math.max(baseMinScore, 4.5) : baseMinScore;
     let signal = null, score = 0;
     if (longScore >= minScore && longScore > shortScore) { signal = "long";  score = longScore; }
     else if (shortScore >= minScore)                     { signal = "short"; score = shortScore; }
     if (!signal) return null;
 
-    let setupType = "unknown";
-    if      (trap !== "none")                         setupType = "liquidity-trap";
-    else if (ribbon.wasCompressed && ribbon.expanding) setupType = "breakout";
-    else if (!isTrending)                              setupType = "mean-reversion";
-    else if (isStrongTrend)                            setupType = "trend";
+    bumpDiagnostic("bullContinuation", "candidateChecks");
+    if (setupType !== "unknown") bumpDiagnostic("bullContinuation", "blockedSetupKnown");
+    if (regimeLabel !== "bull") bumpDiagnostic("bullContinuation", "blockedNonBullRegime");
+    if (signal !== "long") bumpDiagnostic("bullContinuation", "blockedShortSignal");
+    if (h4Trend !== "bullish") bumpDiagnostic("bullContinuation", "blockedH4Trend");
+    if (!h4PullbackEntry) bumpDiagnostic("bullContinuation", "blockedNoH4Pullback");
+    if (trap !== "none") bumpDiagnostic("bullContinuation", "blockedTrapPresent");
+    if (!isTrending) bumpDiagnostic("bullContinuation", "blockedNotTrending");
+
+    const candidateBullContinuation =
+      setupType === "unknown" &&
+      regimeLabel === "bull" &&
+      signal === "long" &&
+      h4Trend === "bullish" &&
+      h4PullbackEntry &&
+      trap === "none" &&
+      isTrending;
+
+    if (candidateBullContinuation) {
+      setupType = "bull-continuation";
+      bumpDiagnostic("bullContinuation", "assigned");
+    }
+
+    if (
+      signal === "short" &&
+      reasons.includes("trap-bear-confirm") &&
+      (
+        h4Trend !== "bearish" ||
+        price > vwapVal ||
+        adxResult.pdi > adxResult.mdi ||
+        rsiVal > 60
+      )
+    ) {
+      return null;
+    }
+
+    const h4Score = score4H(candles4h);
+
+    if ((setupType === "trend" || setupType === "breakout") && !h4Score.aligned(signal)) {
+      if (setupType === "breakout") bumpDiagnostic("breakout", "h4ScoreMisaligned");
+      return null;
+    }
+
+    reasons.push(...h4Score.signals);
+    if (signal === "long") score += h4Score.bullScore * 0.5;
+    if (signal === "short") score += h4Score.bearScore * 0.5;
 
     const quality =
       (ribbon.bullishAligned || ribbon.bearishAligned ? 1 : 0) +
       (h4Trend !== "neutral" ? 1 : 0) +
       (Math.abs(price - vwapVal) / price > 0.002 ? 1 : 0);
-    if (setupType !== "mean-reversion" && quality < 2) return null;
-    if (setupType === "mean-reversion"  && quality < 1) return null;
+
+    const nearSupport = supports.some(s => Math.abs(price - s) / price < 0.005);
+    const nearResistance = resistances.some(r => Math.abs(price - r) / price < 0.005);
+    const activeHVN = hvns.find(node => price >= node.low && price <= node.high) || null;
+    const inHVN = !!activeHVN;
+
+    if (setupType === "liquidity-trap" && reasons.includes("transition-market")) {
+      return null;
+    }
+
+    if (setupType === "mean-reversion") {
+      const isSidewaysRegime = regimeLabel === "sideways";
+      const extremeOscillatorLong =
+        stochResult.oversold || fisherVal < -2.0 || rsiVal < 35 || pctB < 0.05;
+      const extremeOscillatorShort =
+        stochResult.overbought || fisherVal > 2.0 || rsiVal > 65 || pctB > 0.95;
+      const hasLocationEdge =
+        (signal === "long" && nearSupport) ||
+        (signal === "short" && nearResistance);
+      const hasExtreme =
+        (signal === "long" && extremeOscillatorLong) ||
+        (signal === "short" && extremeOscillatorShort);
+      const h4AlignedAgainstMr =
+        (signal === "long" && h4Trend === "bearish") ||
+        (signal === "short" && h4Trend === "bullish");
+
+      if (!isSidewaysRegime) return null;
+      if (!hasLocationEdge || !hasExtreme) return null;
+      if (reasons.includes("transition-market") || h4AlignedAgainstMr) return null;
+    }
+
+    if (setupType === "breakout") {
+      const h4Aligned =
+        (signal === "long" && h4Trend === "bullish") ||
+        (signal === "short" && h4Trend === "bearish");
+      const cloudAligned =
+        (signal === "long" && price > ichi.senkouA && price > ichi.senkouB) ||
+        (signal === "short" && price < ichi.senkouA && price < ichi.senkouB);
+      const vwapAligned =
+        (signal === "long" && price > vwapVal) ||
+        (signal === "short" && price < vwapVal);
+      const deepInHVN = !!activeHVN && (() => {
+        const nodeDepth = activeHVN.high - activeHVN.low;
+        return price >= activeHVN.low + nodeDepth * 0.15 &&
+               price <= activeHVN.high - nodeDepth * 0.15;
+      })();
+      const hvnEdgeEscape = !!activeHVN && (() => {
+        const nodeDepth = activeHVN.high - activeHVN.low;
+        const atTopEdge = price >= activeHVN.high - nodeDepth * 0.15 && signal === "long";
+        const atBottomEdge = price <= activeHVN.low + nodeDepth * 0.15 && signal === "short";
+        return atTopEdge || atBottomEdge;
+      })();
+
+      if (!ribbon.wasCompressed || !ribbon.expanding) return null;
+      if (!volConfirm.isSignificant) {
+        bumpDiagnostic("breakout", "lowVolume");
+        return null;
+      }
+      if (!h4Aligned) {
+        bumpDiagnostic("breakout", "h4TrendMisaligned");
+        return null;
+      }
+      if (!cloudAligned) {
+        bumpDiagnostic("breakout", "cloudMisaligned");
+        return null;
+      }
+      if (!vwapAligned) {
+        bumpDiagnostic("breakout", "vwapMisaligned");
+        return null;
+      }
+      if (deepInHVN && !hvnEdgeEscape) {
+        bumpDiagnostic("breakout", "inHVN");
+        if (signal === "long") bumpDiagnostic("breakout", "inHVNLong");
+        if (signal === "short") bumpDiagnostic("breakout", "inHVNShort");
+        if (activeHVN) {
+          const width = Math.max(activeHVN.high - activeHVN.low, price * 0.000001);
+          const edgeThreshold = width * 0.2;
+          const edgeAligned =
+            (signal === "long" && price >= activeHVN.high - edgeThreshold) ||
+            (signal === "short" && price <= activeHVN.low + edgeThreshold);
+          if (edgeAligned) bumpDiagnostic("breakout", "inHVNEdgeAligned");
+          else bumpDiagnostic("breakout", "inHVNDeep");
+        }
+        return null;
+      }
+    }
+
+    if (setupType === "bull-continuation") {
+      if (!h4Score.aligned("long")) {
+        bumpDiagnostic("bullContinuation", "h4ScoreMisaligned");
+        return null;
+      }
+      const hasEntry = rsiTurningUp || stochResult.crossUp || macdCrossUpValid;
+      if (!hasEntry) {
+        bumpDiagnostic("bullContinuation", "missingEntryTrigger");
+        return null;
+      }
+    }
+
+    if (quality < 2) {
+      if (setupType === "breakout") bumpDiagnostic("breakout", "qualityTooLow");
+      if (setupType === "bull-continuation") bumpDiagnostic("bullContinuation", "qualityTooLow");
+      return null;
+    }
+    if (setupType === "unknown") return null;
 
     const structured = calculateStructuredSLTP(signal, price, atrVal, highs, lows, closes, volumes);
     if (!structured || !structured.sl || !structured.tp) return null;
+
+    if (setupType === "breakout") bumpDiagnostic("breakout", "passed");
+    if (setupType === "bull-continuation") bumpDiagnostic("bullContinuation", "passed");
 
     return {
       symbol, signal, score: Math.round(score * 10) / 10, setupType, price, atrVal,
@@ -356,6 +1036,9 @@ function simulatePosition(pos, futureCandles) {
 
   for (let i = 0; i < Math.min(MAX_BARS, futureCandles.length); i++) {
     const { high, low, close } = futureCandles[i];
+    const profitATRs = atrVal > 0
+      ? (direction === "long" ? (close - entryPrice) : (entryPrice - close)) / atrVal
+      : 0;
 
     // ── Tranche 2: +35% position at +0.5 ATR ──────────────────────────────
     if (!t2Filled && (direction === "long" ? high >= t2Trig : low <= t2Trig)) {
@@ -512,6 +1195,247 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
   return { symbol, trades, skipped };
 }
 
+function portfolioEquity(cash, openPositions) {
+  return cash + openPositions.reduce((sum, pos) => sum + (pos.reservedNotional || 0), 0);
+}
+
+function backtestExposureAllowed(selection, openPositions, cash) {
+  if (openPositions.length === 0) return { allowed: true };
+
+  const sameDir = openPositions.filter(p => p.trade.signal === selection.trade.signal);
+  if (selection.trade.signal === "long" && sameDir.length >= 7) {
+    return { allowed: false, reason: "max 7 longs" };
+  }
+  if (selection.trade.signal === "short" && sameDir.length >= 7) {
+    return { allowed: false, reason: "max 7 shorts" };
+  }
+
+  const dirExposure = sameDir.reduce((sum, p) => sum + (p.reservedNotional || 0), 0);
+  const equity = portfolioEquity(cash, openPositions);
+  if (equity > 0 && (dirExposure + selection.reservedNotional) / equity > 0.6) {
+    return { allowed: false, reason: "dir exposure >60%" };
+  }
+
+  return { allowed: true };
+}
+
+function buildIndexMap(candles) {
+  const map = new Map();
+  if (!candles) return map;
+  for (let i = 0; i < candles.length; i++) {
+    map.set(candles[i].ts, i);
+  }
+  return map;
+}
+
+async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
+  const master = map1h["BTC-USDT-SWAP"] || Object.values(map1h)[0] || [];
+  const h4IndexMaps = {};
+  const h1IndexMaps = {};
+  for (const sym of ALL_COINS) {
+    h1IndexMaps[sym] = buildIndexMap(map1h[sym]);
+    h4IndexMaps[sym] = buildIndexMap(map4h[sym]);
+  }
+
+  let cash = PAPER_CASH;
+  const openPositions = [];
+  const allTrades = [];
+  const bySymbol = {};
+
+  for (const sym of ALL_COINS) {
+    bySymbol[sym] = { symbol: sym, trades: [], skipped: [] };
+  }
+
+  const releaseClosed = (ts) => {
+    for (let i = openPositions.length - 1; i >= 0; i--) {
+      const pos = openPositions[i];
+      if (pos.exitTs > ts) continue;
+      cash += pos.reservedNotional + pos.trade.pnl;
+      allTrades.push(pos.trade);
+      bySymbol[pos.symbol].trades.push(pos.trade);
+      openPositions.splice(i, 1);
+    }
+  };
+
+  for (let masterIdx = WARM_UP; masterIdx < master.length - 10; masterIdx++) {
+    const ts = master[masterIdx].ts;
+    releaseClosed(ts);
+
+    const slotsAvailable = MAX_POSITIONS - openPositions.length;
+    if (slotsAvailable <= 0) continue;
+
+    const btcEnd = btcDaily.findLastIndex(c => c.ts <= ts);
+    const regime = detectRegimeSimple(btcDaily, btcEnd > 0 ? btcEnd : 0);
+
+    const candidates = [];
+
+    for (const sym of ALL_COINS) {
+      if (openPositions.some(p => p.symbol === sym)) continue;
+
+      const c1h = map1h[sym];
+      if (!c1h || c1h.length < WARM_UP + 50) continue;
+
+      const idx1h = h1IndexMaps[sym].get(ts);
+      if (idx1h === undefined || idx1h < WARM_UP || idx1h >= c1h.length - 10) continue;
+
+      const c4h = map4h[sym] || [];
+      let h4End = c4h.length > 0 ? c4h.findLastIndex(c => c.ts <= ts) : -1;
+      const window4h = h4End > 0 ? c4h.slice(0, h4End + 1) : null;
+      const window1h = c1h.slice(0, idx1h + 1);
+
+      const candidate = scoreFromCandles(sym, window1h, window4h, regime);
+      if (!candidate || candidate.score < ENTRY_THRESHOLD) continue;
+
+      const approved = autoApproveSignal(candidate) || candidate.score >= CLAUDE_THRESHOLD;
+      if (!approved) {
+        bySymbol[sym].skipped.push({ bar: idx1h, ts, score: candidate.score });
+        continue;
+      }
+
+      const { price, sl, tp, atrVal, riskReward } = candidate;
+      const slDist = Math.abs(price - sl);
+      if (slDist === 0 || riskReward < 1.2) continue;
+
+      const currEquity = portfolioEquity(cash, openPositions);
+      const riskAmount = currEquity * RISK_PCT;
+      const fullSize = riskAmount / slDist;
+      const totalNotionalRaw = fullSize * price;
+      const maxNotional = currEquity * MAX_POSITION_SHARE;
+      const reservedNotional = Math.min(totalNotionalRaw, maxNotional);
+      if (reservedNotional <= 0 || reservedNotional > cash) continue;
+
+      const tranche1Size = (reservedNotional / price) * 0.40;
+      const pos = {
+        symbol: sym,
+        direction: candidate.signal,
+        entryPrice: price,
+        size: tranche1Size,
+        notional: reservedNotional * 0.40,
+        sl,
+        tp,
+        atrVal
+      };
+
+      const futureCandles = c1h.slice(idx1h + 1, idx1h + 170);
+      if (futureCandles.length < 3) continue;
+
+      const result = simulatePosition(pos, futureCandles);
+      const exitBar = Math.min(result.barsHeld - 1, futureCandles.length - 1);
+      const exitTs = futureCandles[exitBar]?.ts ?? (ts + result.barsHeld * 3600000);
+
+      candidates.push({
+        symbol: sym,
+        idx1h,
+        reservedNotional,
+        exitTs,
+        trade: {
+          symbol: sym,
+          cap: CAP_MAP[sym] || "unknown",
+          regime,
+          signal: candidate.signal,
+          h4Trend: candidate.h4Trend,
+          setupType: candidate.setupType,
+          score: candidate.score,
+          reasons: candidate.reasons,
+          riskReward: candidate.riskReward,
+          entryPrice: price,
+          entryTs: ts,
+          exitPrice: result.exit,
+          exitTs,
+          exitReason: result.exitReason,
+          pnl: parseFloat(result.pnl.toFixed(4)),
+          pnlPct: reservedNotional > 0 ? parseFloat(((result.pnl / reservedNotional) * 100).toFixed(2)) : 0,
+          barsHeld: result.barsHeld,
+          hoursHeld: result.barsHeld,
+          partials: result.events.filter(e => e.type?.startsWith("tp")).length,
+          tranchesHit: result.events.filter(e => e.type === "t2" || e.type === "t3").length,
+          win: result.pnl > 0,
+          atrPct: candidate.atrPct
+        }
+      });
+    }
+
+    if (candidates.length === 0) continue;
+
+    const scores = candidates.map(c => c.trade.score).sort((a, b) => b - a);
+    const cutoff = scores[Math.floor(scores.length * 0.2)] ?? -Infinity;
+    const topSignals = candidates.filter(c => c.trade.score >= cutoff);
+    if (topSignals.length === 0) continue;
+
+    for (const selection of topSignals) {
+      const fundRate = getFundingRateAtTs(fundingMap[selection.symbol], ts);
+      const fundSigRaw = fundingRateSignal(fundRate) || {};
+      const fundSig = {
+        signal: fundSigRaw.signal || "none",
+        reason: fundSigRaw.reason || null
+      };
+
+      selection.trade.fundingRate = fundRate;
+
+      if (fundSig.signal === "short" && selection.trade.h4Trend === "bullish") {
+        selection.trade.score += 1.5;
+        selection.trade.reasons.push("funding-squeeze");
+      }
+
+      if (fundSig.signal === "long" && selection.trade.h4Trend === "bearish") {
+        selection.trade.score += 1.5;
+        selection.trade.reasons.push("funding-squeeze");
+      }
+
+      if (fundSig.reason === "funding-extreme-long") {
+        selection.trade.score += selection.trade.signal === "short" ? 2.0 : -0.5;
+        selection.trade.reasons.push("funding-extreme-long");
+      }
+
+      if (fundSig.reason === "funding-extreme-short") {
+        selection.trade.score += selection.trade.signal === "long" ? 2.0 : -0.5;
+        selection.trade.reasons.push("funding-extreme-short");
+      }
+
+      if (fundSig.reason === "funding-crowded-long" && fundRate > 0.0015) {
+        if (selection.trade.signal === "short") selection.trade.score += 1.0;
+        selection.trade.reasons.push("funding-skew-short");
+      }
+
+      if (fundSig.reason === "funding-crowded-short" && fundRate < -0.0015) {
+        if (selection.trade.signal === "long") selection.trade.score += 1.0;
+        selection.trade.reasons.push("funding-skew-long");
+      }
+    }
+
+    const longs = topSignals
+      .filter(c => c.trade.signal === "long")
+      .sort((a, b) => b.trade.score - a.trade.score);
+    const shorts = topSignals
+      .filter(c => c.trade.signal === "short")
+      .sort((a, b) => b.trade.score - a.trade.score);
+
+    const toOpen = [];
+    let li = 0, si = 0;
+    while (toOpen.length < slotsAvailable && (li < longs.length || si < shorts.length)) {
+      if (li < longs.length) toOpen.push(longs[li++]);
+      if (toOpen.length < slotsAvailable && si < shorts.length) toOpen.push(shorts[si++]);
+    }
+
+    for (const selection of toOpen) {
+      const exposure = backtestExposureAllowed(selection, openPositions, cash);
+      if (!exposure.allowed) continue;
+      if (selection.reservedNotional > cash) continue;
+      cash -= selection.reservedNotional;
+      openPositions.push(selection);
+    }
+  }
+
+  releaseClosed(Number.POSITIVE_INFINITY);
+
+  for (const sym of ALL_COINS) {
+    bySymbol[sym].skipped = bySymbol[sym].skipped || [];
+  }
+
+  allTrades.sort((a, b) => (a.exitTs || a.entryTs) - (b.exitTs || b.entryTs));
+  return { allTrades, bySymbol };
+}
+
 // =============================================================================
 // ANALYTICS
 // =============================================================================
@@ -614,15 +1538,18 @@ function computeMetrics(allTrades) {
 // =============================================================================
 async function seedBotState(metrics) {
   console.log("\n[SEED] Loading current bot state...");
+  const { loadState, saveState } = await getStateStoreModule();
   const state = await loadState();
+  if (FORCE_REPLACE_REGIMES) {
+    console.log("[SEED] Forcing regimeStats replacement from corrected backtest.");
+  }
 
   // ── 1. Regime stats ────────────────────────────────────────────────────────
   if (!state.regimeStats) state.regimeStats = {};
   let regimeUpdated = 0;
   for (const [regime, rs] of Object.entries(metrics.byRegime)) {
     const current = state.regimeStats[regime];
-    // Only seed if we have more backtest data than live data
-    if (!current || current.count < rs.count) {
+    if (shouldReplaceRegimeStats(current, rs, FORCE_REPLACE_REGIMES)) {
       state.regimeStats[regime] = {
         wins:     rs.wins,
         losses:   rs.count - rs.wins,
@@ -683,10 +1610,59 @@ async function seedBotState(metrics) {
   return { regimeUpdated, sigUpdated, weightUpdated };
 }
 
+async function seedBotStateSafe(metrics) {
+  console.log("\n[SEED] Loading current bot state...");
+  const { loadState, saveState } = await getStateStoreModule();
+  const state = await loadState();
+  if (FORCE_REPLACE_REGIMES) {
+    console.log("[SEED] Forcing regimeStats replacement from corrected backtest.");
+  }
+
+  if (!state.regimeStats) state.regimeStats = {};
+  let regimeUpdated = 0;
+  for (const [regime, rs] of Object.entries(metrics.byRegime)) {
+    const current = state.regimeStats[regime];
+    if (shouldReplaceRegimeStats(current, rs, FORCE_REPLACE_REGIMES)) {
+      state.regimeStats[regime] = {
+        wins: rs.wins,
+        losses: rs.count - rs.wins,
+        totalPnl: rs.totalPnl,
+        count: rs.count
+      };
+      regimeUpdated++;
+    }
+  }
+  console.log(`  ✓ regimeStats: ${regimeUpdated} regimes seeded`);
+
+  if (!state.signalStats) state.signalStats = {};
+  let sigUpdated = 0;
+  for (const [sig, ss] of Object.entries(metrics.bySignal)) {
+    const total = ss.wins + ss.losses;
+    if (total < 5) continue;
+    const current = state.signalStats[sig];
+    if (!current || current.count < total) {
+      state.signalStats[sig] = {
+        wins: ss.wins,
+        losses: ss.losses,
+        totalPnl: parseFloat(ss.totalPnl.toFixed(2)),
+        count: total
+      };
+      sigUpdated++;
+    }
+  }
+  console.log(`  ✓ signalStats: ${sigUpdated} signals seeded`);
+  console.log("  • safe-seed mode: leaving dynamicWeights unchanged");
+
+  await saveState(state);
+  console.log("[SEED] ✅ Safe seed complete — regimeStats and signalStats updated, dynamicWeights untouched.");
+  return { regimeUpdated, sigUpdated, weightUpdated: 0 };
+}
+
 // =============================================================================
 // PERSIST RESULTS TO POSTGRES
 // =============================================================================
 async function saveResultsToDb(metrics, allTrades, months) {
+  const { initDb, pool } = await getDbModule();
   await initDb();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS backtest_results (
@@ -797,84 +1773,114 @@ function printReport(metrics, bySymbol) {
   console.log(`${"═".repeat(62)}\n`);
 }
 
+function printGateDiagnostics() {
+  if (!DIAGNOSTIC_GATES) return;
+  const line = "-".repeat(62);
+  console.log(`\n${line}`);
+  console.log("  GATE DIAGNOSTICS");
+  console.log(line);
+  console.log("  BREAKOUT");
+  for (const [key, value] of Object.entries(gateDiagnostics.breakout)) {
+    console.log(`  ${key.padEnd(24)} ${String(value).padStart(6)}`);
+  }
+  console.log(`\n  BULL CONTINUATION`);
+  for (const [key, value] of Object.entries(gateDiagnostics.bullContinuation)) {
+    console.log(`  ${key.padEnd(24)} ${String(value).padStart(6)}`);
+  }
+  console.log(`${line}\n`);
+}
+
 // =============================================================================
 // MAIN
 // =============================================================================
 async function main() {
-  console.log(`\n🔬 SuperDuperBot Backtest — ${BACKTEST_MONTHS} months`);
-  console.log(`   Coins: ${ALL_COINS.length} (${COINS.high.length} high / ${COINS.mid.length} mid / ${COINS.low.length} low cap)`);
-  console.log(`   Seed mode: ${SEED_MODE ? "YES — will update live bot weights" : "NO (pass --seed to enable)"}\n`);
+  console.log(`\n[BACKTEST] SuperDuperBot - ${BACKTEST_MONTHS} months`);
+  console.log(`  Coins: ${ALL_COINS.length} (${COINS.high.length} high / ${COINS.mid.length} mid / ${COINS.low.length} low cap)`);
+  console.log(`  Seed mode: ${SAFE_SEED_MODE ? "SAFE (regimeStats + signalStats only)" : SEED_MODE ? "FULL (updates live bot weights)" : "OFF"}\n`);
 
-  // ── Fetch BTC daily (regime detection) ──
-  console.log("[1/3] Fetching BTC daily candles...");
+  // Fetch BTC daily (regime detection)
+  console.log("[1/4] Fetching BTC daily candles...");
   const btcDaily = await fetchHistoricalCandles("BTC-USDT-SWAP", "1D", BACKTEST_MONTHS + 3);
 
-  // ── Fetch all symbol data ──
-  console.log(`\n[2/3] Fetching OHLCV data for ${ALL_COINS.length} coins...`);
+  // Fetch all symbol data
+  console.log(`\n[2/4] Fetching OHLCV data for ${ALL_COINS.length} coins...`);
   const map1h = {}, map4h = {};
   for (let i = 0; i < ALL_COINS.length; i++) {
     const sym = ALL_COINS[i];
-    process.stdout.write(`  (${i+1}/${ALL_COINS.length}) ${sym} `);
+    process.stdout.write(`  (${i + 1}/${ALL_COINS.length}) ${sym} `);
     map1h[sym] = await fetchHistoricalCandles(sym, "1H", BACKTEST_MONTHS + 1);
     await sleep(250);
     map4h[sym] = await fetchHistoricalCandles(sym, "4H", BACKTEST_MONTHS + 1);
     await sleep(250);
   }
 
-  // ── Run backtest ──
-  console.log("\n[3/3] Running backtest...");
-  const allTrades = [];
-  const bySymbol  = {};
-
-  for (const [cap, coins] of Object.entries(COINS)) {
-    for (const sym of coins) {
-      process.stdout.write(`  ▶ ${sym} (${cap}) ... `);
-      const c1h = map1h[sym];
-      if (!c1h || c1h.length < WARM_UP + 50) {
-        console.log(`SKIP (insufficient data: ${c1h?.length ?? 0} bars)`);
-        continue;
-      }
-      const result = await backtestSymbol(sym, c1h, map4h[sym] || [], btcDaily, cap);
-      bySymbol[sym] = result;
-      allTrades.push(...result.trades);
-      console.log(`${result.trades.length} trades`);
-    }
+  // Fetch funding history
+  console.log(`\n[3/4] Fetching funding history for ${ALL_COINS.length} coins...`);
+  const fundingMap = {};
+  for (let i = 0; i < ALL_COINS.length; i++) {
+    const sym = ALL_COINS[i];
+    process.stdout.write(`  (${i + 1}/${ALL_COINS.length}) ${sym} `);
+    fundingMap[sym] = await fetchHistoricalFundingRates(sym, BACKTEST_MONTHS + 1);
+    await sleep(180);
   }
 
-  // ── Compute metrics ──
+  console.log("\n[4/4] Running portfolio backtest...");
+  const { allTrades, bySymbol } = await backtestPortfolio(map1h, map4h, fundingMap, btcDaily);
+
+
+  // Compute metrics
   const metrics = computeMetrics(allTrades);
-  if (!metrics) { console.log("\n⚠️  No trades generated. Check coin availability or reduce WARM_UP."); return; }
+  if (!metrics) {
+    console.log("\n[BACKTEST] No trades generated. Check coin availability or reduce WARM_UP.");
+    return;
+  }
 
-  // ── Print report ──
   printReport(metrics, bySymbol);
+  printGateDiagnostics();
 
-  // ── Save JSON ──
   const outFile = path.join(__dirname, `backtest-${new Date().toISOString().split("T")[0]}.json`);
   await fs.writeFile(outFile, JSON.stringify({ metrics, allTrades }, null, 2));
-  console.log(`📄 Full results → ${outFile}`);
+  console.log(`[BACKTEST] Full results -> ${outFile}`);
 
-  // ── Save to DB ──
   if (!NO_DB) {
     try {
-      await initDb();
       await saveResultsToDb(metrics, allTrades, BACKTEST_MONTHS);
     } catch (err) {
       console.error("[DB] Could not save:", err.message);
     }
   }
 
-  // ── Seed live bot state ──
+  if (SAFE_SEED_MODE) {
+    await seedBotStateSafe(metrics);
+    return;
+  }
   if (SEED_MODE) {
     await seedBotState(metrics);
   } else {
-    console.log("\n💡 Run with --seed to apply these results to the live bot's signal weights.\n");
+    console.log("\n[BACKTEST] Run with --seed or --seed-safe to apply results to the live bot.\n");
   }
 }
 
 main()
-  .then(() => { try { pool.end(); } catch (_) {} process.exit(0); })
+  .then(async () => {
+    try {
+      if (dbModulePromise) {
+        const { closeDb } = await getDbModule();
+        await closeDb();
+      }
+    } catch (_) {}
+    process.exit(0);
+  })
   .catch(err => {
     console.error("\n[BACKTEST] Fatal error:", err.message || err);
-    try { pool.end(); } catch (_) {}
-    process.exit(1);
+    Promise.resolve()
+      .then(async () => {
+        try {
+          if (dbModulePromise) {
+            const { closeDb } = await getDbModule();
+            await closeDb();
+          }
+        } catch (_) {}
+      })
+      .finally(() => process.exit(1));
   });

@@ -5,7 +5,12 @@ import {
   MAX_POSITIONS,
   SETTLEMENT_AVOID_MINUTES
 } from "./config.js";
-import { getAdaptiveClaudeThreshold } from "./stats.js";
+import {
+  calculateRecentLiveHealth,
+  checkPerformanceDrift,
+  getAdaptiveClaudeThreshold,
+  LIVE_BASELINE
+} from "./stats.js";
 import {
   fetchAllContracts,
   fetchAllTickers,
@@ -20,6 +25,7 @@ import {
   closePosition,
   executePartialClose
 } from "./exits.js";
+import { loadTodayTrades } from "../trade-store.js";
 import {
   checkDCA,
   checkTranches,
@@ -41,7 +47,17 @@ import {
   tickEntryPolicy,
   tickRetestPaper
 } from "./entry-policy.js";
+import {
+  checkDailyLossLimit,
+  checkMinRR
+} from "./risk-gates.js";
 
+const DECISION_LOG_LIMIT = 150;
+const FAST_SCAN = process.env.FAST_SCAN_MODE === "true";
+const CLAUDE_SETUP_COOLDOWN_MS = 20 * 60 * 1000;
+const CLAUDE_SETUP_MAX_AGE_MS = 45 * 60 * 1000;
+const CLAUDE_CACHE_RETENTION_MS = 24 * 60 * 60 * 1000;
+const VOLATILITY_FLAG_RETENTION_MS = 30 * 60 * 1000;
 const CONTEXT_ONLY_SIGNALS = new Set([
   "TK-bull",
   "chikou-bull",
@@ -68,6 +84,60 @@ const REVERSAL_SIGNALS = new Set([
   "OBV-bear-div"
 ]);
 const BLACKLISTED_COINS = new Set(["AVAX-USDT-SWAP", "LINK-USDT-SWAP"]);
+
+function roundValue(value, digits = 6) {
+  return Number.isFinite(value) ? parseFloat(value.toFixed(digits)) : value;
+}
+
+function incrementCount(map, key) {
+  map[key] = (map[key] || 0) + 1;
+}
+
+function pushDecisionLog(state, entry) {
+  if (!state.decisionLog) state.decisionLog = [];
+  state.decisionLog.push(entry);
+  if (state.decisionLog.length > DECISION_LOG_LIMIT) {
+    state.decisionLog = state.decisionLog.slice(-DECISION_LOG_LIMIT);
+  }
+}
+
+function getSetupFingerprint(candidate) {
+  return [
+    candidate.symbol,
+    candidate.signal,
+    candidate.setupType,
+    Math.round(candidate.score * 2) / 2,
+    [...(candidate.reasons || [])].slice(0, 5).sort().join(",")
+  ].join(":");
+}
+
+function shouldSkipClaude(candidate, state) {
+  const cache = state.claudeValidations?.[candidate.symbol];
+  if (!cache) return false;
+
+  const age = Date.now() - cache.ts;
+  const sameSetup = cache.fingerprint === getSetupFingerprint(candidate);
+
+  if (age > CLAUDE_SETUP_MAX_AGE_MS) return false;
+  if (sameSetup && age < CLAUDE_SETUP_COOLDOWN_MS) return true;
+  return false;
+}
+
+function pruneClaudeValidationCache(state) {
+  if (!state.claudeValidations) return;
+  const cutoff = Date.now() - CLAUDE_CACHE_RETENTION_MS;
+  for (const [symbol, entry] of Object.entries(state.claudeValidations)) {
+    if (!entry?.ts || entry.ts < cutoff) delete state.claudeValidations[symbol];
+  }
+}
+
+function pruneVolatilityFlags(state) {
+  if (!state.volatilityFlags) return;
+  const cutoff = Date.now() - VOLATILITY_FLAG_RETENTION_MS;
+  for (const [symbol, flag] of Object.entries(state.volatilityFlags)) {
+    if (!flag?.ts || flag.ts < cutoff) delete state.volatilityFlags[symbol];
+  }
+}
 
 export async function runBot(env, deps) {
   const {
@@ -98,7 +168,11 @@ export async function runBot(env, deps) {
   try {
     switch (phase) {
       case 0:
-        await phaseRegimeAndExits(env, state, deps);
+        if (!FAST_SCAN) {
+          await phaseRegimeAndExits(env, state, deps);
+        } else {
+          await phaseExitsOnly(env, state, deps);
+        }
         state.lastPhase = 1;
         break;
       case 1:
@@ -115,6 +189,35 @@ export async function runBot(env, deps) {
   } catch (err) {
     console.error(`[PHASE ${phase}] Error:`, err.message || err);
     state.lastPhase = (phase + 1) % 3;
+  }
+
+  const drift = checkPerformanceDrift(state);
+  if (drift?.status === "warning") {
+    console.warn("[DRIFT WARNING]", drift.alerts.join(" | "));
+  }
+
+  const liveHealth = calculateRecentLiveHealth(state, 100);
+  state.lastRunSummary = {
+    runAt: new Date().toISOString(),
+    phaseStarted: phase,
+    nextPhase: state.lastPhase,
+    driftStatus: state.driftStatus?.status || (drift ? drift.status : "healthy"),
+    baseline: LIVE_BASELINE,
+    liveHealth,
+    lastScanSummary: state.lastScanSummary || null
+  };
+
+  if (liveHealth.enoughData) {
+    console.log(
+      `[LIVE HEALTH] n=${liveHealth.count} WR=${(liveHealth.winRate * 100).toFixed(1)}% ` +
+      `EV=$${liveHealth.expectancy.toFixed(2)} PF=${liveHealth.profitFactor.toFixed(2)} ` +
+      `DD=${((state.drawdown || 0) * 100).toFixed(1)}% | ` +
+      `Baseline WR=${(LIVE_BASELINE.winRate * 100).toFixed(1)}% ` +
+      `EV=$${LIVE_BASELINE.expectancy.toFixed(2)} PF=${LIVE_BASELINE.profitFactor.toFixed(2)} ` +
+      `DD=${(LIVE_BASELINE.maxDrawdown * 100).toFixed(1)}%`
+    );
+  } else {
+    console.log(`[LIVE HEALTH] Not enough closed-trade data yet (${liveHealth.count}/30).`);
   }
 
   await saveState(env, state);
@@ -158,12 +261,14 @@ async function processPendingEntries(env, state, deps) {
           continue;
         }
 
-        const opened = openPositionGradual(result.candidate, state, livePrices, env, {
+        const openResult = openPositionGradual(result.candidate, state, livePrices, env, {
           sendTelegram
         });
-        if (opened) {
+        if (openResult.opened) {
           await notifyTrade("OPEN", result.candidate, state, env);
           console.log(`[${symbol}] Limit entry filled @$${result.fillPrice}`);
+        } else {
+          console.log(`[${symbol}] Limit fill skipped: ${openResult.reason || "open-failed"}`);
         }
       }
 
@@ -176,6 +281,22 @@ async function processPendingEntries(env, state, deps) {
   }
 }
 
+async function phaseExitsOnly(env, state, deps) {
+  void env;
+  void deps;
+  if (!state.lastRegime) {
+    console.warn("[FAST] No regime cached yet - skipped phase 0 refresh.");
+    return;
+  }
+
+  // checkAllExits() already ran at the top of runBot().
+  // Fast scans skip BTC daily regime refresh and news Claude work here.
+  console.log(
+    `[FAST] Using cached regime ${state.lastRegime.label} | ` +
+    `Exits already processed:${state.lastExitCount || 0}`
+  );
+}
+
 async function checkAllExits(env, state, deps) {
   const {
     claudeBatchAnalysis,
@@ -184,6 +305,8 @@ async function checkAllExits(env, state, deps) {
     updateDynamicWeights,
     updateRegimeStats
   } = deps;
+
+  ensureEntryPolicyState(state);
 
   const tickers = await fetchAllTickers();
   const livePrices = {};
@@ -344,7 +467,7 @@ async function phaseRegimeAndExits(env, state, deps) {
   state.newsHeadlines = newsResult.headlines;
   state.newsNeedsClaude = newsResult.needsClaude;
 
-  if (newsResult.needsClaude) {
+  if (newsResult.needsClaude && !FAST_SCAN) {
     try {
       const claudeResult = await claudeBatchAnalysis({
         headlines: newsResult.headlines,
@@ -387,9 +510,47 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     return;
   }
 
+  pruneClaudeValidationCache(state);
+  pruneVolatilityFlags(state);
+
+  const scanSummary = {
+    ranAt: new Date().toISOString(),
+    phaseWindow: `${startFrac}-${endFrac}`,
+    regime: regime.label,
+    candidatesScored: 0,
+    candidatesQualified: 0,
+    candidatesFilteredByScorer: 0,
+    autoCandidates: 0,
+    claudeCandidates: 0,
+    openedCount: 0,
+    blockedByReason: {},
+    openedBySetup: {},
+    openedBySignal: {},
+    skippedByReason: {},
+    rejectedByReason: {}
+  };
+
   const timeFilter = getTimeFilter();
   if (timeFilter.shouldAvoidEntry) {
     console.log(`[SCAN] Avoiding entries - near funding settlement (${timeFilter.utcHour}:${String(timeFilter.utcMin).padStart(2, "0")} UTC)`);
+    incrementCount(scanSummary.skippedByReason, "funding-settlement-window");
+    incrementCount(scanSummary.blockedByReason, "funding-settlement-window");
+    state.lastScanSummary = scanSummary;
+    return;
+  }
+
+  let todayTrades = null;
+  try {
+    todayTrades = await loadTodayTrades();
+  } catch (err) {
+    console.error("[TRADE-STORE] Could not load today's trades:", err.message);
+  }
+  const dailyCheck = checkDailyLossLimit(state, todayTrades);
+  if (!dailyCheck.allowed) {
+    console.log(`[SCAN] ${dailyCheck.reason} - halting new entries for today`);
+    incrementCount(scanSummary.skippedByReason, "daily-loss-limit");
+    incrementCount(scanSummary.blockedByReason, "daily-loss-limit");
+    state.lastScanSummary = scanSummary;
     return;
   }
 
@@ -406,8 +567,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     return;
   }
 
-  const allContracts = await fetchAllContracts();
-  if (!allContracts || allContracts.length === 0) return;
+  pruneEntryCooldowns(state);
 
   const tickers = await fetchAllTickers();
   const volumeMap = {};
@@ -416,6 +576,10 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     volumeMap[t.contract] = parseFloat(t.volume_24h_quote || t.volume_24h_usd || t.volume_24h || 0);
     if (t.last) livePrices[t.contract] = t.last;
   }
+
+  const allContracts = await fetchAllContracts();
+  if (!allContracts || allContracts.length === 0) return;
+
   const blocked = state.newsBlocked || [];
   const boosted = state.newsBoosted || [];
 
@@ -458,10 +622,21 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const startIdx = Math.floor(rankedTradeable.length * startFrac);
   const endIdx = Math.floor(rankedTradeable.length * endFrac);
   const maxSymbolsPerRun = 20;
-  const batch = rankedTradeable.slice(
+  const rawBatch = rankedTradeable.slice(
     startIdx,
     Math.min(endIdx, startIdx + maxSymbolsPerRun)
   );
+  const flagged = Object.keys(state.volatilityFlags || {});
+  const batch = !FAST_SCAN
+    ? [
+        ...flagged.filter(symbol => rawBatch.includes(symbol)),
+        ...rawBatch.filter(symbol => !flagged.includes(symbol))
+      ]
+    : rawBatch;
+  scanSummary.batchScanned = batch.length;
+  scanSummary.contractUniverse = rankedTradeable.length;
+  scanSummary.newsBlockedCount = blocked.length;
+  scanSummary.existingPositions = Object.keys(state.positions).length;
 
   console.log(
     `[SCAN] Scoring ${batch.length} contracts ` +
@@ -478,6 +653,49 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
     if (i + chunkSize < batch.length) await sleep(100);
   }
+  scanSummary.candidatesScored = candidates.length;
+  scanSummary.candidatesFilteredByScorer = Math.max(0, batch.length - candidates.length);
+
+  const decisions = new Set();
+  const topSignalSet = new Set();
+  const qualifiedSet = new Set();
+  const consideredSet = new Set();
+
+  function finalizeDecision(candidate, outcome, skipReason = null, extra = {}) {
+    if (!candidate || decisions.has(candidate.symbol)) return;
+    decisions.add(candidate.symbol);
+
+    const entry = {
+      timestamp: new Date().toISOString(),
+      symbol: candidate.symbol,
+      regime: regime.label,
+      setupType: candidate.setupType || "unknown",
+      signal: candidate.signal,
+      score: roundValue(candidate.score, 3),
+      reasons: [...new Set(candidate.reasons || [])].slice(0, 20),
+      approvalType: extra.approvalType || candidate.approvalType || null,
+      h4Trend: candidate.h4Trend || "unknown",
+      fundingRate: Number.isFinite(candidate.fundingRate) ? roundValue(candidate.fundingRate, 6) : candidate.fundingRate ?? null,
+      correlationBlocked: extra.correlationBlocked || false,
+      outcome,
+      skipReason,
+      details: extra.details || null
+    };
+
+    pushDecisionLog(state, entry);
+
+    if (outcome === "opened") {
+      scanSummary.openedCount += 1;
+      incrementCount(scanSummary.openedBySetup, entry.setupType);
+      incrementCount(scanSummary.openedBySignal, entry.signal);
+    } else if (outcome === "skipped") {
+      incrementCount(scanSummary.skippedByReason, skipReason || "unknown");
+      incrementCount(scanSummary.blockedByReason, skipReason || "unknown");
+    } else if (outcome === "rejected") {
+      incrementCount(scanSummary.rejectedByReason, skipReason || "unknown");
+      incrementCount(scanSummary.blockedByReason, skipReason || "unknown");
+    }
+  }
 
   for (const c of candidates) {
     const base = c.symbol.replace("-USDT-SWAP", "");
@@ -485,6 +703,21 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       c.score += getWeight("news-boost", state);
       c.reasons.push("news-boost");
     }
+  }
+
+  if (FAST_SCAN) {
+    if (!state.volatilityFlags) state.volatilityFlags = {};
+    for (const c of candidates) {
+      if ((c.atrPct || 0) > 0.008) {
+        state.volatilityFlags[c.symbol] = {
+          ts: Date.now(),
+          reason: "atr-spike",
+          score: roundValue(c.score, 3)
+        };
+        console.log(`[FAST] Volatility flag: ${c.symbol} atrPct=${((c.atrPct || 0) * 100).toFixed(2)}%`);
+      }
+    }
+    pruneVolatilityFlags(state);
   }
 
   if (timeFilter.scoreAdjustment !== 0) {
@@ -529,6 +762,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const scores = candidates.map(c => c.score).sort((a, b) => b - a);
   const cutoff = scores[Math.floor(scores.length * 0.2)] ?? -Infinity;
   const topSignals = candidates.filter(c => c.score >= cutoff);
+  for (const candidate of topSignals) topSignalSet.add(candidate.symbol);
 
   if (topSignals.length > 0) {
     const fundingResults = await Promise.allSettled(
@@ -581,6 +815,8 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   }
 
   const qualified = topSignals.filter(c => c.score >= entryThreshold);
+  scanSummary.candidatesQualified = qualified.length;
+  for (const candidate of qualified) qualifiedSet.add(candidate.symbol);
   const longs = qualified.filter(c => c.signal === "long").sort((a, b) => b.score - a.score);
   const shorts = qualified.filter(c => c.signal === "short").sort((a, b) => b.score - a.score);
 
@@ -590,6 +826,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     if (li < longs.length) toConsider.push(longs[li++]);
     if (toConsider.length < slotsAvailable && si < shorts.length) toConsider.push(shorts[si++]);
   }
+  for (const candidate of toConsider) consideredSet.add(candidate.symbol);
 
   const autoList = [];
   const claudeList = [];
@@ -598,26 +835,114 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     const exposure = checkCorrelationExposure(c, state);
     if (!exposure.allowed) {
       console.log(`[${c.symbol}] Blocked: ${exposure.reason}`);
+      finalizeDecision(c, "skipped", "correlation-limit", {
+        correlationBlocked: true,
+        details: { reason: exposure.reason }
+      });
+      continue;
+    }
+
+    const rrCheck = checkMinRR(c);
+    if (!rrCheck.allowed) {
+      console.log(`[${c.symbol}] Blocked: ${rrCheck.reason}`);
+      finalizeDecision(c, "skipped", "min-rr", {
+        details: { reason: rrCheck.reason }
+      });
       continue;
     }
 
     if (c.score >= claudeThreshold) {
-      const reasons = c.reasons || [];
-      const contextOnlyCount = reasons.filter(r => CONTEXT_ONLY_SIGNALS.has(r)).length;
-      const hasReversalSignal = reasons.some(r => REVERSAL_SIGNALS.has(r));
-      if (contextOnlyCount >= 3 && !hasReversalSignal) {
-        autoList.push(c);
-        continue;
+      if (shouldSkipClaude(c, state)) {
+        const cached = state.claudeValidations?.[c.symbol];
+        if (cached?.approved) {
+          autoList.push({ ...c, approvalType: "claude-cached" });
+        } else {
+          const ageMin = Math.round((Date.now() - cached.ts) / 60000);
+          console.log(`[${c.symbol}] Claude cooldown - last rejected (${ageMin}m ago)`);
+          finalizeDecision(c, "rejected", "claude-cached-rejected", {
+            approvalType: "claude-cached",
+            details: {
+              ageMinutes: ageMin,
+              claudeReason: cached?.reason || "cached-rejected"
+            }
+          });
+        }
+      } else {
+        const reasons = c.reasons || [];
+        const contextOnlyCount = reasons.filter(r => CONTEXT_ONLY_SIGNALS.has(r)).length;
+        const hasReversalSignal = reasons.some(r => REVERSAL_SIGNALS.has(r));
+        if (contextOnlyCount >= 3 && !hasReversalSignal) {
+          autoList.push(c);
+          continue;
+        }
+        claudeList.push(c);
       }
-      claudeList.push(c);
     } else {
       autoList.push(c);
     }
   }
+  scanSummary.autoCandidates = autoList.length;
+  scanSummary.claudeCandidates = claudeList.length;
+
+  for (const candidate of candidates) {
+    if (!topSignalSet.has(candidate.symbol)) {
+      finalizeDecision(candidate, "rejected", "below-top-cutoff");
+    } else if (!qualifiedSet.has(candidate.symbol)) {
+      finalizeDecision(candidate, "rejected", "below-threshold", {
+        details: { threshold: roundValue(entryThreshold, 3) }
+      });
+    } else if (!consideredSet.has(candidate.symbol)) {
+      finalizeDecision(candidate, "skipped", "max-positions");
+    }
+  }
+
+  if (FAST_SCAN) {
+    for (const c of [...autoList, ...claudeList]) {
+      const cachedApproved = c.approvalType === "claude-cached";
+      const canOpen = cachedApproved || autoApproveSignal(c, regime);
+      const approvalType = cachedApproved ? "claude-cached" : "auto-fast";
+      if (canOpen) {
+        const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram });
+        if (!staged) {
+          finalizeDecision(c, "skipped", "entry-not-staged", { approvalType });
+        }
+      } else {
+        finalizeDecision(c, "rejected", c.score >= claudeThreshold ? "claude-skipped-fast-mode" : "auto-approval-blocked", {
+          approvalType
+        });
+      }
+    }
+    scanSummary.liveHealth = calculateRecentLiveHealth(state, 100);
+    scanSummary.baseline = LIVE_BASELINE;
+    state.lastScanSummary = scanSummary;
+
+    const blockedSummary = Object.entries(scanSummary.blockedByReason)
+      .map(([reason, count]) => `${reason}:${count}`)
+      .join(", ");
+    const openedSummary = Object.entries(scanSummary.openedBySetup)
+      .map(([setup, count]) => `${setup}:${count}`)
+      .join(", ");
+
+    console.log(`[SCAN] FAST Qualified:${qualified.length} Auto:${autoList.length} ClaudeBypassed:${claudeList.length}`);
+    console.log(
+      `[SCAN SUMMARY] scored:${scanSummary.candidatesScored}/${scanSummary.batchScanned} ` +
+      `qualified:${scanSummary.candidatesQualified} opened:${scanSummary.openedCount} ` +
+      `blocked:${blockedSummary || "none"} | openedBySetup:${openedSummary || "none"}`
+    );
+    return;
+  }
 
   for (const c of autoList) {
-    if (autoApproveSignal(c, regime)) {
-      await stageCandidateEntry(c, "auto", state, livePrices, env, { notifyTrade, sendTelegram });
+    const approvalType = c.approvalType || "auto";
+    if (approvalType === "claude-cached" || autoApproveSignal(c, regime)) {
+      const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram });
+      if (!staged) {
+        finalizeDecision(c, "skipped", "entry-not-staged", { approvalType });
+      }
+    } else {
+      finalizeDecision(c, "rejected", "auto-approval-blocked", {
+        approvalType: "auto"
+      });
     }
   }
 
@@ -632,18 +957,43 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
         state
       });
 
+      if (!state.claudeValidations) state.claudeValidations = {};
+      for (const c of claudeList) {
+        const v = claudeResult.validations[c.symbol];
+        state.claudeValidations[c.symbol] = {
+          fingerprint: getSetupFingerprint(c),
+          ts: Date.now(),
+          approved: v?.approved === true,
+          reason: v?.reason || "unknown"
+        };
+      }
+      pruneClaudeValidationCache(state);
+
       for (const c of claudeList) {
         const v = claudeResult.validations[c.symbol];
         if (v?.approved === true) {
           const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram });
           if (staged) {
             console.log(`[${c.symbol}] Claude approved: ${v.reason}`);
+          } else {
+            finalizeDecision(c, "skipped", "entry-not-staged", {
+              approvalType: "claude",
+              details: { claudeReason: v.reason || "approved" }
+            });
           }
         } else {
           if (v?.reason === "auto-fallback") {
             console.log(`[${c.symbol}] Claude unavailable, fallback decision: ${v.reason}`);
+            finalizeDecision(c, "rejected", "claude-unavailable-fallback-rejected", {
+              approvalType: "claude",
+              details: { claudeReason: v.reason }
+            });
           } else {
             console.log(`[${c.symbol}] Claude rejected: ${v?.reason || "no response"}`);
+            finalizeDecision(c, "rejected", "claude-rejected", {
+              approvalType: "claude",
+              details: { claudeReason: v?.reason || "no response" }
+            });
           }
         }
       }
@@ -654,9 +1004,18 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
           const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram });
           if (staged) {
             console.log(`[${c.symbol}] Claude unavailable, fallback decision: auto-fallback`);
+          } else {
+            finalizeDecision(c, "skipped", "entry-not-staged", {
+              approvalType: "claude",
+              details: { claudeReason: "auto-fallback" }
+            });
           }
         } else {
           console.log(`[${c.symbol}] Not opened: Claude unavailable and fallback did not approve`);
+          finalizeDecision(c, "rejected", "claude-unavailable-fallback-rejected", {
+            approvalType: "claude",
+            details: { claudeReason: "auto-fallback-rejected" }
+          });
         }
       }
     }
@@ -672,7 +1031,32 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   if (candidates.length === 0) {
     console.log(`[SCAN] Zero candidates passed indicator filters. ${batch.length} contracts scanned.`);
   }
+  scanSummary.topUnqualified = candidates
+    .filter(c => !qualifiedSet.has(c.symbol))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5)
+    .map(c => ({
+      symbol: c.symbol,
+      signal: c.signal,
+      score: roundValue(c.score, 2)
+    }));
+  scanSummary.liveHealth = calculateRecentLiveHealth(state, 100);
+  scanSummary.baseline = LIVE_BASELINE;
+  state.lastScanSummary = scanSummary;
+
+  const blockedSummary = Object.entries(scanSummary.blockedByReason)
+    .map(([reason, count]) => `${reason}:${count}`)
+    .join(", ");
+  const openedSummary = Object.entries(scanSummary.openedBySetup)
+    .map(([setup, count]) => `${setup}:${count}`)
+    .join(", ");
+
   console.log(`[SCAN] Qualified:${qualified.length} Auto:${autoList.length} Claude:${claudeList.length}`);
+  console.log(
+    `[SCAN SUMMARY] scored:${scanSummary.candidatesScored}/${scanSummary.batchScanned} ` +
+    `qualified:${scanSummary.candidatesQualified} opened:${scanSummary.openedCount} ` +
+    `blocked:${blockedSummary || "none"} | openedBySetup:${openedSummary || "none"}`
+  );
 }
 
 async function stageCandidateEntry(candidate, approvalType, state, livePrices, env, deps) {
@@ -688,16 +1072,19 @@ async function stageCandidateEntry(candidate, approvalType, state, livePrices, e
   const result = queueEntry(filter.candidate, state, livePrices);
 
   if (result.action === "enter-market") {
-    const opened = openPositionGradual(result.candidate, state, livePrices, env, {
+    const openResult = openPositionGradual(result.candidate, state, livePrices, env, {
       sendTelegram
     });
-    if (opened) await notifyTrade("OPEN", result.candidate, state, env);
-    return opened;
+    if (openResult.opened) await notifyTrade("OPEN", result.candidate, state, env);
+    return openResult.opened;
   }
 
+  const improvementText = Number.isFinite(result.improvement)
+    ? `${result.improvement.toFixed(2)}% better`
+    : result.reason || result.action;
   console.log(
     `[${candidate.symbol}] Queued limit entry @$${result.limitPrice} ` +
-    `(${result.improvement.toFixed(2)}% better, ${result.maxCandles} candles)`
+    `(${improvementText}, ${result.maxCandles} candles)`
   );
   return true;
 }

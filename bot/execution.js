@@ -8,10 +8,28 @@ import {
   getAdaptiveSetupDecision,
   getApprovalRiskMultiplier,
   getApprovalStats,
-  getSetupRiskMultiplier
+  getSetupRiskMultiplier,
+  getSymbolRiskDecision
 } from "./stats.js";
 import { fetchCandles } from "./market-data.js";
 import { ichimoku, macd, rsiSeries, vwap } from "./indicators.js";
+
+const EXECUTION_LOG_LIMIT = 150;
+
+function roundValue(value, digits = 6) {
+  return Number.isFinite(value) ? parseFloat(value.toFixed(digits)) : value;
+}
+
+function pushExecutionEvent(state, event) {
+  if (!state.executionLog) state.executionLog = [];
+  state.executionLog.push({
+    timestamp: new Date().toISOString(),
+    ...event
+  });
+  if (state.executionLog.length > EXECUTION_LOG_LIMIT) {
+    state.executionLog = state.executionLog.slice(-EXECUTION_LOG_LIMIT);
+  }
+}
 
 export function portfolioValue(state, livePrices = null) {
   let unrealizedPnl = 0;
@@ -57,7 +75,14 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
         env
       ).catch(() => {});
     }
-    return false;
+    return {
+      opened: false,
+      reason: "circuit-breaker",
+      details: {
+        drawdown: roundValue(drawdown, 4),
+        portfolioValue: roundValue(currVal, 2)
+      }
+    };
   }
   state.circuitBreakerActive = false;
 
@@ -70,7 +95,26 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   const setupDecision = getAdaptiveSetupDecision(state, setupType);
   if (!setupDecision.allow) {
     console.log(`[${symbol}] Skipped: setup blocked (${setupType}) ${setupDecision.reason}`);
-    return false;
+    return {
+      opened: false,
+      reason: "setup-blocked",
+      details: {
+        setupType,
+        setupDecision: setupDecision.reason
+      }
+    };
+  }
+
+  const symbolDecision = getSymbolRiskDecision(state, symbol);
+  if (!symbolDecision.allow) {
+    console.log(`[${symbol}] Skipped: ${symbolDecision.reason}`);
+    return {
+      opened: false,
+      reason: "symbol-blocked",
+      details: {
+        symbolDecision: symbolDecision.reason
+      }
+    };
   }
 
   let sizeMultiplier = setupDecision.sizeMult;
@@ -78,6 +122,12 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     `[${symbol}] Setup decision (${setupType}) -> allow=${setupDecision.allow} ` +
     `sizeMult=${setupDecision.sizeMult.toFixed(2)} ${setupDecision.reason}`
   );
+  if (symbolDecision.sizeMult !== 1.0) {
+    console.log(
+      `[${symbol}] Symbol decision -> sizeMult=${symbolDecision.sizeMult.toFixed(2)} ${symbolDecision.reason}`
+    );
+  }
+  sizeMultiplier *= symbolDecision.sizeMult;
 
   if (setupType === "breakout") sizeMultiplier *= 1.15;
   else if (setupType === "liquidity-trap") sizeMultiplier *= 1.0;
@@ -103,7 +153,16 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
 
   const riskAmount = currVal * adjustedRiskPct;
   const slDist = Math.abs(price - sl);
-  if (slDist === 0) return false;
+  if (slDist === 0) {
+    return {
+      opened: false,
+      reason: "invalid-stop-distance",
+      details: {
+        price: roundValue(price),
+        sl: roundValue(sl)
+      }
+    };
+  }
 
   let totalSize = riskAmount / slDist;
   let totalNotional = totalSize * price;
@@ -119,7 +178,14 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
 
   if (tranche1Notional > state.cash) {
     console.log(`[${symbol}] Cash too low ($${state.cash.toFixed(2)} < $${tranche1Notional.toFixed(2)})`);
-    return false;
+    return {
+      opened: false,
+      reason: "cash-too-low",
+      details: {
+        cash: roundValue(state.cash, 2),
+        needed: roundValue(tranche1Notional, 2)
+      }
+    };
   }
 
   const liqPrice = signal === "long"
@@ -196,7 +262,40 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     `T2@$${tranche2Trigger.toFixed(6)} T3@$${tranche3Trigger.toFixed(6)} | ` +
     `Score:${score} [${reasons.join(",")}]`
   );
-  return true;
+  pushExecutionEvent(state, {
+    type: "open",
+    symbol,
+    direction: signal,
+    setupType,
+    approvalType,
+    requestedEntryPrice: roundValue(price),
+    filledEntryPrice: roundValue(price),
+    initialMargin: roundValue(tranche1Notional, 2),
+    plannedTotalMargin: roundValue(totalNotional, 2),
+    requestedSize: roundValue(totalSize * leverage),
+    filledSize: roundValue(tranche1Size),
+    leverage,
+    sl: roundValue(sl),
+    tp: roundValue(tp),
+    atrVal: roundValue(atrVal),
+    score: roundValue(score, 3),
+    riskAmount: roundValue(riskAmount, 2),
+    adjustedRiskPct: roundValue(adjustedRiskPct, 4),
+    setupDecision: setupDecision.reason,
+    symbolDecision: symbolDecision.reason,
+    reasons: [...(reasons || [])],
+    cashAfter: roundValue(state.cash, 2)
+  });
+  return {
+    opened: true,
+    reason: "opened",
+    details: {
+      leverage,
+      initialMargin: roundValue(tranche1Notional, 2),
+      plannedTotalMargin: roundValue(totalNotional, 2),
+      adjustedRiskPct: roundValue(adjustedRiskPct, 4)
+    }
+  };
 }
 
 export function checkTranches(pos, price, state) {
@@ -240,6 +339,19 @@ export function checkTranches(pos, price, state) {
           `📈 [${pos.symbol}] TRANCHE 2 filled @$${price.toFixed(6)} | ` +
           `+$${t2Notional.toFixed(2)} | Total:$${pos.notional.toFixed(2)} | SL→$${pos.sl.toFixed(6)}`
         );
+        pushExecutionEvent(state, {
+          type: "tranche-fill",
+          symbol: pos.symbol,
+          tranche: 2,
+          direction: pos.direction,
+          fillPrice: roundValue(price),
+          addedMargin: roundValue(t2Notional, 2),
+          totalMargin: roundValue(pos.notional, 2),
+          totalSize: roundValue(pos.size),
+          avgEntryPrice: roundValue(pos.entryPrice),
+          sl: roundValue(pos.sl),
+          cashAfter: roundValue(state.cash, 2)
+        });
       }
     }
   }
@@ -280,6 +392,19 @@ export function checkTranches(pos, price, state) {
           `📈 [${pos.symbol}] TRANCHE 3 filled @$${price.toFixed(6)} | ` +
           `FULL POSITION $${pos.notional.toFixed(2)} | SL→$${pos.sl.toFixed(6)}`
         );
+        pushExecutionEvent(state, {
+          type: "tranche-fill",
+          symbol: pos.symbol,
+          tranche: 3,
+          direction: pos.direction,
+          fillPrice: roundValue(price),
+          addedMargin: roundValue(t3Notional, 2),
+          totalMargin: roundValue(pos.notional, 2),
+          totalSize: roundValue(pos.size),
+          avgEntryPrice: roundValue(pos.entryPrice),
+          sl: roundValue(pos.sl),
+          cashAfter: roundValue(state.cash, 2)
+        });
       }
     }
   }
@@ -386,6 +511,18 @@ export async function checkDCA(pos, price, currentAtr, state, env, deps = {}) {
       `📉 [${pos.symbol}] DCA +50% @$${price.toFixed(6)} | ` +
       `New avg:$${pos.entryPrice.toFixed(6)} | New SL:$${pos.sl.toFixed(6)} | Margin:$${pos.notional.toFixed(2)}`
     );
+    pushExecutionEvent(state, {
+      type: "dca",
+      symbol: pos.symbol,
+      direction: pos.direction,
+      fillPrice: roundValue(price),
+      newEntryPrice: roundValue(pos.entryPrice),
+      totalMargin: roundValue(pos.notional, 2),
+      totalSize: roundValue(pos.size),
+      sl: roundValue(pos.sl),
+      confirmations,
+      cashAfter: roundValue(state.cash, 2)
+    });
 
     await notifyTrade("DCA", {
       symbol: pos.symbol,

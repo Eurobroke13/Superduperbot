@@ -12,7 +12,12 @@ const env = process.env;
 
 async function main() {
   switch (task) {
+    case "fast-scan":
+      process.env.FAST_SCAN_MODE = "true";
+      await runBot(env);
+      break;
     case "run-bot":
+      delete process.env.FAST_SCAN_MODE;
       await runBot(env);
       break;
     case "daily-report":
@@ -29,7 +34,7 @@ async function main() {
       break;
     default:
       throw new Error(
-        "Unknown task. Use one of: run-bot, daily-report, weekly-review, premarket, reevaluate"
+        "Unknown task. Use one of: fast-scan, run-bot, daily-report, weekly-review, premarket, reevaluate"
       );
   }
 }

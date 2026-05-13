@@ -28,6 +28,7 @@ import {
   sendWeeklyReview as sendWeeklyReviewCore
 } from "./bot/reports.js";
 import { runBot as runBotCore } from "./bot/runner.js";
+import { getWeightRegimeAware } from "./bot/risk-gates.js";
 import {
   loadState as loadPersistedState,
   saveState as savePersistedState
@@ -126,60 +127,80 @@ function trackSignalPerformance(state) {
 }
 
 function updateDynamicWeights(state) {
-  if (state.trades.length < 20) return;
-  if (state.trades.length % 20 !== 0 && state.lastWeightUpdate === state.trades.length) return;
-  state.lastWeightUpdate = state.trades.length;
-
-  const recent = state.trades.slice(-200);
-  if (recent.length < 20) return;
+  const recent = state.trades.slice(-80);
+  if (recent.length < 10) return;
 
   const stats = {};
   for (const trade of recent) {
+    const won = trade.pnl > 0;
+    const regime = trade.regime || "unknown";
+
     for (const reason of (trade.reasons || [])) {
-      if (!stats[reason]) stats[reason] = { wins: 0, losses: 0, totalPnl: 0, count: 0 };
-      stats[reason].count++;
-      stats[reason].totalPnl += trade.pnl;
-      if (trade.pnl > 0) stats[reason].wins++;
-      else stats[reason].losses++;
+      if (!stats[reason]) stats[reason] = { wins: 0, losses: 0, pnl: 0 };
+      stats[reason].wins += won ? 1 : 0;
+      stats[reason].losses += won ? 0 : 1;
+      stats[reason].pnl += trade.pnl;
+
+      const regimeKey = `${reason}:${regime}`;
+      if (!stats[regimeKey]) stats[regimeKey] = { wins: 0, losses: 0, pnl: 0 };
+      stats[regimeKey].wins += won ? 1 : 0;
+      stats[regimeKey].losses += won ? 0 : 1;
+      stats[regimeKey].pnl += trade.pnl;
     }
   }
 
-  const newWeights = {};
-  for (const [signal, base] of Object.entries(BASE_WEIGHTS)) {
-    const s = stats[signal];
-    if (!s || s.count < 10) { newWeights[signal] = base; continue; }
-    const winRate = s.wins / s.count;
-    const avgPnl  = s.totalPnl / s.count;
-    let multiplier;
-    if (winRate >= 0.70 && avgPnl > 0)     multiplier = 1.4;
-    else if (winRate >= 0.55 && avgPnl > 0) multiplier = 1.2;
-    else if (winRate >= 0.45)               multiplier = 1.0;
-    else if (winRate >= 0.35)               multiplier = 0.7;
-    else                                    multiplier = 0.4;
-    const raw = base * multiplier;
-    newWeights[signal] = Math.max(0.2, Math.min(4.0, parseFloat(raw.toFixed(2))));
-    if (Math.abs(newWeights[signal] - base) > 0.3) {
-      console.log(`[WEIGHTS] ${signal}: ${base} → ${newWeights[signal]} (WR:${(winRate*100).toFixed(0)}% n=${s.count} avgPnL:$${avgPnl.toFixed(2)})`);
+  if (!state.signalStats) state.signalStats = {};
+  for (const [key, s] of Object.entries(stats)) {
+    const count = s.wins + s.losses;
+    state.signalStats[key] = {
+      wins: s.wins,
+      losses: s.losses,
+      count,
+      totalPnl: parseFloat(s.pnl.toFixed(2))
+    };
+  }
+
+  const newWeights = { ...(state.dynamicWeights || {}) };
+  for (const [signal, s] of Object.entries(stats)) {
+    if (signal.includes(":")) continue;
+    const count = s.wins + s.losses;
+    if (count < 8) continue;
+
+    const wr = s.wins / count;
+    const ev = s.pnl / count;
+    let mult = 1.0;
+    if      (wr >= 0.65 && ev > 0) mult = 1.40;
+    else if (wr >= 0.55 && ev > 0) mult = 1.20;
+    else if (wr >= 0.50 && ev >= 0) mult = 1.05;
+    else if (wr >= 0.47 && ev >= 0) mult = 0.90;
+    else if (wr < 0.35 || ev < 0)  mult = 0.55;
+    else if (wr < 0.42)            mult = 0.65;
+    else if (wr < 0.47)            mult = 0.75;
+
+    newWeights[signal] = parseFloat(mult.toFixed(3));
+    if (Math.abs(newWeights[signal] - 1.0) > 0.2) {
+      console.log(`[WEIGHTS] ${signal}: 1.0 -> ${newWeights[signal]} (WR:${(wr * 100).toFixed(0)}% n=${count} ev:$${ev.toFixed(2)})`);
     }
   }
   state.dynamicWeights = newWeights;
 
   const disabled = [];
   for (const [signal, s] of Object.entries(stats)) {
-    if (s.count >= 25 && s.wins / s.count < 0.30 && s.totalPnl / s.count < 0) {
+    if (signal.includes(":")) continue;
+    const count = s.wins + s.losses;
+    if (count >= 25 && s.wins / count < 0.30 && s.pnl / count < 0) {
       disabled.push(signal);
-      console.warn(`[WEIGHTS] DISABLED "${signal}": WR=${((s.wins/s.count)*100).toFixed(0)}% over ${s.count} trades`);
+      console.warn(`[WEIGHTS] DISABLED "${signal}": WR=${((s.wins / count) * 100).toFixed(0)}% over ${count} trades`);
     }
   }
-  state.disabledSignals = disabled;
+  state.disabledSignals = Array.from(new Set([...disabled, "trap-vol-bear"]));
+  state.lastWeightUpdate = Date.now();
   console.log(`[WEIGHTS] Updated ${Object.keys(newWeights).length} signal weights from ${recent.length} trades`);
 }
 
 function getWeight(signal, state) {
-  if (state.dynamicWeights && state.dynamicWeights[signal] !== undefined) {
-    return state.dynamicWeights[signal];
-  }
-  return SIGNAL_WEIGHTS[signal] || 1.0;
+  const regimeLabel = state.lastRegime?.label || "unknown";
+  return getWeightRegimeAware(signal, state, regimeLabel, SIGNAL_WEIGHTS);
 }
 
 function getRegimePerformance(state, regimeLabel) {
@@ -239,7 +260,7 @@ function getAdaptiveThreshold(state, currentRegime) {
   const rs = state.regimeStats[currentRegime];
   if (!rs || rs.count < 15) {
     return currentRegime === "chop" || currentRegime === "sideways"
-      ? 3.5
+      ? ENTRY_THRESHOLD + 1
       : ENTRY_THRESHOLD;
   } // Not enough data
 
@@ -261,7 +282,7 @@ function getAdaptiveThreshold(state, currentRegime) {
   let adaptive = Math.max(3, Math.min(7, ENTRY_THRESHOLD + adjustment));
 
   if (currentRegime === "chop" || currentRegime === "sideways") {
-    adaptive = Math.min(adaptive, 3.5);
+    adaptive = Math.max(adaptive, ENTRY_THRESHOLD + 1);
   }
 
   if (adaptive !== ENTRY_THRESHOLD) {
@@ -446,7 +467,9 @@ async function notifyTrade(action, details, state, env) {
 // =============================================================================
 async function loadBotState(env) {
   try {
-    return await loadPersistedState();
+    const state = await loadPersistedState();
+    state.disabledSignals = Array.from(new Set([...(state.disabledSignals || []), "trap-vol-bear"]));
+    return state;
   } catch (err) {
     console.error("[DB] CRITICAL: Failed to load state:", err.message);
     throw new Error("State load failed - aborting: " + err.message);
@@ -455,8 +478,19 @@ async function loadBotState(env) {
 
 async function saveBotState(env, state) {
   try {
-    if (state.trades.length > 500) state.trades = state.trades.slice(-500);
     if (state.weeklyReviews && state.weeklyReviews.length > 12) state.weeklyReviews = state.weeklyReviews.slice(-12);
+    if (state.claudeValidations) {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      for (const [symbol, entry] of Object.entries(state.claudeValidations)) {
+        if (!entry?.ts || entry.ts < cutoff) delete state.claudeValidations[symbol];
+      }
+    }
+    if (state.volatilityFlags) {
+      const cutoff = Date.now() - 30 * 60 * 1000;
+      for (const [symbol, flag] of Object.entries(state.volatilityFlags)) {
+        if (!flag?.ts || flag.ts < cutoff) delete state.volatilityFlags[symbol];
+      }
+    }
     if (state.coinHistory) {
       const coins = Object.keys(state.coinHistory);
       if (coins.length > 100) {

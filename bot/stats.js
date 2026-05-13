@@ -5,6 +5,13 @@ import {
   OUTPUT_COST_PER_MTOK
 } from "./config.js";
 
+export const LIVE_BASELINE = {
+  winRate: 0.436,
+  expectancy: 4.034,
+  profitFactor: 1.525,
+  maxDrawdown: 0.0346
+};
+
 export function getSetupStats(trades, setupType) {
   const rows = (trades || []).filter((t) => t.setupType === setupType);
   if (rows.length === 0) return null;
@@ -54,6 +61,83 @@ export function getApprovalStats(trades, approvalType) {
     avgWin,
     avgLoss,
     expectancy
+  };
+}
+
+export function getSymbolStats(trades, symbol) {
+  const rows = (trades || []).filter((t) => t.symbol === symbol);
+  if (rows.length === 0) return null;
+
+  const wins = rows.filter((t) => t.pnl > 0);
+  const losses = rows.filter((t) => t.pnl <= 0);
+
+  const winRate = wins.length / rows.length;
+  const avgWin = wins.length
+    ? wins.reduce((sum, trade) => sum + trade.pnl, 0) / wins.length
+    : 0;
+  const avgLoss = losses.length
+    ? Math.abs(losses.reduce((sum, trade) => sum + trade.pnl, 0) / losses.length)
+    : 0;
+
+  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
+  const totalPnl = rows.reduce((sum, trade) => sum + trade.pnl, 0);
+
+  return {
+    count: rows.length,
+    winRate,
+    avgWin,
+    avgLoss,
+    expectancy,
+    totalPnl
+  };
+}
+
+export function getSymbolRiskDecision(state, symbol) {
+  const stats = getSymbolStats(state.trades || [], symbol);
+  if (!stats) {
+    return {
+      allow: true,
+      sizeMult: 1.0,
+      reason: "no-symbol-stats"
+    };
+  }
+
+  if (stats.count >= 80 && stats.expectancy < -2) {
+    return {
+      allow: false,
+      sizeMult: 0,
+      reason: `symbol-blocked n=${stats.count} ev=${stats.expectancy.toFixed(2)}`
+    };
+  }
+
+  if (stats.count >= 80 && stats.expectancy < 0 && stats.winRate < 0.40) {
+    return {
+      allow: false,
+      sizeMult: 0,
+      reason: `symbol-persistently-weak n=${stats.count} wr=${(stats.winRate * 100).toFixed(1)}% ev=${stats.expectancy.toFixed(2)}`
+    };
+  }
+
+  if (stats.count >= 50 && stats.expectancy < 0) {
+    return {
+      allow: true,
+      sizeMult: 0.6,
+      reason: `symbol-weak n=${stats.count} ev=${stats.expectancy.toFixed(2)}`
+    };
+  }
+
+  if (stats.count >= 50 && stats.expectancy > 5 && stats.winRate > 0.5) {
+    return {
+      allow: true,
+      sizeMult: 1.05,
+      reason: `symbol-strong n=${stats.count} ev=${stats.expectancy.toFixed(2)}`
+    };
+  }
+
+  return {
+    allow: true,
+    sizeMult: 1.0,
+    reason: `symbol-neutral n=${stats.count} ev=${stats.expectancy.toFixed(2)}`
   };
 }
 
@@ -250,6 +334,68 @@ export function estimateMonthlySpend(usage) {
   if (!usage) return 0;
   return ((usage.input || 0) / 1_000_000) * INPUT_COST_PER_MTOK +
          ((usage.output || 0) / 1_000_000) * OUTPUT_COST_PER_MTOK;
+}
+
+export function calculateRecentLiveHealth(state, lookback = 100) {
+  const trades = (state?.trades || []).slice(-lookback);
+  if (trades.length < 30) {
+    return {
+      enoughData: false,
+      count: trades.length
+    };
+  }
+
+  const wins = trades.filter((trade) => trade.pnl > 0);
+  const losses = trades.filter((trade) => trade.pnl <= 0);
+  const grossWin = wins.reduce((sum, trade) => sum + trade.pnl, 0);
+  const grossLoss = Math.abs(losses.reduce((sum, trade) => sum + trade.pnl, 0));
+  const winRate = wins.length / trades.length;
+  const totalPnl = trades.reduce((sum, trade) => sum + trade.pnl, 0);
+  const expectancy = totalPnl / trades.length;
+  const profitFactor = grossLoss > 0 ? grossWin / grossLoss : 999;
+
+  return {
+    enoughData: true,
+    count: trades.length,
+    winRate,
+    expectancy,
+    profitFactor,
+    totalPnl
+  };
+}
+
+export function checkPerformanceDrift(state) {
+  const health = calculateRecentLiveHealth(state, 100);
+  if (!health.enoughData) return null;
+
+  const alerts = [];
+
+  if (health.profitFactor < 1.30) {
+    alerts.push(`PF low: ${health.profitFactor.toFixed(2)} < 1.30`);
+  }
+
+  if (health.winRate < 0.40) {
+    alerts.push(`WR low: ${(health.winRate * 100).toFixed(1)}% < 40%`);
+  }
+
+  if (health.expectancy < 2.0) {
+    alerts.push(`Expectancy low: $${health.expectancy.toFixed(2)} < $2.00`);
+  }
+
+  if ((state.drawdown || 0) > 0.08) {
+    alerts.push(`Drawdown high: ${((state.drawdown || 0) * 100).toFixed(1)}% > 8%`);
+  }
+
+  const driftStatus = {
+    status: alerts.length === 0 ? "healthy" : "warning",
+    checkedAt: new Date().toISOString(),
+    baseline: LIVE_BASELINE,
+    alerts,
+    ...health
+  };
+
+  state.driftStatus = driftStatus;
+  return alerts.length === 0 ? null : driftStatus;
 }
 
 function mean(arr) {

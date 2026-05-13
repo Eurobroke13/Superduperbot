@@ -1,5 +1,23 @@
 import { ATR_SL_MULT } from "./config.js";
-import { registerExit } from "./symbol-cooldown.js";
+import { registerExit } from "./cooldown.js";
+import { insertTrade } from "../state-store.js";
+
+const EXECUTION_LOG_LIMIT = 150;
+
+function roundValue(value, digits = 6) {
+  return Number.isFinite(value) ? parseFloat(value.toFixed(digits)) : value;
+}
+
+function pushExecutionEvent(state, event) {
+  if (!state.executionLog) state.executionLog = [];
+  state.executionLog.push({
+    timestamp: new Date().toISOString(),
+    ...event
+  });
+  if (state.executionLog.length > EXECUTION_LOG_LIMIT) {
+    state.executionLog = state.executionLog.slice(-EXECUTION_LOG_LIMIT);
+  }
+}
 
 export function checkGraduatedExit(pos, price, high, low, currentAtr) {
   const { direction, entryPrice } = pos;
@@ -53,8 +71,9 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
       pos.sl = Math.max(pos.sl, pos.tpLevels.tp1.price);
     }
 
+    const profitATRs = currentAtr > 0 ? (price - entryPrice) / currentAtr : 0;
+
     if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit) {
-      const profitATRs = currentAtr > 0 ? (price - entryPrice) / currentAtr : 0;
       const trailDistance = currentAtr * Math.max(0.6, 1.2 - (profitATRs - 3.5) * 0.15);
       pos.sl = Math.max(pos.sl, pos.maxFavorable - trailDistance);
 
@@ -63,7 +82,6 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
       }
     }
 
-    const profitATRs = currentAtr > 0 ? (price - entryPrice) / currentAtr : 0;
     if (profitATRs > 3 && !pos.tpLevels.tp1.hit) {
       const trail = currentAtr * Math.max(1.0, ATR_SL_MULT - (profitATRs - 3) * 0.2);
       pos.sl = Math.max(pos.sl, pos.maxFavorable - trail);
@@ -100,8 +118,9 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
       pos.sl = Math.min(pos.sl, pos.tpLevels.tp1.price);
     }
 
+    const profitATRs = currentAtr > 0 ? (entryPrice - price) / currentAtr : 0;
+
     if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit) {
-      const profitATRs = currentAtr > 0 ? (entryPrice - price) / currentAtr : 0;
       const trailDistance = currentAtr * Math.max(0.6, 1.2 - (profitATRs - 3.5) * 0.15);
       pos.sl = Math.min(pos.sl, pos.maxFavorable + trailDistance);
 
@@ -110,7 +129,6 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
       }
     }
 
-    const profitATRs = currentAtr > 0 ? (entryPrice - price) / currentAtr : 0;
     if (profitATRs > 3 && !pos.tpLevels.tp1.hit) {
       const trail = currentAtr * Math.max(1.0, ATR_SL_MULT - (profitATRs - 3) * 0.2);
       pos.sl = Math.min(pos.sl, pos.maxFavorable + trail);
@@ -179,8 +197,12 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
     isPartial: true,
     partialPct: pct
   });
+  state.trades[state.trades.length - 1].regime = state.lastRegime?.label || "unknown";
 
   const tradeRecord = state.trades[state.trades.length - 1];
+  insertTrade(tradeRecord).catch(err =>
+    console.error("[TRADE-STORE]", err.message)
+  );
   updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
   registerExit(state.cooldowns || (state.cooldowns = {}), {
@@ -193,6 +215,23 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
     `📊 [${symbol}] PARTIAL CLOSE ${(pct * 100).toFixed(0)}% @$${price.toFixed(6)} | ` +
     `PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason} | Remaining:$${pos.notional.toFixed(2)}`
   );
+  pushExecutionEvent(state, {
+    type: "partial-close",
+    symbol,
+    direction: pos.direction,
+    exitPrice: roundValue(price),
+    closePct: roundValue(pct, 3),
+    closedNotional: roundValue(closeNotional, 2),
+    remainingNotional: roundValue(pos.notional, 2),
+    remainingSize: roundValue(pos.size),
+    pnl: roundValue(clampPnl),
+    pnlPct: roundValue(pnlPct, 2),
+    reason,
+    setupType: pos.setupType || "unknown",
+    approvalType: pos.approvalType || "unknown",
+    holdHours: roundValue((Date.now() - new Date(pos.openedAt).getTime()) / 3600000, 2),
+    cashAfter: roundValue(state.cash, 2)
+  });
   updateDynamicWeights(state);
 }
 
@@ -233,8 +272,12 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
     journal: journal || null,
     wasLiquidated: rawPnl <= -pos.notional
   });
+  state.trades[state.trades.length - 1].regime = state.lastRegime?.label || "unknown";
 
   const tradeRecord = state.trades[state.trades.length - 1];
+  insertTrade(tradeRecord).catch(err =>
+    console.error("[TRADE-STORE]", err.message)
+  );
   updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
   const cooldown = registerExit(state.cooldowns || (state.cooldowns = {}), {
@@ -254,4 +297,24 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
     `PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason}` +
     `${rawPnl <= -pos.notional ? " ⚠LIQUIDATED" : ""}`
   );
+  pushExecutionEvent(state, {
+    type: "close",
+    symbol,
+    direction: pos.direction,
+    entryPrice: roundValue(pos.entryPrice),
+    exitPrice: roundValue(price),
+    size: roundValue(pos.size),
+    leverage: pos.leverage,
+    notional: roundValue(pos.notional, 2),
+    pnl: roundValue(clampPnl),
+    pnlPct: roundValue(pnlPct, 2),
+    holdHours: roundValue(holdHours, 2),
+    reason,
+    setupType: pos.setupType || "unknown",
+    approvalType: pos.approvalType || "unknown",
+    score: roundValue(pos.score, 3),
+    reasons: [...(pos.reasons || [])],
+    wasLiquidated: rawPnl <= -pos.notional,
+    cashAfter: roundValue(state.cash, 2)
+  });
 }
