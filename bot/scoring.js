@@ -932,8 +932,6 @@ export async function scoreSymbol(symbol, regime, state) {
 export function autoApproveSignal(candidate) {
   const {
     signal,
-    obvDiv,
-    fisherVal,
     price,
     vwapVal,
     adxResult,
@@ -942,45 +940,24 @@ export function autoApproveSignal(candidate) {
     reasons = []
   } = candidate;
 
-  const hasReason = name => reasons.includes(name);
-  let conf = 0;
+  if (reasons.includes("transition-market")) return false;
+  if (setupType === "mean-reversion") return false;
 
-  if (setupType === "liquidity-trap") {
-    conf += 2;
-  } else if (setupType === "bull-pullback") {
-    conf += 2;
-  } else if (setupType === "breakout") {
-    if (
-      (signal === "long" && hasReason("ribbon-expansion-bull")) ||
-      (signal === "short" && hasReason("ribbon-expansion-bear"))
-    ) {
-      conf += 2;
-    }
-  } else if (setupType === "trend") {
-    conf += 1;
-  } else if (setupType === "mean-reversion") {
-    conf += 1;
-  }
+  const h4Aligned = signal === "long"
+    ? h4Trend === "bullish"
+    : h4Trend === "bearish";
 
-  if (hasReason("transition-market")) {
-    conf -= 1;
-  }
+  const vwapAligned = signal === "long"
+    ? Number.isFinite(price) && Number.isFinite(vwapVal) && price > vwapVal
+    : Number.isFinite(price) && Number.isFinite(vwapVal) && price < vwapVal;
 
-  if (signal === "long") {
-    if (obvDiv === "bullish" || obvDiv === "none") conf++;
-    if (fisherVal > -1.0) conf++;
-    if (price > vwapVal) conf++;
-    if (adxResult?.trending && adxResult.pdi > adxResult.mdi) conf++;
-    if (h4Trend === "bullish") conf++;
-  } else {
-    if (obvDiv === "bearish" || obvDiv === "none") conf++;
-    if (fisherVal < 1.0) conf++;
-    if (price < vwapVal) conf++;
-    if (adxResult?.trending && adxResult.pdi < adxResult.mdi) conf++;
-    if (h4Trend === "bearish") conf++;
-  }
+  const adxAligned = !!adxResult?.trending && (
+    signal === "long"
+      ? adxResult.pdi > adxResult.mdi
+      : adxResult.mdi > adxResult.pdi
+  );
 
-  return conf >= 3;
+  return h4Aligned && vwapAligned && adxAligned;
 }
 
 export function checkCorrelationExposure(candidate, state) {
