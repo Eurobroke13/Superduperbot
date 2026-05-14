@@ -5,8 +5,14 @@ import {
   loadRecentTrades,
   migrateTradesFromState
 } from "./trade-store.js";
+import {
+  initDecisionLogTable,
+  insertDecisionLog,
+  loadRecentDecisionLogs,
+  migrateDecisionLogFromState
+} from "./history-store.js";
 
-export { insertTrade };
+export { insertDecisionLog, insertTrade };
 
 const STATE_KEY = "bot_state_v1";
 
@@ -32,6 +38,7 @@ function defaultState() {
     newsBoosted: [],
     newsHeadlines: [],
     newsNeedsClaude: false,
+    decisionLog: [],
     tokenUsage: null,
     signalStats: {},
     disabledSignals: [],
@@ -55,6 +62,7 @@ function defaultState() {
 export async function loadState() {
   await initDb();
   await initTradesTable();
+  await initDecisionLogTable();
 
   const result = await pool.query(
     "SELECT state FROM bot_state WHERE state_key = $1",
@@ -79,7 +87,15 @@ export async function loadState() {
     }
   }
 
+  if (state.decisionLog && state.decisionLog.length > 0) {
+    const migrated = await migrateDecisionLogFromState(state.decisionLog);
+    if (migrated > 0) {
+      console.log(`[STATE] Migrated ${migrated} decision log entries to decision_log table`);
+    }
+  }
+
   state.trades = await loadRecentTrades(500);
+  state.decisionLog = await loadRecentDecisionLogs(150);
   if (!state.cooldowns) state.cooldowns = {};
   if (!state.decayingLimits) state.decayingLimits = {};
 
@@ -91,6 +107,7 @@ export async function saveState(state) {
 
   const stateForBlob = { ...state };
   delete stateForBlob.trades;
+  delete stateForBlob.decisionLog;
 
   await pool.query(
     `

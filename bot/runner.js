@@ -26,6 +26,7 @@ import {
   executePartialClose
 } from "./exits.js";
 import { loadTodayTrades } from "../trade-store.js";
+import { insertDecisionLog } from "../state-store.js";
 import {
   checkDCA,
   checkTranches,
@@ -99,6 +100,9 @@ function pushDecisionLog(state, entry) {
   if (state.decisionLog.length > DECISION_LOG_LIMIT) {
     state.decisionLog = state.decisionLog.slice(-DECISION_LOG_LIMIT);
   }
+  insertDecisionLog(entry).catch(err =>
+    console.error("[HISTORY-STORE]", err.message)
+  );
 }
 
 function getSetupFingerprint(candidate) {
