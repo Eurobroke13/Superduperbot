@@ -8,13 +8,51 @@ import { runBot } from "./bot.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
+const BOT_INTERVAL_MINUTES = Number(process.env.BOT_INTERVAL_MINUTES || 15);
+const BOT_START_DELAY_MS = Number(process.env.BOT_START_DELAY_MS || 15000);
+const SCHEDULER_DISABLED = process.env.DISABLE_BOT_SCHEDULER === "true";
+
+const scheduler = {
+  running: false,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastError: null,
+  runCount: 0
+};
+
+async function runScheduledBot(trigger = "scheduler") {
+  if (scheduler.running) {
+    console.log(`[SCHEDULER] Skipping ${trigger}: previous bot run still active`);
+    return { skipped: true, reason: "already-running" };
+  }
+
+  scheduler.running = true;
+  scheduler.lastStartedAt = new Date().toISOString();
+  scheduler.lastError = null;
+  console.log(`[SCHEDULER] Starting bot run (${trigger}) at ${scheduler.lastStartedAt}`);
+
+  try {
+    await runBot(process.env);
+    scheduler.runCount += 1;
+    scheduler.lastFinishedAt = new Date().toISOString();
+    console.log(`[SCHEDULER] Bot run completed at ${scheduler.lastFinishedAt}`);
+    return { skipped: false, ok: true };
+  } catch (error) {
+    scheduler.lastError = error.message || String(error);
+    scheduler.lastFinishedAt = new Date().toISOString();
+    console.error("[SCHEDULER] Bot run failed:", scheduler.lastError);
+    return { skipped: false, ok: false, error: scheduler.lastError };
+  } finally {
+    scheduler.running = false;
+  }
+}
 
 app.get("/", (_, res) => res.send("Live"));
 
 app.get("/health", async (_, res) => {
   try {
     await initDb();
-    res.json({ ok: true, database: "connected" });
+    res.json({ ok: true, database: "connected", scheduler });
   } catch (error) {
     console.error("[health]", error);
     res.status(500).json({ ok: false, error: error.message });
@@ -114,11 +152,12 @@ app.get("/pnl", async (_, res) => {
 
 app.get("/run", async (_, res) => {
   try {
-    await runBot(process.env);
+    const runResult = await runScheduledBot("manual");
     const state = await loadState();
 
     res.json({
-      ok: true,
+      ok: runResult.ok !== false,
+      runResult,
       message: "Bot run completed",
       runCount: state.runCount,
       lastRunAt: state.lastRunAt,
@@ -134,4 +173,21 @@ app.get("/run", async (_, res) => {
 
 app.listen(port, () => {
   console.log(`Server listening on ${port}`);
+  if (SCHEDULER_DISABLED) {
+    console.log("[SCHEDULER] Disabled by DISABLE_BOT_SCHEDULER=true");
+    return;
+  }
+
+  const intervalMs = Math.max(1, BOT_INTERVAL_MINUTES) * 60 * 1000;
+  console.log(`[SCHEDULER] Enabled: every ${BOT_INTERVAL_MINUTES} minutes, first run in ${BOT_START_DELAY_MS}ms`);
+  setTimeout(() => {
+    runScheduledBot("startup").catch(error =>
+      console.error("[SCHEDULER] Startup run failed:", error.message || error)
+    );
+  }, Math.max(0, BOT_START_DELAY_MS));
+  setInterval(() => {
+    runScheduledBot("interval").catch(error =>
+      console.error("[SCHEDULER] Interval run failed:", error.message || error)
+    );
+  }, intervalMs);
 });
