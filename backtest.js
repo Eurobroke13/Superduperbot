@@ -31,6 +31,9 @@ import {
   API_BASE, CLAUDE_THRESHOLD, ENTRY_THRESHOLD, MAX_POSITIONS,
   MAX_POSITION_SHARE, RISK_PCT, PAPER_CASH, SIGNAL_WEIGHTS
 } from "./bot/config.js";
+import { checkMinRR, SIGNAL_PAIRS } from "./bot/risk-gates.js";
+import { isOnCooldown, registerExit } from "./bot/cooldown.js";
+import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR  = path.join(__dirname, ".backtest-cache");
@@ -484,10 +487,13 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     const reasons = [];
 
     const TIERS = { weak: 0.5, medium: 1, strong: 2 };
-    const add   = (cond, name, isLong, weight = TIERS.medium) => {
+    // Fix 6: track each signal's score contribution for regime-aware equalization
+    const scoreLedger = [];
+    const add = (cond, name, isLong, weight = TIERS.medium) => {
       if (!cond) return;
       if (isLong) longScore += weight; else shortScore += weight;
       reasons.push(name);
+      scoreLedger.push({ name, contribution: weight, isLong });
     };
 
     // ── Trend / ranging regime ──
@@ -529,10 +535,23 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
         reasons.push("dead-range");
       }
     } else {
-      add(ribbon.bullishAligned, "ema-ribbon-bull", true,  TIERS.weak);
-      add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.weak);
-      longScore  *= 0.85; shortScore *= 0.85;
-      reasons.push("transition-market");
+      const adxVal = adxResult?.adx ?? 0;
+
+      if (adxVal >= 18) {
+        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.medium);
+        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.medium);
+        add(h4Trend === "bullish", "h4-bull", true, TIERS.medium);
+        add(h4Trend === "bearish", "h4-bear", false, TIERS.medium);
+        longScore *= 0.90;
+        shortScore *= 0.90;
+        reasons.push("mild-trend");
+      } else {
+        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.weak);
+        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.weak);
+        longScore *= 0.80;
+        shortScore *= 0.80;
+        reasons.push("transition-market");
+      }
     }
 
     // ── Universal signals ──
@@ -795,9 +814,8 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
       TIERS.medium
     );
 
-    // HTF confluence bonus
-    if (ribbon.bullishAligned && h4Trend === "bullish") longScore  += 3;
-    if (ribbon.bearishAligned && h4Trend === "bearish") shortScore += 3;
+    add(ribbon.bullishAligned && h4Trend === "bullish", "ribbon-h4-align-bull", true, TIERS.medium);
+    add(ribbon.bearishAligned && h4Trend === "bearish", "ribbon-h4-align-bear", false, TIERS.medium);
 
     if (volConfirm.isSignificant) { longScore += 1; shortScore += 1; reasons.push("volume"); }
 
@@ -825,6 +843,21 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
       reasons.push("htf-vs-vwap");
     }
 
+    // Fix 6 — regime-aware weight equalization: in sideways, average paired bull/bear weights
+    // so neither direction has a structural advantage from asymmetric tier weights.
+    if (regimeLabel === "sideways") {
+      for (const [bull, bear] of SIGNAL_PAIRS) {
+        const bullEntry = scoreLedger.find(e => e.name === bull);
+        const bearEntry = scoreLedger.find(e => e.name === bear);
+        if (!bullEntry && !bearEntry) continue;
+        const bullW = bullEntry ? bullEntry.contribution : 0;
+        const bearW = bearEntry ? bearEntry.contribution : 0;
+        const avg = (bullW + bearW) / 2;
+        if (bullEntry) longScore  += (avg - bullW);
+        if (bearEntry) shortScore += (avg - bearW);
+      }
+    }
+
     const scoreDiff = Math.abs(longScore - shortScore);
     const minDiff   = regimeLabel === "chop" ? 1.5 : 1.0;
     if (scoreDiff < minDiff) return null;
@@ -834,6 +867,7 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     else if (trap !== "none")                          setupType = "liquidity-trap";
     else if (!isTrending)                              setupType = "mean-reversion";
     else if (isStrongTrend)                            setupType = "trend";
+    else if (isTrending)                               setupType = "momentum";
     if (setupType === "breakout") bumpDiagnostic("breakout", "assigned");
 
     const baseMinScore = regimeLabel === "chop" ? 4 : 3;
@@ -853,7 +887,7 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     if (!isTrending) bumpDiagnostic("bullContinuation", "blockedNotTrending");
 
     const candidateBullContinuation =
-      setupType === "unknown" &&
+      (setupType === "momentum" || setupType === "unknown") &&
       regimeLabel === "bull" &&
       signal === "long" &&
       h4Trend === "bullish" &&
@@ -885,6 +919,10 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
       if (setupType === "breakout") bumpDiagnostic("breakout", "h4ScoreMisaligned");
       return null;
     }
+    if (setupType === "momentum" && !h4Score.aligned(signal)) {
+      score *= 0.85;
+      reasons.push("h4-misaligned");
+    }
 
     reasons.push(...h4Score.signals);
     if (signal === "long") score += h4Score.bullScore * 0.5;
@@ -893,7 +931,8 @@ function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
     const quality =
       (ribbon.bullishAligned || ribbon.bearishAligned ? 1 : 0) +
       (h4Trend !== "neutral" ? 1 : 0) +
-      (Math.abs(price - vwapVal) / price > 0.002 ? 1 : 0);
+      (Math.abs(price - vwapVal) / price > 0.002 ? 1 : 0) +
+      (volConfirm.isSignificant ? 1 : 0);
 
     const nearSupport = supports.some(s => Math.abs(price - s) / price < 0.005);
     const nearResistance = resistances.some(r => Math.abs(price - r) / price < 0.005);
@@ -1150,7 +1189,7 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
     // Position sizing — risk 3% of starting capital, 40% first tranche
     const { price, sl, tp, atrVal, riskReward } = candidate;
     const slDist  = Math.abs(price - sl);
-    if (slDist === 0 || riskReward < 1.2) { bar += 1; continue; }
+    if (slDist === 0 || !checkMinRR(candidate).allowed) { bar += 1; continue; }
 
     const riskAmount = PAPER_CASH * RISK_PCT;
     const fullSize   = riskAmount / slDist;
@@ -1246,6 +1285,13 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
     bySymbol[sym] = { symbol: sym, trades: [], skipped: [] };
   }
 
+  // Fix 4a: post-TP cooldown state
+  const cooldowns = {};
+  // Fix 4b: decaying limit pending orders { [symbol]: order }
+  const pendingDecayLimits = {};
+  // Fix 5: daily realized loss tracking { [utcDateStr]: trade[] }
+  const dailyTrades = {};
+
   const releaseClosed = (ts) => {
     for (let i = openPositions.length - 1; i >= 0; i--) {
       const pos = openPositions[i];
@@ -1253,16 +1299,90 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
       cash += pos.reservedNotional + pos.trade.pnl;
       allTrades.push(pos.trade);
       bySymbol[pos.symbol].trades.push(pos.trade);
+      // Fix 4a: register cooldown on full take-profit
+      registerExit(cooldowns, {
+        symbol: pos.symbol,
+        reason: pos.trade.exitReason,
+        closedAt: new Date(pos.trade.exitTs).toISOString()
+      });
+      // Fix 5: bucket closed trades by UTC day for daily-loss tracking
+      const tradeDate = new Date(pos.trade.exitTs).toISOString().split("T")[0];
+      if (!dailyTrades[tradeDate]) dailyTrades[tradeDate] = [];
+      dailyTrades[tradeDate].push(pos.trade);
       openPositions.splice(i, 1);
     }
   };
 
   for (let masterIdx = WARM_UP; masterIdx < master.length - 10; masterIdx++) {
     const ts = master[masterIdx].ts;
+    const barDate = new Date(ts).toISOString().split("T")[0];
     releaseClosed(ts);
+
+    // Fix 4b: tick all pending decaying limits against this bar's prices
+    for (const sym of Object.keys(pendingDecayLimits)) {
+      const order = pendingDecayLimits[sym];
+      if (openPositions.some(p => p.symbol === sym)) { delete pendingDecayLimits[sym]; continue; }
+      const c1h = map1h[sym];
+      const idx1h = h1IndexMaps[sym].get(ts);
+      if (idx1h === undefined || !c1h) continue;
+      const bar = c1h[idx1h];
+      const result = tickDecayingLimit(order, bar.low, bar.high, bar.close);
+      if (result.action === "fill-limit" || result.action === "fill-market") {
+        const fillPrice = result.fillPrice;
+        const cand = order.candidate;
+        const slDist = Math.abs(fillPrice - cand.sl);
+        if (slDist > 0) {
+          const currEquity = portfolioEquity(cash, openPositions);
+          const riskAmount = currEquity * RISK_PCT;
+          const fullSize = riskAmount / slDist;
+          const reservedNotional = Math.min(fullSize * fillPrice, currEquity * MAX_POSITION_SHARE);
+          if (reservedNotional > 0 && reservedNotional <= cash) {
+            const tranche1Size = (reservedNotional / fillPrice) * 0.40;
+            const simPos = {
+              symbol: sym, direction: cand.signal, entryPrice: fillPrice,
+              size: tranche1Size, notional: reservedNotional * 0.40,
+              sl: cand.sl, tp: cand.tp, atrVal: cand.atrVal
+            };
+            const futureCandles = c1h.slice(idx1h + 1, idx1h + 170);
+            if (futureCandles.length >= 3) {
+              const simResult = simulatePosition(simPos, futureCandles);
+              const exitBar = Math.min(simResult.barsHeld - 1, futureCandles.length - 1);
+              const exitTs = futureCandles[exitBar]?.ts ?? (ts + simResult.barsHeld * 3600000);
+              cash -= reservedNotional;
+              openPositions.push({
+                symbol: sym, reservedNotional, exitTs,
+                trade: {
+                  symbol: sym, cap: CAP_MAP[sym] || "unknown",
+                  regime: cand.regime || "unknown", signal: cand.signal,
+                  h4Trend: cand.h4Trend, setupType: cand.setupType,
+                  score: cand.score, reasons: [...(cand.reasons || []), "decaying-limit-fill"],
+                  riskReward: cand.riskReward, entryPrice: fillPrice, entryTs: ts,
+                  exitPrice: simResult.exit, exitTs, exitReason: simResult.exitReason,
+                  pnl: parseFloat(simResult.pnl.toFixed(4)),
+                  pnlPct: reservedNotional > 0 ? parseFloat(((simResult.pnl / reservedNotional) * 100).toFixed(2)) : 0,
+                  barsHeld: simResult.barsHeld, hoursHeld: simResult.barsHeld,
+                  partials: simResult.events.filter(e => e.type?.startsWith("tp")).length,
+                  tranchesHit: simResult.events.filter(e => e.type === "t2" || e.type === "t3").length,
+                  win: simResult.pnl > 0, atrPct: cand.atrPct
+                }
+              });
+            }
+          }
+        }
+        delete pendingDecayLimits[sym];
+      }
+    }
 
     const slotsAvailable = MAX_POSITIONS - openPositions.length;
     if (slotsAvailable <= 0) continue;
+
+    // Fix 5: daily loss limit — skip new entries if today's realized losses > 3% equity
+    const todayClosedTrades = dailyTrades[barDate] || [];
+    const dailyLoss = todayClosedTrades
+      .filter(t => t.pnl < 0)
+      .reduce((s, t) => s + Math.abs(t.pnl), 0);
+    const equity = portfolioEquity(cash, openPositions);
+    if (dailyLoss >= equity * 0.03) continue;
 
     const btcEnd = btcDaily.findLastIndex(c => c.ts <= ts);
     const regime = detectRegimeSimple(btcDaily, btcEnd > 0 ? btcEnd : 0);
@@ -1271,6 +1391,10 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
 
     for (const sym of ALL_COINS) {
       if (openPositions.some(p => p.symbol === sym)) continue;
+      // Fix 4b: skip if already has a pending decaying limit
+      if (pendingDecayLimits[sym]) continue;
+      // Fix 4a: skip if on post-TP cooldown
+      if (isOnCooldown(cooldowns, sym, new Date(ts)).onCooldown) continue;
 
       const c1h = map1h[sym];
       if (!c1h || c1h.length < WARM_UP + 50) continue;
@@ -1292,9 +1416,21 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
         continue;
       }
 
+      // Fix 3: min R:R gate (0.8, matching live bot — replaces the old hardcoded 1.2)
+      if (!checkMinRR(candidate).allowed) continue;
+
       const { price, sl, tp, atrVal, riskReward } = candidate;
       const slDist = Math.abs(price - sl);
-      if (slDist === 0 || riskReward < 1.2) continue;
+      if (slDist === 0) continue;
+
+      // Fix 4b: overbought/oversold setups use decaying limits instead of immediate entry
+      if (shouldDecay(candidate)) {
+        // Store regime on the candidate so the fill-bar trade object has it
+        candidate.regime = regime;
+        candidate.cap = CAP_MAP[sym] || "unknown";
+        pendingDecayLimits[sym] = createDecayingLimit(candidate, price);
+        continue;
+      }
 
       const currEquity = portfolioEquity(cash, openPositions);
       const riskAmount = currEquity * RISK_PCT;
