@@ -855,34 +855,28 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       continue;
     }
 
-    if (c.score >= claudeThreshold) {
-      if (shouldSkipClaude(c, state)) {
-        const cached = state.claudeValidations?.[c.symbol];
-        if (cached?.approved) {
-          autoList.push({ ...c, approvalType: "claude-cached" });
-        } else {
-          const ageMin = Math.round((Date.now() - cached.ts) / 60000);
-          console.log(`[${c.symbol}] Claude cooldown - last rejected (${ageMin}m ago)`);
-          finalizeDecision(c, "rejected", "claude-cached-rejected", {
-            approvalType: "claude-cached",
-            details: {
-              ageMinutes: ageMin,
-              claudeReason: cached?.reason || "cached-rejected"
-            }
-          });
-        }
+    if (autoApproveSignal(c, regime)) {
+      autoList.push(c);
+      continue;
+    }
+
+    if (shouldSkipClaude(c, state)) {
+      const cached = state.claudeValidations?.[c.symbol];
+      if (cached?.approved) {
+        autoList.push({ ...c, approvalType: "claude-cached" });
       } else {
-        const reasons = c.reasons || [];
-        const contextOnlyCount = reasons.filter(r => CONTEXT_ONLY_SIGNALS.has(r)).length;
-        const hasReversalSignal = reasons.some(r => REVERSAL_SIGNALS.has(r));
-        if (contextOnlyCount >= 3 && !hasReversalSignal) {
-          autoList.push(c);
-          continue;
-        }
-        claudeList.push(c);
+        const ageMin = Math.round((Date.now() - cached.ts) / 60000);
+        console.log(`[${c.symbol}] Claude cooldown - last rejected (${ageMin}m ago)`);
+        finalizeDecision(c, "rejected", "claude-cached-rejected", {
+          approvalType: "claude-cached",
+          details: {
+            ageMinutes: ageMin,
+            claudeReason: cached?.reason || "cached-rejected"
+          }
+        });
       }
     } else {
-      autoList.push(c);
+      claudeList.push(c);
     }
   }
   scanSummary.autoCandidates = autoList.length;

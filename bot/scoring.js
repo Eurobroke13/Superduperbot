@@ -338,21 +338,23 @@ export async function scoreSymbol(symbol, regime, state) {
         reasons.push("dead-range");
       }
     } else {
-      add(
-        ribbon.bullishAligned && ribbon.expanding && ribbon.priceAboveAll,
-        "ema-ribbon-bull",
-        true,
-        TIERS.weak
-      );
-      add(
-        ribbon.bearishAligned && ribbon.expanding && ribbon.priceBelowAll,
-        "ema-ribbon-bear",
-        false,
-        TIERS.weak
-      );
-      longScore *= 0.85;
-      shortScore *= 0.85;
-      reasons.push("transition-market");
+      const adxVal = adxResult?.adx ?? 0;
+
+      if (adxVal >= 18) {
+        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.medium);
+        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.medium);
+        add(h4Trend === "bullish", "h4-bull", true, TIERS.medium);
+        add(h4Trend === "bearish", "h4-bear", false, TIERS.medium);
+        longScore *= 0.90;
+        shortScore *= 0.90;
+        reasons.push("mild-trend");
+      } else {
+        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.weak);
+        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.weak);
+        longScore *= 0.80;
+        shortScore *= 0.80;
+        reasons.push("transition-market");
+      }
     }
 
     const rsiPrev2Global = rsiArr[n - 3] ?? rsiVal;
@@ -749,6 +751,21 @@ export async function scoreSymbol(symbol, regime, state) {
       setupType = "mean-reversion";
     } else if (isStrongTrend) {
       setupType = "trend";
+    } else if (isTrending) {
+      setupType = "momentum";
+    }
+
+    const candidateBullContinuation =
+      (setupType === "momentum" || setupType === "unknown") &&
+      regime.label === "bull" &&
+      signal === "long" &&
+      h4Trend === "bullish" &&
+      h4PullbackEntry &&
+      trap === "none" &&
+      isTrending;
+
+    if (candidateBullContinuation) {
+      setupType = "bull-continuation";
     }
 
     const baseMinScore = regime.label === "chop" ? 4 : 3;
@@ -788,6 +805,10 @@ export async function scoreSymbol(symbol, regime, state) {
     if ((setupType === "trend" || setupType === "breakout") && !h4Score.aligned(signal)) {
       return null;
     }
+    if (setupType === "momentum" && !h4Score.aligned(signal)) {
+      score *= 0.85;
+      reasons.push("h4-misaligned");
+    }
 
     reasons.push(...h4Score.signals);
     if (signal === "long") score += h4Score.bullScore * 0.5;
@@ -796,7 +817,8 @@ export async function scoreSymbol(symbol, regime, state) {
     const quality =
       (ribbon.bullishAligned || ribbon.bearishAligned ? 1 : 0) +
       (h4Trend !== "neutral" ? 1 : 0) +
-      (Math.abs(price - vwapVal) / price > 0.002 ? 1 : 0);
+      (Math.abs(price - vwapVal) / price > 0.002 ? 1 : 0) +
+      (volConfirm.isSignificant ? 1 : 0);
 
     const nearSupport = supports.some(s => Math.abs(price - s) / price < 0.005);
     const nearResistance = resistances.some(r => Math.abs(price - r) / price < 0.005);

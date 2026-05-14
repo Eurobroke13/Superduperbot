@@ -260,9 +260,9 @@ function getAdaptiveThreshold(state, currentRegime) {
   const rs = state.regimeStats[currentRegime];
   if (!rs || rs.count < 15) {
     return currentRegime === "chop" || currentRegime === "sideways"
-      ? ENTRY_THRESHOLD + 1
+      ? ENTRY_THRESHOLD + 0.5
       : ENTRY_THRESHOLD;
-  } // Not enough data
+  }
 
   const winRate = rs.wins / rs.count;
   const avgPnl  = rs.totalPnl / rs.count;
@@ -270,20 +270,22 @@ function getAdaptiveThreshold(state, currentRegime) {
   let adjustment = 0;
 
   if (winRate > 0.55 && avgPnl > 0) {
-    adjustment = -1; // More aggressive
+    adjustment = -1;
   } else if (winRate >= 0.45) {
-    adjustment = 0;  // Neutral
-  } else if (winRate >= 0.35) {
-    adjustment = 1;  // More selective
+    adjustment = 0;
+  } else if (winRate >= 0.38) {
+    adjustment = 0.5;
   } else {
-    adjustment = 2;  // Very selective
+    adjustment = 1;
   }
-
-  let adaptive = Math.max(3, Math.min(7, ENTRY_THRESHOLD + adjustment));
 
   if (currentRegime === "chop" || currentRegime === "sideways") {
-    adaptive = Math.max(adaptive, ENTRY_THRESHOLD + 1);
+    adjustment += 0.5;
   }
+
+  adjustment = Math.min(adjustment, 1.5);
+
+  const adaptive = Math.max(3, Math.min(6, ENTRY_THRESHOLD + adjustment));
 
   if (adaptive !== ENTRY_THRESHOLD) {
     console.log(
