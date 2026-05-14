@@ -677,8 +677,8 @@ export async function scoreSymbol(symbol, regime, state) {
       TIERS.medium
     );
 
-    if (ribbon.bullishAligned && h4Trend === "bullish") longScore += 3;
-    if (ribbon.bearishAligned && h4Trend === "bearish") shortScore += 3;
+    add(ribbon.bullishAligned && h4Trend === "bullish", "ribbon-h4-align-bull", true, TIERS.medium);
+    add(ribbon.bearishAligned && h4Trend === "bearish", "ribbon-h4-align-bear", false, TIERS.medium);
 
     if (volConfirm.isSignificant) {
       longScore += 1;

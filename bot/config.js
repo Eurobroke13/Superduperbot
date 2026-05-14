@@ -44,6 +44,7 @@ export const SIGNAL_WEIGHTS = {
   "fisher-rising": 0.5, "fisher-falling": 0.5,
   "rsi-bull-div": 0.5, "rsi-bear-div": 0.35,
   "ema-ribbon-bull": 1.5, "ema-ribbon-bear": 1.5,
+  "ribbon-h4-align-bull": 1.0, "ribbon-h4-align-bear": 1.0,
   "fisher-oversold": 0.5, "fisher-overbought": 1.2,
   "above-VWAP": 1.0, "below-VWAP": 1.0,
   "gauss-up": 0.7, "gauss-down": 0.7,
