@@ -227,11 +227,11 @@ export function getAdaptiveSetupDecision(state, setupType) {
     };
   }
 
-  if (expectancy < -5 && winRate < 0.45) {
+  if (expectancy < -5 && winRate < 0.35) {
     return {
-      allow: false,
-      sizeMult: 0.0,
-      reason: `blocked n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
+      allow: true,
+      sizeMult: 0.50,
+      reason: `penalized n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
     };
   }
 
