@@ -285,7 +285,7 @@ function getAdaptiveThreshold(state, currentRegime) {
 
   adjustment = Math.min(adjustment, 1.5);
 
-  const adaptive = Math.max(3, Math.min(6, ENTRY_THRESHOLD + adjustment));
+  const adaptive = Math.max(5, Math.min(6, ENTRY_THRESHOLD + adjustment));
 
   if (adaptive !== ENTRY_THRESHOLD) {
     console.log(

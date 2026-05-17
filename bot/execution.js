@@ -86,6 +86,19 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   }
   state.circuitBreakerActive = false;
 
+  // --- Max positions per setup type (prevents setup-type spam) ---
+  const MAX_PER_SETUP = 2;
+  const sameSetupCount = Object.values(state.positions)
+    .filter(p => p.setupType === setupType).length;
+  if (sameSetupCount >= MAX_PER_SETUP) {
+    console.log(`[${symbol}] Skipped: ${sameSetupCount} open ${setupType} positions (max ${MAX_PER_SETUP})`);
+    return {
+      opened: false,
+      reason: "setup-concentration-limit",
+      details: { setupType, openCount: sameSetupCount, max: MAX_PER_SETUP }
+    };
+  }
+
   const leverage = score >= 8 ? 6
     : score >= 7 ? 5
       : score >= 6 ? 4

@@ -227,18 +227,26 @@ export function getAdaptiveSetupDecision(state, setupType) {
     };
   }
 
+  // Hard block: enough data + clearly negative EV (no winRate requirement)
   if (count >= 50 && expectancy < -3) {
     return {
       allow: false,
       sizeMult: 0.0,
-      reason: `blocked n=${count} ev=${expectancy.toFixed(2)}`
+      reason: `blocked n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
     };
   }
-
+  // Softer block: original dual condition for smaller samples
+  if (expectancy < -5 && winRate < 0.45) {
+    return {
+      allow: false,
+      sizeMult: 0.0,
+      reason: `blocked n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
+    };
+  }
   if (expectancy < 0) {
     return {
       allow: true,
-      sizeMult: 0.75,
+      sizeMult: 0.50,
       reason: `established-weak n=${count} ev=${expectancy.toFixed(2)}`
     };
   }
