@@ -4,7 +4,7 @@ import { MONTHLY_BUDGET_USD, PAPER_CASH } from "./bot/config.js";
 import { fetchAllTickers } from "./bot/market-data.js";
 import { estimateMonthlySpend } from "./bot/stats.js";
 import { loadState } from "./state-store.js";
-import { runBot } from "./bot.js";
+import { runBot } from "./bot/deps.js";
 
 const app = express();
 const port = process.env.PORT || 3000;

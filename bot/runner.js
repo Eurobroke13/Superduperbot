@@ -17,7 +17,8 @@ import {
   fetchCandles,
   fetchCryptoPanicNews,
   fetchFundingRate,
-  fetchLunarCrush
+  fetchLunarCrush,
+  getApiHealth
 } from "./market-data.js";
 import { atr, sma } from "./indicators.js";
 import {
@@ -325,7 +326,20 @@ async function checkAllExits(env, state, deps) {
   for (const symbol of Object.keys(state.positions)) {
     try {
       const candles = await fetchCandles(symbol, "15m", 100);
-      if (!candles || candles.length < 50) continue;
+      if (!candles || candles.length < 50) {
+        const fallbackPrice = livePrices[symbol];
+        const pos = state.positions[symbol];
+        if (Number.isFinite(fallbackPrice) && pos) {
+          console.warn(`[EXIT ${symbol}] Candle fetch failed; checking hard SL/TP with live ticker $${fallbackPrice}`);
+          const fallbackExit = checkHardExitFromLivePrice(pos, fallbackPrice);
+          if (fallbackExit.exit) {
+            positionsToClose.push({ ...pos, exitPrice: fallbackPrice, exitReason: fallbackExit.reason });
+          }
+        } else {
+          console.warn(`[EXIT ${symbol}] Candle fetch failed and no live ticker fallback available.`);
+        }
+        continue;
+      }
       const closes = candles.map(c => c.close);
       const highs = candles.map(c => c.high);
       const lows = candles.map(c => c.low);
@@ -421,6 +435,20 @@ async function checkAllExits(env, state, deps) {
       }
     }
   }
+}
+
+function checkHardExitFromLivePrice(pos, price) {
+  if (!pos || !Number.isFinite(price)) return { exit: false, reason: null };
+
+  if (pos.direction === "long") {
+    if (Number.isFinite(pos.sl) && price <= pos.sl) return { exit: true, reason: "stop-loss" };
+    if (Number.isFinite(pos.tp) && price >= pos.tp) return { exit: true, reason: "take-profit-full" };
+  } else {
+    if (Number.isFinite(pos.sl) && price >= pos.sl) return { exit: true, reason: "stop-loss" };
+    if (Number.isFinite(pos.tp) && price <= pos.tp) return { exit: true, reason: "take-profit-full" };
+  }
+
+  return { exit: false, reason: null };
 }
 
 async function phaseRegimeAndExits(env, state, deps) {
@@ -533,6 +561,18 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     skippedByReason: {},
     rejectedByReason: {}
   };
+
+  const apiHealth = getApiHealth();
+  if (apiHealth.tripped) {
+    console.warn(
+      `[SCAN] OKX API circuit open: ${apiHealth.consecutiveFailures} consecutive failures; skipping scoring.`
+    );
+    incrementCount(scanSummary.skippedByReason, "api-circuit-open");
+    incrementCount(scanSummary.blockedByReason, "api-circuit-open");
+    scanSummary.apiHealth = apiHealth;
+    state.lastScanSummary = scanSummary;
+    return;
+  }
 
   const timeFilter = getTimeFilter();
   if (timeFilter.shouldAvoidEntry) {

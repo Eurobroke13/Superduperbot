@@ -1,7 +1,43 @@
 import { API_BASE, LUNARCRUSH_API } from "./config.js";
 
+const apiHealth = {
+  consecutiveFailures: 0,
+  lastSuccessAt: null,
+  lastFailureAt: null,
+  totalFailures: 0,
+  tripped: false,
+  tripThreshold: 5,
+  resetAfterMs: 3 * 60_000
+};
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function recordApiSuccess() {
+  apiHealth.consecutiveFailures = 0;
+  apiHealth.lastSuccessAt = new Date().toISOString();
+  apiHealth.tripped = false;
+}
+
+function recordApiFailure() {
+  apiHealth.consecutiveFailures += 1;
+  apiHealth.totalFailures += 1;
+  apiHealth.lastFailureAt = new Date().toISOString();
+  if (apiHealth.consecutiveFailures >= apiHealth.tripThreshold) {
+    apiHealth.tripped = true;
+  }
+}
+
+export function getApiHealth() {
+  if (apiHealth.tripped && apiHealth.lastFailureAt) {
+    const lastFailureMs = new Date(apiHealth.lastFailureAt).getTime();
+    if (Date.now() - lastFailureMs >= apiHealth.resetAfterMs) {
+      apiHealth.tripped = false;
+      apiHealth.consecutiveFailures = 0;
+    }
+  }
+  return { ...apiHealth };
 }
 
 export async function fetchWithRetry(url, retries = 2) {
@@ -17,14 +53,20 @@ export async function fetchWithRetry(url, retries = 2) {
           await sleep(500 * attempt);
           continue;
         }
+        recordApiFailure();
         return null;
       }
+      recordApiSuccess();
       return await res.json();
     } catch (_) {
-      if (attempt === retries) return null;
+      if (attempt === retries) {
+        recordApiFailure();
+        return null;
+      }
       await sleep(500 * attempt);
     }
   }
+  recordApiFailure();
   return null;
 }
 
@@ -66,6 +108,10 @@ export async function fetchCandles(symbol, interval, limit = 200) {
       `${API_BASE}/api/v5/market/candles?instId=${symbol}&bar=${okxInterval}&limit=${limit}`
     );
     if (!raw?.data || raw.data.length === 0) return null;
+    if (raw.data.length < limit * 0.5) {
+      console.warn(`[API] Partial candles for ${symbol} ${okxInterval}: ${raw.data.length}/${limit}`);
+      return null;
+    }
     return raw.data
       .map((candle) => ({
         time: parseInt(candle[0]),

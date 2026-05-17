@@ -51,23 +51,27 @@ export function cooldownDecision(state, symbol, now = new Date()) {
 export function applyEntryFilters(candidate, config = {}) {
   const policy = mergePolicy(config);
   const signalSet = getSignalSet(candidate);
-  candidate.signalSet = signalSet;
+  const filtered = {
+    ...candidate,
+    rawScore: candidate.rawScore ?? candidate.score,
+    signalSet
+  };
 
   if (!policy.enableEmaDistanceGate || !isTrendVsExtended(signalSet)) {
-    return { action: "allow", candidate };
+    return { action: "allow", candidate: filtered };
   }
 
-  if (!Number.isFinite(candidate.ema21) || !Number.isFinite(candidate.atrVal) || candidate.atrVal <= 0) {
-    return { action: "allow", candidate };
+  if (!Number.isFinite(filtered.ema21) || !Number.isFinite(filtered.atrVal) || filtered.atrVal <= 0) {
+    return { action: "allow", candidate: filtered };
   }
 
   const gate = emaDistanceGate({
-    currentPrice: candidate.price,
-    ema21: candidate.ema21,
-    atrVal: candidate.atrVal,
+    currentPrice: filtered.price,
+    ema21: filtered.ema21,
+    atrVal: filtered.atrVal,
     signalSet,
-    direction: candidate.signal,
-    currentScore: candidate.score,
+    direction: filtered.signal,
+    currentScore: filtered.adjustedScore ?? filtered.score,
     ...policy.emaGate
   });
 
@@ -79,13 +83,14 @@ export function applyEntryFilters(candidate, config = {}) {
     };
   }
 
-  if (gate.adjustedScore !== candidate.score) {
-    candidate.score = Math.round(gate.adjustedScore * 10) / 10;
-    candidate.reasons = [...(candidate.reasons || []), gate.reason];
-    candidate.signalSet = getSignalSet(candidate);
+  if (gate.adjustedScore !== (filtered.adjustedScore ?? filtered.score)) {
+    filtered.adjustedScore = Math.round(gate.adjustedScore * 10) / 10;
+    filtered.reasons = [...(filtered.reasons || []), gate.reason];
+    filtered._emaDistancePenalty = gate.reason;
+    filtered.signalSet = getSignalSet(filtered);
   }
 
-  return { action: "allow", candidate };
+  return { action: "allow", candidate: filtered };
 }
 
 export function queueEntry(candidate, state, livePrices = {}, config = {}) {
@@ -93,13 +98,14 @@ export function queueEntry(candidate, state, livePrices = {}, config = {}) {
   const policy = mergePolicy(config);
   const signalSet = getSignalSet(candidate);
   const currentPrice = Number(livePrices[candidate.symbol] || candidate.price);
+  const effectiveScore = candidate.adjustedScore ?? candidate.score;
 
   const wantsLimitHandling = policy.enableLimitEntries || policy.enableDecayingLimits;
   if (!wantsLimitHandling || !Number.isFinite(candidate.atrVal) || candidate.atrVal <= 0) {
     return { action: "enter-market", candidate: { ...candidate, price: currentPrice } };
   }
 
-  const withCurrentPrice = { ...candidate, price: currentPrice, signalSet };
+  const withCurrentPrice = { ...candidate, price: currentPrice, score: effectiveScore, signalSet };
 
   if (policy.enableDecayingLimits) {
     const rec = recommendApproach({
@@ -294,7 +300,7 @@ function maybeQueueRetestPaper(candidate, state, signalSet) {
     candleLow: candidate.signalCandleLow,
     candleClose: candidate.signalCandleClose,
     signalSet,
-    score: candidate.score,
+    score: candidate.adjustedScore ?? candidate.score,
     atrVal: candidate.atrVal,
     leverage: candidate.leverage || null,
     paperMode: true

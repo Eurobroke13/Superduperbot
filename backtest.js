@@ -509,7 +509,7 @@ function logGaussian(x, mu, sigma) {
 // SCORING — exact replica of scoreSymbol() using pre-loaded candle slices
 // (scoreSymbol() fetches candles internally so we can't call it in backtest)
 // =============================================================================
-function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
+export function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
   try {
     if (!candles1h || candles1h.length < 100) return null;
 
@@ -2112,26 +2112,28 @@ async function main() {
   }
 }
 
-main()
-  .then(async () => {
-    try {
-      if (dbModulePromise) {
-        const { closeDb } = await getDbModule();
-        await closeDb();
-      }
-    } catch (_) {}
-    process.exit(0);
-  })
-  .catch(err => {
-    console.error("\n[BACKTEST] Fatal error:", err.message || err);
-    Promise.resolve()
-      .then(async () => {
-        try {
-          if (dbModulePromise) {
-            const { closeDb } = await getDbModule();
-            await closeDb();
-          }
-        } catch (_) {}
-      })
-      .finally(() => process.exit(1));
-  });
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  main()
+    .then(async () => {
+      try {
+        if (dbModulePromise) {
+          const { closeDb } = await getDbModule();
+          await closeDb();
+        }
+      } catch (_) {}
+      process.exit(0);
+    })
+    .catch(err => {
+      console.error("\n[BACKTEST] Fatal error:", err.message || err);
+      Promise.resolve()
+        .then(async () => {
+          try {
+            if (dbModulePromise) {
+              const { closeDb } = await getDbModule();
+              await closeDb();
+            }
+          } catch (_) {}
+        })
+        .finally(() => process.exit(1));
+    });
+}

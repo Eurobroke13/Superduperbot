@@ -11,6 +11,10 @@ import {
   loadRecentDecisionLogs,
   migrateDecisionLogFromState
 } from "./history-store.js";
+import {
+  stampStateChecksum,
+  validateState
+} from "./bot/reconciliation.js";
 
 export { insertDecisionLog, insertTrade };
 
@@ -99,11 +103,20 @@ export async function loadState() {
   if (!state.cooldowns) state.cooldowns = {};
   if (!state.decayingLimits) state.decayingLimits = {};
 
+  const reconciliation = validateState(state);
+  if (reconciliation.warnings.length > 0) {
+    console.warn(`[STATE] Reconciliation warnings: ${reconciliation.warnings.join(" | ")}`);
+  }
+  if (reconciliation.fixed.length > 0) {
+    console.warn(`[STATE] Reconciliation fixed: ${reconciliation.fixed.join(" | ")}`);
+  }
+
   return state;
 }
 
 export async function saveState(state) {
   await initDb();
+  stampStateChecksum(state);
 
   const stateForBlob = { ...state };
   delete stateForBlob.trades;

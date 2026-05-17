@@ -59,7 +59,7 @@ function getSignalMultiplier(name, state, regimeLabel) {
   return 1.0;
 }
 
-function score4H(candles4h) {
+export function score4H(candles4h) {
   if (!candles4h || candles4h.length < 100) {
     return { bullScore: 0, bearScore: 0, signals: [], aligned: () => false };
   }

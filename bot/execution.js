@@ -46,6 +46,9 @@ export function portfolioValue(state, livePrices = null) {
   return state.cash + reserved + unrealizedPnl;
 }
 
+/**
+ * @param {import("./types.js").ScoredCandidate} candidate
+ */
 export function openPositionGradual(candidate, state, livePrices = null, env = null, deps = {}) {
   const { sendTelegram = () => Promise.resolve() } = deps;
   const {
@@ -61,6 +64,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     setupType = "unknown",
     approvalType = "auto"
   } = candidate;
+  const effectiveScore = candidate.adjustedScore ?? score;
 
   const currVal = portfolioValue(state, livePrices);
   if (!state.peakValue || currVal > state.peakValue) state.peakValue = currVal;
@@ -86,10 +90,10 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   }
   state.circuitBreakerActive = false;
 
-  const leverage = score >= 8 ? 6
-    : score >= 7 ? 5
-      : score >= 6 ? 4
-        : score >= 5 ? 3
+  const leverage = effectiveScore >= 8 ? 6
+    : effectiveScore >= 7 ? 5
+      : effectiveScore >= 6 ? 4
+        : effectiveScore >= 5 ? 3
           : 2;
 
   const setupDecision = getAdaptiveSetupDecision(state, setupType);
@@ -213,7 +217,9 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     tp,
     atrVal,
     riskReward,
-    score,
+    score: effectiveScore,
+    rawScore: candidate.rawScore ?? score,
+    adjustedScore: candidate.adjustedScore ?? null,
     reasons: [...(reasons || [])],
     setupType,
     approvalType,
@@ -260,7 +266,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     `🟢 [${symbol}] OPEN ${signal.toUpperCase()} T1/3 @$${price.toFixed(6)} | ` +
     `$${tranche1Notional.toFixed(2)} margin (40% of $${totalNotional.toFixed(2)}) | ` +
     `T2@$${tranche2Trigger.toFixed(6)} T3@$${tranche3Trigger.toFixed(6)} | ` +
-    `Score:${score} [${reasons.join(",")}]`
+    `Score:${effectiveScore} [${(reasons || []).join(",")}]`
   );
   pushExecutionEvent(state, {
     type: "open",
@@ -278,7 +284,9 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     sl: roundValue(sl),
     tp: roundValue(tp),
     atrVal: roundValue(atrVal),
-    score: roundValue(score, 3),
+    score: roundValue(effectiveScore, 3),
+    rawScore: roundValue(candidate.rawScore ?? score, 3),
+    adjustedScore: candidate.adjustedScore == null ? null : roundValue(candidate.adjustedScore, 3),
     riskAmount: roundValue(riskAmount, 2),
     adjustedRiskPct: roundValue(adjustedRiskPct, 4),
     setupDecision: setupDecision.reason,

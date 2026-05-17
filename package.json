@@ -12,6 +12,7 @@
     "task:weekly-review": "node task-runner.js weekly-review",
     "task:premarket": "node task-runner.js premarket",
     "task:reevaluate": "node task-runner.js reevaluate",
+    "test": "node --test tests/*.test.js",
     "railway:run-bot": "npm run task:run-bot",
     "backtest": "node backtest.js",
     "backtest:seed": "node backtest.js --seed",

@@ -4,7 +4,7 @@ import {
   sendWeeklyReview,
   premarketScan,
   reevaluatePositions
-} from "./bot.js";
+} from "./bot/deps.js";
 import { closeDb } from "./db.js";
 
 const task = process.argv[2];
