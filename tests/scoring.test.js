@@ -6,7 +6,8 @@ import {
   autoApproveSignal,
   calculateStructuredSLTP,
   fundingRateSignal,
-  score4H
+  score4H,
+  scoreFromData
 } from "../bot/scoring.js";
 
 function makeCandles(count, {
@@ -102,4 +103,33 @@ test("fundingRateSignal maps threshold bands", () => {
   assert.equal(fundingRateSignal(-0.004).reason, "funding-extreme-short");
   assert.equal(fundingRateSignal(-0.0012).reason, "funding-crowded-short");
   assert.equal(fundingRateSignal(0).signal, "neutral");
+});
+
+test("fundingRateSignal returns neutral for null and undefined", () => {
+  const nullResult = fundingRateSignal(null);
+  assert.equal(nullResult.signal, "neutral");
+  assert.equal(nullResult.score, 0);
+  const undefResult = fundingRateSignal(undefined);
+  assert.equal(undefResult.signal, "neutral");
+  assert.equal(undefResult.score, 0);
+});
+
+test("scoreFromData returns null for insufficient candle data", () => {
+  const mockState = { dynamicWeights: {}, signalStats: {}, disabledSignals: [] };
+  const regime = { label: "bull" };
+  assert.equal(scoreFromData("BTC-USDT-SWAP", null, [], regime, mockState), null);
+  assert.equal(scoreFromData("BTC-USDT-SWAP", [], [], regime, mockState), null);
+  const tooFew = makeCandles(50, { start: 100, step: 0.1 });
+  assert.equal(scoreFromData("BTC-USDT-SWAP", tooFew, [], regime, mockState), null);
+});
+
+test("scoreFromData is deterministic for the same candle input", () => {
+  const candles1h = makeCandles(620, { start: 50, step: 0.05, volume: 8000 });
+  const candles4h = makeCandles(220, { start: 50, step: 0.2, volume: 10000 });
+  const mockState = { dynamicWeights: {}, signalStats: {}, disabledSignals: [] };
+  const regime = { label: "bull" };
+  const r1 = scoreFromData("TEST-USDT-SWAP", candles1h, candles4h, regime, mockState);
+  const r2 = scoreFromData("TEST-USDT-SWAP", candles1h, candles4h, regime, mockState);
+  assert.deepEqual(r1?.score, r2?.score);
+  assert.deepEqual(r1?.signal, r2?.signal);
 });

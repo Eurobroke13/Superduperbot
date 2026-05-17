@@ -32,28 +32,28 @@ function getSignalMultiplier(name, state, regimeLabel) {
   const sigStats = state?.signalStats || {};
 
   const regimeKey = regimeLabel ? `${name}:${regimeLabel}` : null;
-  if (regimeKey && sigStats[regimeKey] && sigStats[regimeKey].count >= 8) {
+  if (regimeKey && sigStats[regimeKey] && sigStats[regimeKey].count >= 20) {
     const { wins, count } = sigStats[regimeKey];
     const wr = wins / count;
-    if (wr >= 0.60) return 1.35;
-    if (wr >= 0.50) return 1.10;
-    if (wr >= 0.47) return 0.90;
-    if (wr < 0.35) return 0.55;
-    if (wr < 0.42) return 0.75;
+    if (wr >= 0.62) return 1.20;
+    if (wr >= 0.52) return 1.08;
+    if (wr >= 0.47) return 0.92;
+    if (wr < 0.33) return 0.65;
+    if (wr < 0.40) return 0.80;
   }
 
   if (weights[name] !== undefined) {
     return Math.max(0.2, Math.min(weights[name], 1.6));
   }
 
-  if (sigStats[name] && sigStats[name].count >= 10) {
+  if (sigStats[name] && sigStats[name].count >= 15) {
     const { wins, count } = sigStats[name];
     const wr = wins / count;
-    if (wr >= 0.60) return 1.30;
-    if (wr >= 0.50) return 1.10;
-    if (wr >= 0.47) return 0.90;
-    if (wr < 0.35) return 0.55;
-    if (wr < 0.42) return 0.75;
+    if (wr >= 0.62) return 1.20;
+    if (wr >= 0.52) return 1.08;
+    if (wr >= 0.47) return 0.92;
+    if (wr < 0.33) return 0.65;
+    if (wr < 0.40) return 0.80;
   }
 
   return 1.0;
@@ -151,14 +151,22 @@ export function score4H(candles4h) {
 
 export async function scoreSymbol(symbol, regime, state) {
   try {
-    const disabled = state.disabledSignals || [];
-
     const [candles1h, candles4h] = await Promise.all([
       fetchCandles(symbol, "1h", CANDLE_LIMIT),
       fetchCandles(symbol, "4h", 200)
     ]);
-
     if (!candles1h || candles1h.length < 100) return null;
+    return scoreFromData(symbol, candles1h, candles4h, regime, state);
+  } catch (err) {
+    console.error(`[scoreSymbol:${symbol}]`, err.message || err);
+    return null;
+  }
+}
+
+export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
+  try {
+    if (!candles1h || candles1h.length < 100) return null;
+    const disabled = state.disabledSignals || [];
 
     const closes = candles1h.map(c => c.close);
     const highs = candles1h.map(c => c.high);
@@ -924,6 +932,7 @@ export async function scoreSymbol(symbol, regime, state) {
     return {
       symbol,
       signal,
+      direction: signal,
       score: Math.round(score * 10) / 10,
       setupType,
       price,
@@ -946,7 +955,7 @@ export async function scoreSymbol(symbol, regime, state) {
       atrPct
     };
   } catch (err) {
-    console.error(`[scoreSymbol:${symbol}]`, err.message || err);
+    console.error(`[scoreFromData:${symbol}]`, err.message || err);
     return null;
   }
 }

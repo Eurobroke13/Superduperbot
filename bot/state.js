@@ -10,6 +10,7 @@ import {
 async function loadBotState(env) {
   try {
     const state = await loadPersistedState();
+    state._loadedVersion = state._version ?? 0;
     state.disabledSignals = Array.from(new Set([...(state.disabledSignals || []), "trap-vol-bear"]));
     const reconciliation = validateState(state);
     if (reconciliation.warnings.length > 0) {
@@ -52,6 +53,7 @@ async function saveBotState(env, state) {
         }
       }
     }
+    state._version = (state._loadedVersion ?? 0) + 1;
     stampStateChecksum(state);
     await savePersistedState(state);
   } catch (err) {

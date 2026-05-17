@@ -453,15 +453,63 @@ export async function claudeBatchAnalysis({
   try {
     const raw    = await callClaudeBudgeted(prompt, env, state, 1200);
     const parsed = JSON.parse(raw);
+    const expectedSymbols = candidatesToValidate.map(c => c.symbol);
+    const { fixed } = validateClaudeResponse(parsed, expectedSymbols);
     return {
-      newsBlocked: parsed.news?.blocked || [],
-      newsBoosted: parsed.news?.boosted || [],
-      newsSummary: parsed.news?.summary || "",
-      validations: parsed.validations  || {},
-      journals:    parsed.journals     || {}
+      newsBlocked: fixed.news?.blocked || [],
+      newsBoosted: fixed.news?.boosted || [],
+      newsSummary: fixed.news?.summary || "",
+      validations: fixed.validations  || {},
+      journals:    fixed.journals     || {}
     };
   } catch (err) {
     console.error("[CLAUDE BATCH]", err.message);
     return fallback(candidatesToValidate);
   }
+}
+
+function validateClaudeResponse(parsed, expectedSymbols) {
+  const warnings = [];
+
+  if (typeof parsed !== "object" || parsed === null) {
+    console.warn("[CLAUDE VALIDATE] Response is not an object");
+    return { fixed: parsed ?? {} };
+  }
+
+  if (parsed.validations && typeof parsed.validations === "object") {
+    for (const [sym, v] of Object.entries(parsed.validations)) {
+      if (typeof v !== "object" || v === null) {
+        warnings.push(`${sym}: validation is not an object`);
+        continue;
+      }
+      if (typeof v.approved !== "boolean") {
+        if (v.approved === "true")       { v.approved = true; }
+        else if (v.approved === "false") { v.approved = false; }
+        else if (v.approve !== undefined) {
+          v.approved = !!v.approve;
+          delete v.approve;
+          warnings.push(`${sym}: had "approve" instead of "approved" — fixed`);
+        } else {
+          warnings.push(`${sym}: missing or invalid "approved" field — defaulting to reject`);
+          v.approved = false;
+        }
+      }
+      if (!v.reason || typeof v.reason !== "string") {
+        warnings.push(`${sym}: missing reason`);
+        v.reason = "no-reason-given";
+      }
+    }
+  }
+
+  for (const sym of expectedSymbols) {
+    if (!parsed.validations?.[sym]) {
+      warnings.push(`${sym}: no validation returned by Claude`);
+    }
+  }
+
+  if (warnings.length > 0) {
+    console.warn(`[CLAUDE VALIDATE] ${warnings.length} issue(s): ${warnings.join(" | ")}`);
+  }
+
+  return { fixed: parsed, warnings };
 }

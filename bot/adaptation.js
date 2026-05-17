@@ -41,18 +41,18 @@ function updateDynamicWeights(state) {
   for (const [signal, s] of Object.entries(stats)) {
     if (signal.includes(":")) continue;
     const count = s.wins + s.losses;
-    if (count < 8) continue;
+    if (count < 20) continue;
 
     const wr = s.wins / count;
     const ev = s.pnl / count;
     let mult = 1.0;
-    if      (wr >= 0.65 && ev > 0) mult = 1.40;
-    else if (wr >= 0.55 && ev > 0) mult = 1.20;
+    if      (wr >= 0.65 && ev > 0) mult = 1.20;
+    else if (wr >= 0.55 && ev > 0) mult = 1.08;
     else if (wr >= 0.50 && ev >= 0) mult = 1.05;
-    else if (wr >= 0.47 && ev >= 0) mult = 0.90;
-    else if (wr < 0.35 || ev < 0)  mult = 0.55;
-    else if (wr < 0.42)            mult = 0.65;
-    else if (wr < 0.47)            mult = 0.75;
+    else if (wr >= 0.47 && ev >= 0) mult = 0.92;
+    else if (wr < 0.33 || ev < 0)  mult = 0.65;
+    else if (wr < 0.40)            mult = 0.80;
+    else if (wr < 0.47)            mult = 0.90;
 
     newWeights[signal] = parseFloat(mult.toFixed(3));
     if (Math.abs(newWeights[signal] - 1.0) > 0.2) {

@@ -163,7 +163,7 @@ export function getAdaptiveSetupDecision(state, setupType) {
 
   const { count, expectancy, winRate } = stats;
 
-  if (count < 10) {
+  if (count < 15) {
     return {
       allow: true,
       sizeMult: 1.0,
@@ -171,7 +171,7 @@ export function getAdaptiveSetupDecision(state, setupType) {
     };
   }
 
-  if (count < 20) {
+  if (count < 25) {
     if (expectancy > 5 && winRate > 0.5) {
       return {
         allow: true,

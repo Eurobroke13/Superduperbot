@@ -26,6 +26,35 @@ still apply in bull and bear regimes.
 - `trap-vol-bull: 0.05`: left near zero so it can appear in diagnostics without
   materially moving the score.
 
+## Hardcoded disable in adaptation.js
+
+`trap-vol-bear` is unconditionally appended to `state.disabledSignals` at the
+end of every `updateDynamicWeights()` call:
+
+```js
+state.disabledSignals = Array.from(new Set([...disabled, "trap-vol-bear"]));
+```
+
+This means the adaptive system can never re-enable it on its own. To re-enable
+it, you must remove this hardcoded entry **and** raise the config weight above
+0.0.
+
+## Sample-size thresholds (updated 2026-05-17)
+
+Adaptive logic now requires higher sample counts before adjusting weights or
+sizing:
+
+| Location | Old threshold | New threshold |
+|---|---|---|
+| `getSignalMultiplier` regime branch (scoring.js) | 8 | 20 |
+| `getSignalMultiplier` overall branch (scoring.js) | 10 | 15 |
+| `updateDynamicWeights` (adaptation.js) | 8 | 20 |
+| `getAdaptiveSetupDecision` low-sample gate (stats.js) | 10 | 15 |
+| `getAdaptiveSetupDecision` early-adjust gate (stats.js) | 20 | 25 |
+
+Multiplier ranges were also compressed (max boost 1.35→1.20, max penalty
+0.55→0.65) to reduce volatility from small samples.
+
 ## Review Rule
 
 When changing these weights, record the date, sample size, and reason here.

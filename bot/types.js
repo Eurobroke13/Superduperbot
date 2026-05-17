@@ -5,6 +5,7 @@
  * @typedef {Object} ScoredCandidate
  * @property {string} symbol - OKX instrument id, e.g. "BTC-USDT-SWAP".
  * @property {"long"|"short"} signal - Canonical trade direction field.
+ * @property {"long"|"short"} direction - Alias for signal; both are set on the return object.
  * @property {number} score - Raw composite score from the scoring pipeline.
  * @property {number} [rawScore] - Original score before entry-policy filters.
  * @property {number} [adjustedScore] - Score after entry-policy penalties.
