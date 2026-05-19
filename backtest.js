@@ -28,6 +28,7 @@ import {
 } from "./bot/config.js";
 import { checkMinRR } from "./bot/risk-gates.js";
 import { detectRegime } from "./bot/regime.js";
+import { applyRoundTripFriction, FRICTION_CONFIG } from "./bot/friction.js";
 import { isOnCooldown, registerExit } from "./bot/cooldown.js";
 import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
 
@@ -288,7 +289,7 @@ let _regimeCache = new Map();
 
 function precomputeRegimes(btcDaily) {
   _regimeCache.clear();
-  const regState = { hmmParams: null, markovChain: null };
+  const regState = { hmmParams: null, markovChain: null, logRegimeDetails: false };
   for (let i = 200; i < btcDaily.length; i++) {
     const regime = detectRegime(btcDaily.slice(0, i + 1), regState);
     _regimeCache.set(i, regime.label);
@@ -460,9 +461,10 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
 
     const result = simulatePosition(pos, futureCandles);
 
-    trades.push({
+    const rawTrade = {
       symbol, cap, regime,
       signal:    candidate.signal,
+      direction: candidate.signal,
       setupType: candidate.setupType,
       score:     candidate.score,
       reasons:   candidate.reasons,
@@ -471,15 +473,16 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
       entryTs:    ts,
       exitPrice:  result.exit,
       exitReason: result.exitReason,
-      pnl:        parseFloat(result.pnl.toFixed(4)),
-      pnlPct:     notional > 0 ? parseFloat(((result.pnl / notional) * 100).toFixed(2)) : 0,
+      pnl:        result.pnl,
+      size:       tranche1,
+      notional,
       barsHeld:   result.barsHeld,
       hoursHeld:  result.barsHeld,
       partials:   result.events.filter(e => e.type?.startsWith("tp")).length,
       tranchesHit: result.events.filter(e => e.type?.startsWith("t")).length,
-      win:        result.pnl > 0,
       atrPct:     candidate.atrPct
-    });
+    };
+    trades.push(applyBacktestFriction(rawTrade, symbol));
 
     // Skip past the position to avoid overlapping trades on the same symbol
     bar += result.barsHeld + 2;
@@ -510,6 +513,34 @@ function backtestExposureAllowed(selection, openPositions, cash) {
   }
 
   return { allowed: true };
+}
+
+function applyBacktestFriction(trade, symbol) {
+  if (trade.friction) return trade;
+
+  const rawPnl = Number(trade.rawPnl ?? trade.pnl ?? 0);
+  const notional = Number(trade.notional || 0);
+  const size = Number(trade.size || (notional > 0 && trade.entryPrice > 0 ? notional / trade.entryPrice : 0));
+  const frictionResult = applyRoundTripFriction({
+    ...trade,
+    direction: trade.direction || trade.signal,
+    size,
+    notional,
+    pnl: rawPnl
+  }, symbol);
+  const adjustedPnl = frictionResult.adjustedPnl;
+
+  return {
+    ...trade,
+    direction: trade.direction || trade.signal,
+    size,
+    notional,
+    rawPnl: parseFloat(rawPnl.toFixed(4)),
+    pnl: parseFloat(adjustedPnl.toFixed(4)),
+    pnlPct: notional > 0 ? parseFloat(((adjustedPnl / notional) * 100).toFixed(2)) : 0,
+    friction: frictionResult.friction,
+    win: adjustedPnl > 0
+  };
 }
 
 function buildIndexMap(candles) {
@@ -603,23 +634,37 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
               const simResult = simulatePosition(simPos, futureCandles);
               const exitBar = Math.min(simResult.barsHeld - 1, futureCandles.length - 1);
               const exitTs = futureCandles[exitBar]?.ts ?? (ts + simResult.barsHeld * 3600000);
+              const fundingRate = getFundingRateAtTs(fundingMap[sym], ts);
+              const rawTrade = {
+                symbol: sym,
+                cap: CAP_MAP[sym] || "unknown",
+                regime: cand.regime || "unknown",
+                signal: cand.signal,
+                direction: cand.signal,
+                h4Trend: cand.h4Trend,
+                setupType: cand.setupType,
+                score: cand.score,
+                reasons: [...(cand.reasons || []), "decaying-limit-fill"],
+                riskReward: cand.riskReward,
+                entryPrice: fillPrice,
+                entryTs: ts,
+                exitPrice: simResult.exit,
+                exitTs,
+                exitReason: simResult.exitReason,
+                pnl: simResult.pnl,
+                size: tranche1Size,
+                notional: reservedNotional,
+                fundingRate,
+                barsHeld: simResult.barsHeld,
+                hoursHeld: simResult.barsHeld,
+                partials: simResult.events.filter(e => e.type?.startsWith("tp")).length,
+                tranchesHit: simResult.events.filter(e => e.type === "t2" || e.type === "t3").length,
+                atrPct: cand.atrPct
+              };
               cash -= reservedNotional;
               openPositions.push({
                 symbol: sym, reservedNotional, exitTs,
-                trade: {
-                  symbol: sym, cap: CAP_MAP[sym] || "unknown",
-                  regime: cand.regime || "unknown", signal: cand.signal,
-                  h4Trend: cand.h4Trend, setupType: cand.setupType,
-                  score: cand.score, reasons: [...(cand.reasons || []), "decaying-limit-fill"],
-                  riskReward: cand.riskReward, entryPrice: fillPrice, entryTs: ts,
-                  exitPrice: simResult.exit, exitTs, exitReason: simResult.exitReason,
-                  pnl: parseFloat(simResult.pnl.toFixed(4)),
-                  pnlPct: reservedNotional > 0 ? parseFloat(((simResult.pnl / reservedNotional) * 100).toFixed(2)) : 0,
-                  barsHeld: simResult.barsHeld, hoursHeld: simResult.barsHeld,
-                  partials: simResult.events.filter(e => e.type?.startsWith("tp")).length,
-                  tranchesHit: simResult.events.filter(e => e.type === "t2" || e.type === "t3").length,
-                  win: simResult.pnl > 0, atrPct: cand.atrPct
-                }
+                trade: applyBacktestFriction(rawTrade, sym)
               });
             }
           }
@@ -714,35 +759,38 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
       const exitBar = Math.min(result.barsHeld - 1, futureCandles.length - 1);
       const exitTs = futureCandles[exitBar]?.ts ?? (ts + result.barsHeld * 3600000);
 
+      const rawTrade = {
+        symbol: sym,
+        cap: CAP_MAP[sym] || "unknown",
+        regime,
+        signal: candidate.signal,
+        direction: candidate.signal,
+        h4Trend: candidate.h4Trend,
+        setupType: candidate.setupType,
+        score: candidate.score,
+        reasons: candidate.reasons,
+        riskReward: candidate.riskReward,
+        entryPrice: price,
+        entryTs: ts,
+        exitPrice: result.exit,
+        exitTs,
+        exitReason: result.exitReason,
+        pnl: result.pnl,
+        size: tranche1Size,
+        notional: reservedNotional,
+        barsHeld: result.barsHeld,
+        hoursHeld: result.barsHeld,
+        partials: result.events.filter(e => e.type?.startsWith("tp")).length,
+        tranchesHit: result.events.filter(e => e.type === "t2" || e.type === "t3").length,
+        atrPct: candidate.atrPct
+      };
+
       candidates.push({
         symbol: sym,
         idx1h,
         reservedNotional,
         exitTs,
-        trade: {
-          symbol: sym,
-          cap: CAP_MAP[sym] || "unknown",
-          regime,
-          signal: candidate.signal,
-          h4Trend: candidate.h4Trend,
-          setupType: candidate.setupType,
-          score: candidate.score,
-          reasons: candidate.reasons,
-          riskReward: candidate.riskReward,
-          entryPrice: price,
-          entryTs: ts,
-          exitPrice: result.exit,
-          exitTs,
-          exitReason: result.exitReason,
-          pnl: parseFloat(result.pnl.toFixed(4)),
-          pnlPct: reservedNotional > 0 ? parseFloat(((result.pnl / reservedNotional) * 100).toFixed(2)) : 0,
-          barsHeld: result.barsHeld,
-          hoursHeld: result.barsHeld,
-          partials: result.events.filter(e => e.type?.startsWith("tp")).length,
-          tranchesHit: result.events.filter(e => e.type === "t2" || e.type === "t3").length,
-          win: result.pnl > 0,
-          atrPct: candidate.atrPct
-        }
+        trade: rawTrade
       });
     }
 
@@ -813,6 +861,7 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
       if (!exposure.allowed) continue;
       if (selection.reservedNotional > cash) continue;
       cash -= selection.reservedNotional;
+      selection.trade = applyBacktestFriction(selection.trade, selection.symbol);
       openPositions.push(selection);
     }
   }
@@ -836,6 +885,8 @@ function computeMetrics(allTrades) {
   const wins   = allTrades.filter(t => t.pnl > 0);
   const losses = allTrades.filter(t => t.pnl <= 0);
   const totalPnl = allTrades.reduce((s, t) => s + t.pnl, 0);
+  const rawPnl = allTrades.reduce((s, t) => s + (t.rawPnl ?? t.pnl), 0);
+  const totalFriction = allTrades.reduce((s, t) => s + (t.friction?.total || 0), 0);
   const winRate  = wins.length / allTrades.length;
   const avgWin   = wins.length   ? wins.reduce((s, t)   => s + t.pnl, 0) / wins.length   : 0;
   const avgLoss  = losses.length ? Math.abs(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0;
@@ -903,6 +954,10 @@ function computeMetrics(allTrades) {
     losses:       losses.length,
     winRate:      parseFloat((winRate * 100).toFixed(1)),
     totalPnl:     parseFloat(totalPnl.toFixed(2)),
+    rawPnl:       parseFloat(rawPnl.toFixed(2)),
+    totalFriction: parseFloat(totalFriction.toFixed(2)),
+    avgFrictionPerTrade: parseFloat((totalFriction / allTrades.length).toFixed(2)),
+    frictionConfig: FRICTION_CONFIG,
     avgWin:       parseFloat(avgWin.toFixed(2)),
     avgLoss:      parseFloat(avgLoss.toFixed(2)),
     expectancy:   parseFloat(exp.toFixed(3)),
@@ -1102,6 +1157,10 @@ function printReport(metrics, bySymbol) {
   console.log(`  Trades : ${metrics.totalTrades}  (${metrics.wins}W / ${metrics.losses}L)`);
   console.log(`  Win Rate       : ${metrics.winRate}%`);
   console.log(`  Total PnL      : $${metrics.totalPnl}`);
+  if (metrics.totalFriction !== undefined) {
+    console.log(`  Raw PnL        : $${metrics.rawPnl}`);
+    console.log(`  Friction       : $${metrics.totalFriction} ($${metrics.avgFrictionPerTrade}/trade)`);
+  }
   console.log(`  Expectancy     : $${metrics.expectancy} / trade`);
   console.log(`  Profit Factor  : ${metrics.profitFactor}`);
   console.log(`  Sharpe         : ${metrics.sharpe}`);

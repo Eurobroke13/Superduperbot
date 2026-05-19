@@ -1,7 +1,10 @@
 import { sma } from "./indicators.js";
+import { detectSideways } from "./enhanced-regime.js";
 
 export function detectRegime(dailyCandles, state) {
   const closes = dailyCandles.map(c => c.close);
+  const highs = dailyCandles.map(c => c.high);
+  const lows = dailyCandles.map(c => c.low);
   const n = closes.length;
 
   const ma111 = sma(closes, 111);
@@ -29,9 +32,14 @@ export function detectRegime(dailyCandles, state) {
   state.markovChain = mc;
   const markovProb = mc.transitions[hmmState === 0 ? 0 : 1][0];
 
-  const recent = closes.slice(-14);
-  const rangeR = (Math.max(...recent) - Math.min(...recent)) / Math.min(...recent);
-  const sideways = rangeR < 0.10;
+  const sidewaysResult = detectSideways(closes, highs, lows);
+  const { sideways, confidence: sidewaysConfidence, signals: sidewaysSignals } = sidewaysResult;
+  if (sidewaysConfidence > 0.6 && state.logRegimeDetails !== false) {
+    console.log(
+      `[REGIME] Sideways confidence: ${(sidewaysConfidence * 100).toFixed(0)}%`,
+      Object.entries(sidewaysSignals).map(([k, v]) => `${k}:${v.signal}`).join(" ")
+    );
+  }
 
   let bull = 0, bear = 0;
   if (hmmLabel === "bull") bull++; else bear++;
@@ -43,7 +51,7 @@ export function detectRegime(dailyCandles, state) {
   else if (bull >= 2) label = "bull";
   else label = "bear";
 
-  return { label, hmmState, hmmLabel, markovProb, piCycle };
+  return { label, hmmState, hmmLabel, markovProb, piCycle, sidewaysConfidence, sidewaysSignals };
 }
 
 function initHMMParams(returns) {

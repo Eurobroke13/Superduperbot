@@ -20,6 +20,8 @@
 //   journal text for this coin. Claude can then do real pattern matching.
 // =============================================================================
 
+import { safeParseClaudeJSON, validateBatchResponse } from "./bot/safe-parse.js";
+
 // =============================================================================
 // LAYER 1 — updateCoinHistory (replaces existing function in bot.js)
 // Called from closePosition() in runner.js
@@ -451,17 +453,14 @@ export async function claudeBatchAnalysis({
     `"journals":{"SYM-USDT-SWAP":"2 sentence journal"}}`;
 
   try {
-    const raw    = await callClaudeBudgeted(prompt, env, state, 1200);
-    const parsed = JSON.parse(raw);
     const expectedSymbols = candidatesToValidate.map(c => c.symbol);
-    const { fixed } = validateClaudeResponse(parsed, expectedSymbols);
-    return {
-      newsBlocked: fixed.news?.blocked || [],
-      newsBoosted: fixed.news?.boosted || [],
-      newsSummary: fixed.news?.summary || "",
-      validations: fixed.validations  || {},
-      journals:    fixed.journals     || {}
-    };
+    const raw = await callClaudeBudgeted(prompt, env, state, 1200);
+    const { ok, data, error } = safeParseClaudeJSON(raw);
+    if (!ok) {
+      console.warn("[CLAUDE BATCH] JSON parse failed:", error, raw.slice(0, 300));
+      return fallback(candidatesToValidate);
+    }
+    return validateBatchResponse(data, expectedSymbols);
   } catch (err) {
     console.error("[CLAUDE BATCH]", err.message);
     return fallback(candidatesToValidate);

@@ -5,9 +5,11 @@ import { fetchAllTickers } from "./bot/market-data.js";
 import { estimateMonthlySpend } from "./bot/stats.js";
 import { loadState } from "./state-store.js";
 import { runBot } from "./bot/deps.js";
+import { authMiddleware, createRateLimiter } from "./bot/auth.js";
 
 const app = express();
 const port = process.env.PORT || 3000;
+const limiter = createRateLimiter({ windowMs: 60000, maxRequests: 5 });
 const BOT_INTERVAL_MINUTES = Number(process.env.BOT_INTERVAL_MINUTES || 15);
 const BOT_START_DELAY_MS = Number(process.env.BOT_START_DELAY_MS || 15000);
 const SCHEDULER_DISABLED = process.env.DISABLE_BOT_SCHEDULER === "true";
@@ -59,7 +61,7 @@ app.get("/health", async (_, res) => {
   }
 });
 
-app.get("/state", async (_, res) => {
+app.get("/state", authMiddleware, async (_, res) => {
   try {
     const state = await loadState();
     res.json(state);
@@ -69,7 +71,7 @@ app.get("/state", async (_, res) => {
   }
 });
 
-app.get("/pnl", async (_, res) => {
+app.get("/pnl", authMiddleware, async (_, res) => {
   try {
     const state = await loadState();
     const tickers = await fetchAllTickers();
@@ -150,7 +152,7 @@ app.get("/pnl", async (_, res) => {
   }
 });
 
-app.get("/run", async (_, res) => {
+app.get("/run", authMiddleware, limiter, async (_, res) => {
   try {
     const runResult = await runScheduledBot("manual");
     const state = await loadState();

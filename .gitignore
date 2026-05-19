@@ -5,3 +5,7 @@ node_modules/
 dist/
 coverage/
 *.log
+.backtest-cache/
+backtest-*.json
+bt-*.txt
+all-code.txt

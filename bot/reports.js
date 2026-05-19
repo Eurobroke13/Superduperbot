@@ -8,6 +8,7 @@ import {
 import { fetchCandles } from "./market-data.js";
 import { adx, bollingerBands, rsiSeries } from "./indicators.js";
 import { portfolioValue } from "./execution.js";
+import { safeParseClaudeJSON, validateReevalResponse } from "./safe-parse.js";
 
 export async function sendDailyReport(env, deps, options = {}) {
   const {
@@ -277,7 +278,12 @@ export async function reevaluatePositions(env, deps) {
 
   try {
     const raw = await callClaudeBudgeted(prompt, env, state, 300);
-    const actions = JSON.parse(raw);
+    const { ok, data, error } = safeParseClaudeJSON(raw);
+    if (!ok) {
+      console.warn("[REEVAL] JSON parse failed:", error, raw.slice(0, 200));
+      return;
+    }
+    const actions = validateReevalResponse(data);
     for (const [symbol, action] of Object.entries(actions)) {
       const pos = state.positions[symbol];
       if (!pos) continue;

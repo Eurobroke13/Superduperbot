@@ -763,10 +763,11 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       setupType = "momentum";
     }
 
+    const dominantSignal = longScore > shortScore ? "long" : "short";
     const candidateBullContinuation =
       (setupType === "momentum" || setupType === "unknown") &&
       regime.label === "bull" &&
-      signal === "long" &&
+      dominantSignal === "long" &&
       h4Trend === "bullish" &&
       h4PullbackEntry &&
       trap === "none" &&
