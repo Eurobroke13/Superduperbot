@@ -1,5 +1,5 @@
 import { ATR_SL_MULT } from "./config.js";
-import { registerExit } from "./cooldown.js";
+import { registerExit, registerOverboughtExit } from "./cooldown.js";
 import { insertTrade } from "../state-store.js";
 
 const EXECUTION_LOG_LIMIT = 150;
@@ -280,13 +280,24 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
   );
   updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
-  const cooldown = registerExit(state.cooldowns || (state.cooldowns = {}), {
+  const cooldowns = state.cooldowns || (state.cooldowns = {});
+  const cooldown = registerExit(cooldowns, {
     symbol,
     reason: tradeRecord.reason,
     closedAt: tradeRecord.closedAt
   });
   if (cooldown.applied) {
     console.log(`[COOLDOWN] ${cooldown.symbol} -> ${cooldown.reason}`);
+  }
+  // Overbought SL cooldown: prevent re-entering same symbol after stop-loss on overbought signal
+  const obCooldown = registerOverboughtExit(cooldowns, {
+    symbol,
+    reason: tradeRecord.reason,
+    closedAt: tradeRecord.closedAt,
+    reasons: tradeRecord.reasons || []
+  });
+  if (obCooldown.applied) {
+    console.log(`[OB-COOLDOWN] ${obCooldown.symbol} -> ${obCooldown.reason}`);
   }
   delete state.positions[symbol];
   updateDynamicWeights(state);

@@ -21,12 +21,13 @@ import {
 const DEFAULT_POLICY = {
   enableLimitEntries: false,
   enableDecayingLimits: process.env.DECAYING_LIMITS === "true",
-  enableEmaDistanceGate: false,
+  enableEmaDistanceGate: true,        // was false — always check EMA distance on overbought
   enableRetestPaper: true,
+  forceDecayOnOverbought: true,       // bypass enableDecayingLimits for overbought setups
   emaGate: {
-    warningThreshold: 1.5,
-    blockThreshold: 2.5,
-    scorePenalty: 1.0
+    warningThreshold: 1.0,            // was 1.5 — penalty kicks in sooner
+    blockThreshold: 1.8,              // was 2.5 — hard block much tighter
+    scorePenalty: 2.0                 // was 1.0 — stronger penalty
   }
 };
 
@@ -100,21 +101,24 @@ export function queueEntry(candidate, state, livePrices = {}, config = {}) {
   const currentPrice = Number(livePrices[candidate.symbol] || candidate.price);
   const effectiveScore = candidate.adjustedScore ?? candidate.score;
 
-  const wantsLimitHandling = policy.enableLimitEntries || policy.enableDecayingLimits;
+  const isOverbought = signalSet.includes("trend-vs-overbought") || signalSet.includes("trend-vs-oversold");
+  const forceDecay = policy.forceDecayOnOverbought && isOverbought;
+  const wantsLimitHandling = policy.enableLimitEntries || policy.enableDecayingLimits || forceDecay;
   if (!wantsLimitHandling || !Number.isFinite(candidate.atrVal) || candidate.atrVal <= 0) {
     return { action: "enter-market", candidate: { ...candidate, price: currentPrice } };
   }
 
   const withCurrentPrice = { ...candidate, price: currentPrice, score: effectiveScore, signalSet };
 
-  if (policy.enableDecayingLimits) {
+  if (policy.enableDecayingLimits || forceDecay) {
     const rec = recommendApproach({
       ...withCurrentPrice,
       direction: candidate.signal,
       setupType: normalizeSetupType(candidate.setupType)
     });
 
-    if (rec.approach === "decaying-limit") {
+    // Force overbought setups through decaying limit regardless of recommendApproach result
+    if (rec.approach === "decaying-limit" || forceDecay) {
       const order = createDecayingLimit({
         ...withCurrentPrice,
         direction: candidate.signal,
@@ -123,14 +127,14 @@ export function queueEntry(candidate, state, livePrices = {}, config = {}) {
         signalSet
       });
       order.candidate = sanitizeCandidate(withCurrentPrice);
-      order.reason = rec.reason;
+      order.reason = forceDecay ? "forced-overbought-decay" : rec.reason;
       state.decayingLimits[candidate.symbol] = order;
       maybeQueueRetestPaper(candidate, state, signalSet);
 
       return {
         action: "queued-decaying-limit",
         symbol: candidate.symbol,
-        reason: rec.reason,
+        reason: order.reason,
         limitPrice: order.limitPrice,
         maxCandles: order.offsets.length
       };

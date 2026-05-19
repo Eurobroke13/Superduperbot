@@ -952,7 +952,9 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       riskReward: structured.riskReward,
       reasons,
       h4Trend,
-      atrPct
+      atrPct,
+      _candles1h: candles1h,
+      _srLevels: srLevels
     };
   } catch (err) {
     console.error(`[scoreFromData:${symbol}]`, err.message || err);

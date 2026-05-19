@@ -227,18 +227,28 @@ export function getAdaptiveSetupDecision(state, setupType) {
     };
   }
 
-  if (expectancy < -5 && winRate < 0.35) {
+  // Block on negative EV OR combined weak stats — don't let setups bleed slowly
+  if (expectancy < -5 || (expectancy < 0 && winRate < 0.45)) {
     return {
-      allow: true,
-      sizeMult: 0.50,
-      reason: `penalized n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
+      allow: false,
+      sizeMult: 0.0,
+      reason: `blocked n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
+    };
+  }
+
+  // Persistent negative EV with large sample: hard block regardless of win rate
+  if (expectancy < 0 && count >= 80) {
+    return {
+      allow: false,
+      sizeMult: 0.0,
+      reason: `blocked-persistent n=${count} ev=${expectancy.toFixed(2)} wr=${(winRate * 100).toFixed(1)}%`
     };
   }
 
   if (expectancy < 0) {
     return {
       allow: true,
-      sizeMult: 0.75,
+      sizeMult: 0.60,  // was 0.75 — more aggressive reduction while still allowing
       reason: `established-weak n=${count} ev=${expectancy.toFixed(2)}`
     };
   }

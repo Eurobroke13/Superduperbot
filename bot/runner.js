@@ -54,6 +54,7 @@ import {
   checkDailyLossLimit,
   checkMinRR
 } from "./risk-gates.js";
+import { isConfirmedSweep, canOpenMoreTraps } from "./sweep-confirmation.js";
 
 const DECISION_LOG_LIMIT = 150;
 const FAST_SCAN = process.env.FAST_SCAN_MODE === "true";
@@ -860,6 +861,27 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
   }
 
+  // ── Sweep confirmation gate for liquidity-trap candidates ──────────────
+  // Require actual sweep evidence (wick through S/R + reclaim + volume spike)
+  for (const c of topSignals) {
+    if (c.setupType !== "liquidity-trap") continue;
+    const sweep = isConfirmedSweep({
+      candles: c._candles1h,
+      srLevels: c._srLevels || { supports: [], resistances: [] },
+      direction: c.signal,
+      atrVal: c.atrVal
+    });
+    if (!sweep.confirmed) {
+      console.log(`[${c.symbol}] Liquidity-trap blocked: no confirmed sweep (${sweep.details.reason})`);
+      c.score = 0;
+      c._sweepBlocked = true;
+      incrementCount(scanSummary.blockedByReason, "no-confirmed-sweep");
+    } else {
+      console.log(`[${c.symbol}] Sweep confirmed: ${sweep.details.type} @ ${sweep.details.sweepLevel}`);
+      c._sweepDetails = sweep.details;
+    }
+  }
+
   const qualified = topSignals.filter(c => c.score >= entryThreshold);
   scanSummary.candidatesQualified = qualified.length;
   for (const candidate of qualified) qualifiedSet.add(candidate.symbol);
@@ -942,7 +964,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       const canOpen = cachedApproved || autoApproveSignal(c, regime);
       const approvalType = cachedApproved ? "claude-cached" : "auto-fast";
       if (canOpen) {
-        const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram });
+        const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
         if (!staged) {
           finalizeDecision(c, "skipped", "entry-not-staged", { approvalType });
         }
@@ -975,7 +997,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   for (const c of autoList) {
     const approvalType = c.approvalType || "auto";
     if (approvalType === "claude-cached" || autoApproveSignal(c, regime)) {
-      const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram });
+      const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
       if (!staged) {
         finalizeDecision(c, "skipped", "entry-not-staged", { approvalType });
       }
@@ -1012,7 +1034,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       for (const c of claudeList) {
         const v = claudeResult.validations[c.symbol];
         if (v?.approved === true) {
-          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram });
+          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
           if (staged) {
             console.log(`[${c.symbol}] Claude approved: ${v.reason}`);
           } else {
@@ -1041,7 +1063,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       console.error("[CLAUDE VALIDATE]", err.message);
       for (const c of claudeList) {
         if (c.score >= 9 && autoApproveSignal(c, regime)) {
-          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram });
+          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
           if (staged) {
             console.log(`[${c.symbol}] Claude unavailable, fallback decision: auto-fallback`);
           } else {
@@ -1100,8 +1122,17 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 }
 
 async function stageCandidateEntry(candidate, approvalType, state, livePrices, env, deps) {
-  const { notifyTrade = async () => {}, sendTelegram = async () => {} } = deps;
+  const { notifyTrade = async () => {}, sendTelegram = async () => {}, scanSummary = {} } = deps;
   const withApproval = { ...candidate, approvalType };
+
+  // Batch cap: max 2 liquidity-trap entries per scan cycle
+  if (candidate.setupType === "liquidity-trap") {
+    if (!canOpenMoreTraps(scanSummary)) {
+      console.log(`[${candidate.symbol}] Blocked: liquidity-trap batch cap reached`);
+      return false;
+    }
+  }
+
   const filter = applyEntryFilters(withApproval);
 
   if (filter.action === "block") {

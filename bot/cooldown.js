@@ -9,6 +9,7 @@
 // =============================================================================
 
 const COOLDOWN_MS = 4 * 60 * 60 * 1000; // 4 hours
+const OVERBOUGHT_SL_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SNAP_TO_4H = true;
 
 const TP_REASONS = [
@@ -23,6 +24,11 @@ const TP_REASONS = [
 const FULL_TP_REASONS = [
   "take-profit-full",
   "take-profit-hit",
+];
+
+const OVERBOUGHT_SIGNALS = [
+  "trend-vs-overbought",
+  "trend-vs-oversold",
 ];
 
 function next4hBoundary(timestampMs) {
@@ -66,6 +72,54 @@ export function registerExit(cooldowns, closedTrade) {
     symbol,
     expiresAt,
     reason: `post-TP cooldown → expires ${expiresAt}`
+  };
+}
+
+/**
+ * Register a stop-loss exit on an overbought setup.
+ * Applies a 6h cooldown to prevent re-entering the same symbol with the same signal conflict.
+ * Call from closePosition when reason === 'stop-loss' and the trade had overbought signals.
+ *
+ * @param {object} cooldowns - state.cooldowns (mutated in place)
+ * @param {{ symbol: string, reason: string, closedAt: string, reasons: string[] }} closedTrade
+ * @returns {{ applied: boolean, symbol: string, expiresAt: string|null, reason: string|null }}
+ */
+export function registerOverboughtExit(cooldowns, closedTrade) {
+  const { symbol, reason, closedAt, reasons = [] } = closedTrade;
+
+  if (reason !== "stop-loss") {
+    return { applied: false, symbol, expiresAt: null, reason: null };
+  }
+
+  const hadOverbought = reasons.some(r => OVERBOUGHT_SIGNALS.includes(r));
+  if (!hadOverbought) {
+    return { applied: false, symbol, expiresAt: null, reason: null };
+  }
+
+  // Don't overwrite a longer existing cooldown (e.g. from a TP)
+  const existing = cooldowns[symbol];
+  if (existing?.expiresAt) {
+    const existingMs = new Date(existing.expiresAt).getTime();
+    const proposedMs = new Date(closedAt).getTime() + OVERBOUGHT_SL_COOLDOWN_MS;
+    if (existingMs > proposedMs) {
+      return { applied: false, symbol, expiresAt: existing.expiresAt, reason: "longer-cooldown-exists" };
+    }
+  }
+
+  const closedMs = new Date(closedAt).getTime();
+  let expiryMs = closedMs + OVERBOUGHT_SL_COOLDOWN_MS;
+  if (SNAP_TO_4H) {
+    expiryMs = Math.max(expiryMs, next4hBoundary(closedMs));
+  }
+
+  const expiresAt = new Date(expiryMs).toISOString();
+  cooldowns[symbol] = { expiresAt, reason: "overbought-sl" };
+
+  return {
+    applied: true,
+    symbol,
+    expiresAt,
+    reason: `overbought-SL cooldown 6h → expires ${expiresAt}`
   };
 }
 
