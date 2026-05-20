@@ -1,6 +1,52 @@
 import { sma } from "./indicators.js";
 import { detectSideways } from "./enhanced-regime.js";
 
+/**
+ * Detect bear regime signals across multiple timeframes
+ * Returns bearStrength score (0-5) for early entry opportunities
+ */
+export function detectBearSignals(closes, highs, lows, atrVal, adxResult, rsiVal, candles4h) {
+  let bearStrength = 0;
+  const signals = [];
+
+  // Signal 1: 4H Lower Highs (2 points) — PRIMARY, EARLIEST SIGNAL
+  if (candles4h && candles4h.length >= 10) {
+    const h4 = candles4h.map(c => c.high);
+    const n = h4.length;
+    // Last 5 candles: max(h4[n-1]...h4[n-4]) < max(h4[n-5]...h4[n-9])
+    const recentHigh = Math.max(...h4.slice(Math.max(0, n - 5), n));
+    const prevHigh = Math.max(...h4.slice(Math.max(0, n - 10), Math.max(0, n - 5)));
+    if (prevHigh > 0 && recentHigh < prevHigh) {
+      bearStrength += 2;
+      signals.push("4h-lower-highs");
+    }
+  }
+
+  // Signal 2: ADX Downtrend on 1H (1 point)
+  if (adxResult?.trending && adxResult?.mdi > adxResult?.pdi) {
+    bearStrength += 1;
+    signals.push("adx-downtrend");
+  }
+
+  // Signal 3: Death Cross on Daily (1 point)
+  const ma50 = sma(closes, 50);
+  const ma200 = sma(closes, 200);
+  const n = closes.length;
+  if (ma50[n - 1] != null && ma200[n - 1] != null && ma50[n - 1] < ma200[n - 1]) {
+    bearStrength += 1;
+    signals.push("death-cross");
+  }
+
+  // Signal 4: RSI Compression (1 point)
+  // RSI < 40 suggests bears have lower highs + lower rally capacity
+  if (rsiVal != null && rsiVal < 40) {
+    bearStrength += 1;
+    signals.push("rsi-compression");
+  }
+
+  return { bearStrength: Math.min(bearStrength, 5), signals };
+}
+
 export function detectRegime(dailyCandles, state) {
   const closes = dailyCandles.map(c => c.close);
   const highs = dailyCandles.map(c => c.high);
@@ -16,7 +62,9 @@ export function detectRegime(dailyCandles, state) {
     const r = m111 / m350x2;
     if (r >= 0.98) return "top";
     if (r >= 0.90) return "late_bull";
-    return "bull";
+    if (r >= 0.75) return "bull";
+    if (r >= 0.55) return "late_bear";
+    return "bear";
   })();
 
   const returns = [];
@@ -27,7 +75,7 @@ export function detectRegime(dailyCandles, state) {
   state.hmmParams = updatedParams;
   const hmmLabel = hmmState === 0 ? "bull" : "bear";
 
-  const mc = state.markovChain || { transitions: [[0.8, 0.2], [0.2, 0.8]] };
+  const mc = state.markovChain || { transitions: [[0.65, 0.35], [0.35, 0.65]] };
   updateMarkovChain(mc, returns);
   state.markovChain = mc;
   const markovProb = mc.transitions[hmmState === 0 ? 0 : 1][0];
@@ -43,13 +91,15 @@ export function detectRegime(dailyCandles, state) {
 
   let bull = 0, bear = 0;
   if (hmmLabel === "bull") bull++; else bear++;
-  if (piCycle === "bull" || piCycle === "late_bull") bull++; else bear++;
+  if (piCycle === "bull" || piCycle === "late_bull") bull++;
+  else if (piCycle === "bear" || piCycle === "late_bear") bear++;
   if (markovProb > 0.5) bull++; else bear++;
 
   let label;
   if (sideways) label = "sideways";
+  else if (bear >= 2) label = "bear";      // Bear needs >= 2 votes, same as bull
   else if (bull >= 2) label = "bull";
-  else label = "bear";
+  else label = "sideways";  // Fallback: prefer sideways over ambiguous
 
   return { label, hmmState, hmmLabel, markovProb, piCycle, sidewaysConfidence, sidewaysSignals };
 }

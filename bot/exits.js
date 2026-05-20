@@ -4,6 +4,40 @@ import { insertTrade } from "../state-store.js";
 
 const EXECUTION_LOG_LIMIT = 150;
 
+/**
+ * Check bear short-specific exit conditions
+ * - 16h with < 0.5 ATR profit: time-expired
+ * - 10h underwater: reversal stop
+ * - 0.5+ ATR profit: trail stop to 0.1 ATR
+ */
+export function checkBearShortExit(pos, price, currentAtr, hoursOpen) {
+  if (pos.direction !== "short" || pos._bearRegime !== true) {
+    return { exit: false, partial: false };
+  }
+
+  const profitATRs = currentAtr > 0 ? (pos.entryPrice - price) / currentAtr : 0;
+
+  // Rule 1: 16h with < 0.5 ATR profit in bear, exit (setup failed)
+  if (hoursOpen >= 16 && profitATRs < 0.5) {
+    return { exit: true, reason: "bear-short-time-expired" };
+  }
+
+  // Rule 2: 10h underwater, exit (reversal = stop)
+  if (hoursOpen >= 10 && profitATRs < 0) {
+    return { exit: true, reason: "bear-short-underwater-10h" };
+  }
+
+  // Rule 3: 0.5 ATR profit, trail stop to 0.1 ATR
+  if (profitATRs >= 0.5) {
+    const trail = price + currentAtr * 0.1;  // short: trail above
+    if (trail < pos.sl) {  // only tighten, never loosen
+      pos.sl = trail;
+    }
+  }
+
+  return { exit: false, partial: false };
+}
+
 function roundValue(value, digits = 6) {
   return Number.isFinite(value) ? parseFloat(value.toFixed(digits)) : value;
 }

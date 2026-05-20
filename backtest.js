@@ -32,7 +32,8 @@ import { applyRoundTripFriction, FRICTION_CONFIG } from "./bot/friction.js";
 import {
   checkEarlyReversalTighten,
   liquidityTrapQualityGate,
-  sidewaysFilter
+  sidewaysFilter,
+  bearFilter
 } from "./bot/entry-improvements.js";
 import { isOnCooldown, registerExit } from "./bot/cooldown.js";
 import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
@@ -57,11 +58,13 @@ const DISABLED_OVERRIDE = process.env.DISABLE_SIGNAL
 // Entry-improvement ablation flags
 // Usage: ENTRY_FILTER=fix1 node backtest.js --no-db
 //        ENTRY_FILTER=fix1,fix2 node backtest.js --no-db
+//        ENTRY_FILTER=bear node backtest.js --no-db
 //        ENTRY_FILTER=all node backtest.js --no-db
 const ENTRY_FILTER_RAW = (process.env.ENTRY_FILTER || "").toLowerCase().split(",").map(s => s.trim());
 const useFix1 = ENTRY_FILTER_RAW.includes("fix1") || ENTRY_FILTER_RAW.includes("all");
 const useFix2 = ENTRY_FILTER_RAW.includes("fix2") || ENTRY_FILTER_RAW.includes("all");
 const useFix3 = ENTRY_FILTER_RAW.includes("fix3") || ENTRY_FILTER_RAW.includes("all");
+const useBear = ENTRY_FILTER_RAW.includes("bear") || ENTRY_FILTER_RAW.includes("all");
 
 let dbModulePromise = null;
 let stateStoreModulePromise = null;
@@ -482,6 +485,12 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
       if (!ltGate.pass) { bar += 1; continue; }
     }
 
+    // ── Bear regime filter ──
+    if (useBear) {
+      const bf = bearFilter(candidate, regime.label, null);
+      if (!bf.allowed) { bar += 1; continue; }
+    }
+
     // In backtest we use autoApprove OR score >= 8 (Claude threshold)
     const approved = autoApproveSignal(candidate) || candidate.score >= 8;
     if (!approved) {
@@ -771,6 +780,12 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
         const rsiDivergence = candidate.obvDiv && candidate.obvDiv !== "none"
           ? { type: candidate.obvDiv } : { type: "none" };
         if (!liquidityTrapQualityGate(candidate, volumeData, rsiDivergence).pass) continue;
+      }
+
+      // ── Bear regime filter ──
+      if (useBear) {
+        const bf = bearFilter(candidate, regime.label, null);
+        if (!bf.allowed) continue;
       }
 
       const approved = autoApproveSignal(candidate) || candidate.score >= CLAUDE_THRESHOLD;

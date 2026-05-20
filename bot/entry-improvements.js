@@ -677,3 +677,34 @@ export function checkMeanReversionExit(pos, price, currentAtr, hoursOpen) {
 
   return { exit: false, partial: false };
 }
+
+// =============================================================================
+// BEAR REGIME FILTER
+//
+// In bear regime, shorts are encouraged (lower bar: 4.0), longs discouraged (7.0+)
+// Prevents weak longs from entering during sustained downtrends
+// =============================================================================
+
+/**
+ * Gate entry candidates based on bear regime and signal type
+ * @param {object} candidate - candidate from scoring
+ * @param {string} regimeLabel - regime.label (bull/bear/sideways)
+ * @param {object} regimeStats - regime stats (unused but reserved)
+ * @returns {{ allowed: boolean, reason: string }}
+ */
+export function bearFilter(candidate, regimeLabel, regimeStats) {
+  if (regimeLabel !== "bear") {
+    return { allowed: true, reason: "not-bear" };
+  }
+
+  // In bear regime: shorts are encouraged, longs are discouraged
+  if (candidate.signal === "short") {
+    // Lower the bar for shorts in bear regime
+    if (candidate.score >= 4.0) return { allowed: true, reason: "bear-short-approved" };
+    return { allowed: false, reason: `bear-short-low-score(${candidate.score.toFixed(1)})` };
+  } else {
+    // Long in bear: need VERY high conviction (7.0+)
+    if (candidate.score >= 7.0) return { allowed: true, reason: "bear-long-extreme-conviction" };
+    return { allowed: false, reason: `bear-long-blocked(${candidate.score.toFixed(1)}<7.0)` };
+  }
+}

@@ -25,7 +25,8 @@ import { detectRegime } from "./regime.js";
 import {
   checkGraduatedExit,
   closePosition,
-  executePartialClose
+  executePartialClose,
+  checkBearShortExit
 } from "./exits.js";
 import { loadTodayTrades } from "../trade-store.js";
 import { insertDecisionLog } from "../state-store.js";
@@ -38,7 +39,8 @@ import {
   autoApproveSignal,
   checkCorrelationExposure,
   fundingRateSignal,
-  scoreSymbol
+  scoreSymbol,
+  confirm15mBearShort
 } from "./scoring.js";
 import {
   applyEntryFilters,
@@ -60,7 +62,8 @@ import {
   liquidityTrapQualityGate,
   sidewaysFilter,
   confirmMeanReversionEntry,
-  checkMeanReversionExit
+  checkMeanReversionExit,
+  bearFilter
 } from "./entry-improvements.js";
 
 const DECISION_LOG_LIMIT = 150;
@@ -390,6 +393,13 @@ async function checkAllExits(env, state, deps) {
       if (earlyCheck.tighten && earlyCheck.newSl != null) {
         pos.sl = earlyCheck.newSl;
         console.log(`[EARLY-TIGHTEN] ${symbol} SL→${earlyCheck.newSl.toFixed(6)} (${earlyCheck.reason})`);
+      }
+
+      // ── Bear regime short exit rules ──
+      const bearExit = checkBearShortExit(pos, price, atrVal, hoursOpen);
+      if (bearExit.exit) {
+        positionsToClose.push({ ...pos, exitPrice: price, exitReason: bearExit.reason });
+        continue;
       }
 
       const exit = checkGraduatedExit(pos, price, high, low, atrVal);
@@ -931,6 +941,16 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
   }
 
+  // ── Bear regime filter: shorts encouraged (4.0+), longs discouraged (7.0+) ──
+  for (const c of topSignals) {
+    if (c.score === 0) continue;
+    const bearGate = bearFilter(c, regime.label, state.regimeStats);
+    if (!bearGate.allowed) {
+      c.score = 0;
+      incrementCount(scanSummary.blockedByReason, `bear-gate:${bearGate.reason}`);
+    }
+  }
+
   // ── MR: apply 15m-based sizing gradient for mean-reversion candidates ──
   for (const c of topSignals) {
     if (c.score === 0 || c.setupType !== "mean-reversion") continue;
@@ -943,6 +963,32 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       c.adjustedScore = mrDecision.adjustedScore;
       c.positionSizeMultiplier = mrDecision.positionSizeMultiplier;
       if (mrDecision.patterns?.length) c.reasons.push(...mrDecision.patterns);
+    }
+  }
+
+  // ── Bear shorts: fetch 15m for confirmation ──
+  for (const c of topSignals) {
+    if (c.score === 0 || c.signal !== "short" || regime.label !== "bear") continue;
+
+    // Fetch 15m candles (1 API call per bear short)
+    try {
+      const candles15m = await fetchCandles(c.symbol, "15m", 50);
+      if (candles15m && candles15m.length >= 12) {
+        const confirm = confirm15mBearShort(candles15m, c.price, c.atrVal);
+        c._15mConfirmation = confirm;
+
+        if (!confirm.enter) {
+          c.score *= 0.85;  // penalty but don't block
+          console.log(`[${c.symbol}] Bear short 15m unconfirmed, score reduced`);
+        } else {
+          c.adjustedScore = c.score + (confirm.confidence * 0.3);
+          c.positionSizeMultiplier = confirm.positionSizeMultiplier;
+          c.reasons.push(...confirm.patterns);
+          console.log(`[${c.symbol}] Bear short 15m confirmed: ${confirm.patterns.join(", ")}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[${c.symbol}] 15m fetch failed, proceeding with 1h score`);
     }
   }
 

@@ -28,6 +28,137 @@ import {
 import { portfolioValue } from "./execution.js";
 import { scoreSidewaysMeanReversion } from "./entry-improvements.js";
 
+/**
+ * Score bear regime short signals with specific indicators
+ * Returns boost points + reasons for downstream integration
+ */
+function scoreBearShort(
+  signal, price, rsiVal, fisherVal, stochResult,
+  vwapVal, adxResult, pctB, nearResistance, obvDiv,
+  atrVal, bbUpper, bbMiddle, reasons, currentScore
+) {
+  if (signal !== "short") return { scoreBoost: 0, reasons: [], positionSizeMultiplier: 1.0, maxHoldHours: null };
+
+  let boost = 0;
+  const bearReasons = [];
+
+  // Resistance touches (short should sell resistance, not bounce support)
+  if (nearResistance) {
+    boost += 1.5;
+    bearReasons.push("bear-at-resistance");
+  }
+
+  // Overbought extremes (RSI > 70 is SHORT signal in bear, not neutral)
+  if (rsiVal > 70) {
+    boost += 1.5;
+    bearReasons.push("bear-rsi-overbought");
+  } else if (rsiVal > 65) {
+    boost += 0.75;
+    bearReasons.push("bear-rsi-high");
+  }
+
+  // Fisher reversal (extreme positive = top, ready to fall)
+  const fisherPrev = null; // Will be passed by caller if available
+  if (fisherVal > 1.5) {
+    boost += 1.5;
+    bearReasons.push("bear-fisher-top");
+  }
+
+  // StochRSI overbought cross-down
+  if (stochResult?.overbought) {
+    boost += 1.0;
+    bearReasons.push("bear-stoch-overbought");
+  }
+  if (stochResult?.crossDown && stochResult?.k > 75) {
+    boost += 1.0;
+    bearReasons.push("bear-stoch-cross-down");
+  }
+
+  // OBV divergence
+  if (obvDiv === "bearish") {
+    boost += 1.0;
+    bearReasons.push("bear-obv-div");
+  }
+
+  // Above Bollinger Band upper (stretched, likely to snap)
+  if (pctB > 1.0) {
+    boost += 0.75;
+    bearReasons.push("bear-above-bb");
+  }
+
+  // ADX confirmation (trending + downtrend)
+  if (adxResult?.trending && adxResult?.mdi > adxResult?.pdi) {
+    boost += 1.0;
+    bearReasons.push("bear-adx-confirmed");
+  }
+
+  return {
+    scoreBoost: boost,
+    reasons: bearReasons,
+    positionSizeMultiplier: 0.75,  // Short in bear is 75% of normal (high conviction)
+    maxHoldHours: 16               // Bear shorts can hold longer (trending)
+  };
+}
+
+/**
+ * Confirm bear short on 15m timeframe with pattern detection
+ * Gradual entry: 70% if low confidence, 100% if high confidence
+ */
+export function confirm15mBearShort(candles15m, entryPrice, atrVal) {
+  if (!candles15m || candles15m.length < 12) {
+    return { enter: true, confidence: 0, patterns: ["no-15m-data"], positionSizeMultiplier: 1.0 };
+  }
+
+  let confidence = 0;
+  const patterns = [];
+  const n = candles15m.length;
+  const last = candles15m[n - 1];
+
+  // Shooting star: long upper wick, close at bottom
+  const upperWick = last.high - Math.max(last.close, last.open);
+  const lowerWick = Math.min(last.close, last.open) - last.low;
+  const range = last.high - last.low;
+  if (range > 0 && upperWick / range > 0.60 && lowerWick / range < 0.15) {
+    confidence += 2;
+    patterns.push("15m-shooting-star");
+  }
+
+  // Bearish engulfing: prev green > larger red
+  if (n >= 2) {
+    const prev = candles15m[n - 2];
+    if (prev.close > prev.open && last.close < last.open &&
+      last.close < prev.open && last.open >= prev.close) {
+      confidence += 2.5;
+      patterns.push("15m-bear-engulfing");
+    }
+  }
+
+  // Series of lower highs (3+ reds in a row)
+  let redCount = 0;
+  for (let i = n - 1; i >= Math.max(0, n - 5); i--) {
+    if (candles15m[i].close < candles15m[i].open) redCount++;
+    else break;
+  }
+  if (redCount >= 3) {
+    confidence += 1.5;
+    patterns.push(`15m-red-cascade(${redCount})`);
+  }
+
+  // Volume on red candle
+  const avgVol = candles15m.slice(-8, -1).reduce((s, c) => s + c.volume, 0) / 7;
+  if (last.close < last.open && avgVol > 0 && last.volume > avgVol * 1.8) {
+    confidence += 1.5;
+    patterns.push("15m-volume-breakdown");
+  }
+
+  return {
+    enter: confidence >= 2.0,
+    confidence,
+    patterns,
+    positionSizeMultiplier: confidence >= 3.5 ? 1.0 : 0.7  // full or 70%
+  };
+}
+
 function getSignalMultiplier(name, state, regimeLabel) {
   const weights = state?.dynamicWeights || {};
   const sigStats = state?.signalStats || {};
@@ -964,11 +1095,36 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       { symbol, setupType, vwapVal }
     );
 
+    // Bear regime short scoring boost
+    let finalScore = score;
+    let finalReasons = [...reasons];
+    let positionSizeMultiplier = 1.0;
+    let maxHoldHours = null;
+    let _bearRegime = false;
+
+    if (regime?.label === "bear" && signal === "short") {
+      _bearRegime = true;
+      const bb = bollingerBands(closes, 20, 2);
+      const bearBoost = scoreBearShort(
+        signal, price, rsiVal, fisherVal, stochResult,
+        vwapVal, adxResult, pctB, nearResistance,
+        obvDiv.type, atrVal, bb.upper[n - 1], bb.middle[n - 1],
+        reasons, score
+      );
+
+      if (bearBoost.scoreBoost > 0) {
+        finalScore += bearBoost.scoreBoost;
+        finalReasons = [...finalReasons, ...bearBoost.reasons];
+        positionSizeMultiplier = bearBoost.positionSizeMultiplier;
+        maxHoldHours = bearBoost.maxHoldHours;
+      }
+    }
+
     return {
       symbol,
       signal,
       direction: signal,
-      score: Math.round(score * 10) / 10,
+      score: Math.round(finalScore * 10) / 10,
       setupType,
       price,
       atrVal,
@@ -985,9 +1141,13 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       sl: structured.sl,
       tp: structured.tp,
       riskReward: structured.riskReward,
-      reasons,
+      reasons: finalReasons,
       h4Trend,
       atrPct,
+      positionSizeMultiplier,
+      maxHoldHours,
+      _bearRegime,
+      _requiresShortConfirmation: _bearRegime,
       _candles1h: candles1h,
       _srLevels: srLevels
     };
