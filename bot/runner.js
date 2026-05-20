@@ -55,6 +55,13 @@ import {
   checkMinRR
 } from "./risk-gates.js";
 import { isConfirmedSweep, canOpenMoreTraps } from "./sweep-confirmation.js";
+import {
+  checkEarlyReversalTighten,
+  liquidityTrapQualityGate,
+  sidewaysFilter,
+  confirmMeanReversionEntry,
+  checkMeanReversionExit
+} from "./entry-improvements.js";
 
 const DECISION_LOG_LIMIT = 150;
 const FAST_SCAN = process.env.FAST_SCAN_MODE === "true";
@@ -368,6 +375,22 @@ async function checkAllExits(env, state, deps) {
 
       checkTranches(pos, price, state);
       await checkDCA(pos, price, atrVal, state, env, { notifyTrade });
+
+      // ── Fix 1: mean-reversion custom exit ──
+      if (pos.setupType === "mean-reversion") {
+        const mrExit = checkMeanReversionExit(pos, price, atrVal, hoursOpen);
+        if (mrExit.exit) {
+          positionsToClose.push({ ...pos, exitPrice: price, exitReason: mrExit.reason });
+          continue;
+        }
+      }
+
+      // ── Fix 1: early reversal SL tighten (all non-MR trades) ──
+      const earlyCheck = checkEarlyReversalTighten(pos, price, atrVal, hoursOpen);
+      if (earlyCheck.tighten && earlyCheck.newSl != null) {
+        pos.sl = earlyCheck.newSl;
+        console.log(`[EARLY-TIGHTEN] ${symbol} SL→${earlyCheck.newSl.toFixed(6)} (${earlyCheck.reason})`);
+      }
 
       const exit = checkGraduatedExit(pos, price, high, low, atrVal);
       if (exit.exit) {
@@ -879,6 +902,47 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     } else {
       console.log(`[${c.symbol}] Sweep confirmed: ${sweep.details.type} @ ${sweep.details.sweepLevel}`);
       c._sweepDetails = sweep.details;
+    }
+  }
+
+  // ── Fix 3: sideways regime filter (blocks trend setups, raises min score) ──
+  for (const c of topSignals) {
+    if (c._sweepBlocked) continue;
+    const swf = sidewaysFilter(c, regime.label, state.regimeStats);
+    if (!swf.allowed) {
+      c.score = 0;
+      incrementCount(scanSummary.blockedByReason, `sideways-filter:${swf.reason}`);
+    }
+  }
+
+  // ── Fix 2: liquidity-trap quality gate (requires 2+ confirmations) ──
+  for (const c of topSignals) {
+    if (c._sweepBlocked || c.score === 0) continue;
+    if (c.setupType !== "liquidity-trap") continue;
+    const volumeData = { ratio: c.reasons.includes("volume") ? 1.5 : 0.8 };
+    const rsiDivergence = c.obvDiv && c.obvDiv !== "none"
+      ? { type: c.obvDiv }
+      : { type: "none" };
+    const ltGate = liquidityTrapQualityGate(c, volumeData, rsiDivergence);
+    if (!ltGate.pass) {
+      c.score = 0;
+      incrementCount(scanSummary.blockedByReason, "lt-quality-gate");
+      console.log(`[${c.symbol}] LT quality gate: ${ltGate.reason}`);
+    }
+  }
+
+  // ── MR: apply 15m-based sizing gradient for mean-reversion candidates ──
+  for (const c of topSignals) {
+    if (c.score === 0 || c.setupType !== "mean-reversion") continue;
+    const candles15m = c._candles15m || null; // populated if fetched upstream
+    const mrDecision = confirmMeanReversionEntry(c, candles15m);
+    if (!mrDecision.enter) {
+      c.score = 0;
+      incrementCount(scanSummary.blockedByReason, `mr-entry-gate:${mrDecision.reason}`);
+    } else {
+      c.adjustedScore = mrDecision.adjustedScore;
+      c.positionSizeMultiplier = mrDecision.positionSizeMultiplier;
+      if (mrDecision.patterns?.length) c.reasons.push(...mrDecision.patterns);
     }
   }
 

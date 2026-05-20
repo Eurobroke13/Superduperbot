@@ -29,6 +29,11 @@ import {
 import { checkMinRR } from "./bot/risk-gates.js";
 import { detectRegime } from "./bot/regime.js";
 import { applyRoundTripFriction, FRICTION_CONFIG } from "./bot/friction.js";
+import {
+  checkEarlyReversalTighten,
+  liquidityTrapQualityGate,
+  sidewaysFilter
+} from "./bot/entry-improvements.js";
 import { isOnCooldown, registerExit } from "./bot/cooldown.js";
 import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
 
@@ -48,6 +53,15 @@ const WARM_UP      = 520; // bars needed for SMA200 + buffer
 const DISABLED_OVERRIDE = process.env.DISABLE_SIGNAL
   ? process.env.DISABLE_SIGNAL.split(",").map(s => s.trim()).filter(Boolean)
   : [];
+
+// Entry-improvement ablation flags
+// Usage: ENTRY_FILTER=fix1 node backtest.js --no-db
+//        ENTRY_FILTER=fix1,fix2 node backtest.js --no-db
+//        ENTRY_FILTER=all node backtest.js --no-db
+const ENTRY_FILTER_RAW = (process.env.ENTRY_FILTER || "").toLowerCase().split(",").map(s => s.trim());
+const useFix1 = ENTRY_FILTER_RAW.includes("fix1") || ENTRY_FILTER_RAW.includes("all");
+const useFix2 = ENTRY_FILTER_RAW.includes("fix2") || ENTRY_FILTER_RAW.includes("all");
+const useFix3 = ENTRY_FILTER_RAW.includes("fix3") || ENTRY_FILTER_RAW.includes("all");
 
 let dbModulePromise = null;
 let stateStoreModulePromise = null;
@@ -316,9 +330,11 @@ export function scoreFromCandles(symbol, candles1h, candles4h, regimeLabel) {
 // =============================================================================
 function simulatePosition(pos, futureCandles) {
   let { entryPrice, direction, sl, tp, atrVal, size, notional } = pos;
+  const setupType = pos.setupType || "unknown";
   let tp1Hit = false, tp2Hit = false;
   let t2Filled = false, t3Filled = false;
   let partialPnl = 0;
+  let maxFavorable = entryPrice; // track best price reached
   const events = [];
 
   const tp1Price = direction === "long" ? entryPrice + atrVal * 2.0 : entryPrice - atrVal * 2.0;
@@ -333,6 +349,11 @@ function simulatePosition(pos, futureCandles) {
     const profitATRs = atrVal > 0
       ? (direction === "long" ? (close - entryPrice) : (entryPrice - close)) / atrVal
       : 0;
+
+    // Track best price reached (for checkEarlyReversalTighten)
+    maxFavorable = direction === "long"
+      ? Math.max(maxFavorable, high)
+      : Math.min(maxFavorable, low);
 
     // ── Tranche 2: +35% position at +0.5 ATR ──────────────────────────────
     if (!t2Filled && (direction === "long" ? high >= t2Trig : low <= t2Trig)) {
@@ -371,6 +392,19 @@ function simulatePosition(pos, futureCandles) {
         : (entryPrice - tp2Price) * size * 0.30;
       partialPnl  += p2pnl;
       events.push({ i, type: "tp2", price: tp2Price, pnl: p2pnl });
+    }
+
+    // ── Fix 1: early reversal SL tighten ──────────────────────────────────
+    if (useFix1 && !tp1Hit) {
+      const earlyCheck = checkEarlyReversalTighten(
+        { direction, entryPrice, sl, atrVal, setupType, maxFavorable,
+          tpLevels: { tp1: { hit: tp1Hit } },
+          tranches: { plan: { tranche2: { filled: t2Filled } } } },
+        close, atrVal, i
+      );
+      if (earlyCheck.tighten && earlyCheck.newSl != null) {
+        sl = earlyCheck.newSl;
+      }
     }
 
     // ── Stop loss ────────────────────────────────────────────────────────
@@ -431,6 +465,21 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
     if (!candidate || candidate.score < ENTRY_THRESHOLD) {
       bar += 1;
       continue;
+    }
+
+    // ── Fix 3: sideways regime filter ──
+    if (useFix3) {
+      const swf = sidewaysFilter(candidate, regime, null);
+      if (!swf.allowed) { bar += 1; continue; }
+    }
+
+    // ── Fix 2: liquidity-trap quality gate ──
+    if (useFix2 && candidate.setupType === "liquidity-trap") {
+      const volumeData   = { ratio: candidate.reasons.includes("volume") ? 1.5 : 0.8 };
+      const rsiDivergence = candidate.obvDiv && candidate.obvDiv !== "none"
+        ? { type: candidate.obvDiv } : { type: "none" };
+      const ltGate = liquidityTrapQualityGate(candidate, volumeData, rsiDivergence);
+      if (!ltGate.pass) { bar += 1; continue; }
     }
 
     // In backtest we use autoApprove OR score >= 8 (Claude threshold)
@@ -709,6 +758,20 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
 
       const candidate = scoreFromCandles(sym, window1h, window4h, regime);
       if (!candidate || candidate.score < ENTRY_THRESHOLD) continue;
+
+      // ── Fix 3: sideways regime filter ──
+      if (useFix3) {
+        const swf = sidewaysFilter(candidate, regime, null);
+        if (!swf.allowed) continue;
+      }
+
+      // ── Fix 2: liquidity-trap quality gate ──
+      if (useFix2 && candidate.setupType === "liquidity-trap") {
+        const volumeData    = { ratio: candidate.reasons.includes("volume") ? 1.5 : 0.8 };
+        const rsiDivergence = candidate.obvDiv && candidate.obvDiv !== "none"
+          ? { type: candidate.obvDiv } : { type: "none" };
+        if (!liquidityTrapQualityGate(candidate, volumeData, rsiDivergence).pass) continue;
+      }
 
       const approved = autoApproveSignal(candidate) || candidate.score >= CLAUDE_THRESHOLD;
       if (!approved) {

@@ -26,6 +26,7 @@ import {
   vwap
 } from "./indicators.js";
 import { portfolioValue } from "./execution.js";
+import { scoreSidewaysMeanReversion } from "./entry-improvements.js";
 
 function getSignalMultiplier(name, state, regimeLabel) {
   const weights = state?.dynamicWeights || {};
@@ -916,8 +917,41 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (!hasEntry) return null;
     }
 
-    if (quality < 2) return null;
-    if (setupType === "unknown") return null;
+    if (quality < 2 || setupType === "unknown") {
+      // Sideways regime fallback: try dedicated MR scoring at BB edges
+      if (regime?.label === "sideways") {
+        const mrResult = scoreSidewaysMeanReversion({
+          price, closes, highs, lows, volumes,
+          rsiVal, stochResult, fisherVal, fisherPrev,
+          pctB,
+          bbUpper:  bb.upper[n - 1],
+          bbLower:  bb.lower[n - 1],
+          bbMiddle: bb.middle[n - 1],
+          bbWidth,
+          vwapVal, currentEMA20: ema21Val,
+          supports, resistances,
+          adxResult, atrVal,
+          obvDiv: obvDiv.type, volConfirm,
+          regime
+        });
+        if (mrResult) {
+          return {
+            symbol,
+            direction: mrResult.signal,
+            ema21: ema21Val,
+            signalCandleHigh: highs[n - 1],
+            signalCandleLow:  lows[n - 1],
+            signalCandleClose: closes[n - 1],
+            fundingRate: null,
+            h4Trend, atrPct,
+            _candles1h: candles1h,
+            _srLevels: srLevels,
+            ...mrResult   // signal, score, setupType, reasons, price, sl, tp, riskReward, atrVal, positionSizeMultiplier, maxHoldHours
+          };
+        }
+      }
+      return null;
+    }
 
     const structured = calculateStructuredSLTP(
       signal,
