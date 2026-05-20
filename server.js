@@ -71,7 +71,7 @@ app.get("/state", authMiddleware, async (_, res) => {
   }
 });
 
-app.get("/pnl", authMiddleware, async (_, res) => {
+app.get("/pnl", async (_, res) => {
   try {
     const state = await loadState();
     const tickers = await fetchAllTickers();
