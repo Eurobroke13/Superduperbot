@@ -26,7 +26,7 @@ import {
   vwap
 } from "./indicators.js";
 import { portfolioValue } from "./execution.js";
-import { scoreSidewaysMeanReversion } from "./entry-improvements.js";
+import { scoreSidewaysCandidate } from "./sideways-system.js";
 
 /**
  * Score bear regime short signals with specific indicators
@@ -1049,11 +1049,11 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     }
 
     if (quality < 2 || setupType === "unknown") {
-      // Sideways regime fallback: try dedicated MR scoring at BB edges
+      // Sideways regime: try full sideways system (4 trade types)
       if (regime?.label === "sideways") {
-        const mrResult = scoreSidewaysMeanReversion({
-          price, closes, highs, lows, volumes,
-          rsiVal, stochResult, fisherVal, fisherPrev,
+        const swCandidate = scoreSidewaysCandidate({
+          symbol, price, closes, highs, lows, volumes,
+          rsiVal, rsiArr, stochResult, fisherVal, fisherPrev,
           pctB,
           bbUpper:  bb.upper[n - 1],
           bbLower:  bb.lower[n - 1],
@@ -1062,13 +1062,14 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           vwapVal, currentEMA20: ema21Val,
           supports, resistances,
           adxResult, atrVal,
-          obvDiv: obvDiv.type, volConfirm,
-          regime
+          obvDiv: obvDiv.type, volConfirm, rsiDiv,
+          h4Trend, ribbon,
+          state, regime
         });
-        if (mrResult) {
+        if (swCandidate) {
           return {
             symbol,
-            direction: mrResult.signal,
+            direction: swCandidate.signal,
             ema21: ema21Val,
             signalCandleHigh: highs[n - 1],
             signalCandleLow:  lows[n - 1],
@@ -1077,7 +1078,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
             h4Trend, atrPct,
             _candles1h: candles1h,
             _srLevels: srLevels,
-            ...mrResult   // signal, score, setupType, reasons, price, sl, tp, riskReward, atrVal, positionSizeMultiplier, maxHoldHours
+            ...swCandidate
           };
         }
       }

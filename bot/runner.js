@@ -60,11 +60,11 @@ import { isConfirmedSweep, canOpenMoreTraps } from "./sweep-confirmation.js";
 import {
   checkEarlyReversalTighten,
   liquidityTrapQualityGate,
-  sidewaysFilter,
   confirmMeanReversionEntry,
   checkMeanReversionExit,
   bearFilter
 } from "./entry-improvements.js";
+import { sidewaysFilter, checkSidewaysExit } from "./sideways-system.js";
 
 const DECISION_LOG_LIMIT = 150;
 const FAST_SCAN = process.env.FAST_SCAN_MODE === "true";
@@ -384,6 +384,16 @@ async function checkAllExits(env, state, deps) {
         const mrExit = checkMeanReversionExit(pos, price, atrVal, hoursOpen);
         if (mrExit.exit) {
           positionsToClose.push({ ...pos, exitPrice: price, exitReason: mrExit.reason });
+          continue;
+        }
+      }
+
+      // ── Sideways-specific exit (range-fade, squeeze-breakout, range-trap, MR) ──
+      const SW_EXIT_SETUPS = ["range-fade", "squeeze-breakout", "range-trap", "mean-reversion"];
+      if (SW_EXIT_SETUPS.includes(pos.setupType)) {
+        const swExit = checkSidewaysExit(pos, price, atrVal, hoursOpen);
+        if (swExit.exit) {
+          positionsToClose.push({ ...pos, exitPrice: price, exitReason: swExit.reason });
           continue;
         }
       }

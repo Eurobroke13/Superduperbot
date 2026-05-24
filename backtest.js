@@ -32,9 +32,9 @@ import { applyRoundTripFriction, FRICTION_CONFIG } from "./bot/friction.js";
 import {
   checkEarlyReversalTighten,
   liquidityTrapQualityGate,
-  sidewaysFilter,
   bearFilter
 } from "./bot/entry-improvements.js";
+import { sidewaysFilter } from "./bot/sideways-system.js";
 import { isOnCooldown, registerExit } from "./bot/cooldown.js";
 import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
 
