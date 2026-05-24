@@ -202,13 +202,13 @@ export function sidewaysFilter(candidate, regimeLabel, regimeStats) {
     return { allowed: true, reason: "mr-exempt-from-sideways-filter" };
   }
 
-  // Block trend setups — negative expectancy in sideways
-  if (candidate.setupType === "trend") {
-    return { allowed: false, reason: "trend-in-sideways-blocked(neg-EV)" };
+  // Block weak trend setups — only block if score is below 5.5 (strong trends can still trade)
+  if (candidate.setupType === "trend" && candidate.score < 5.5) {
+    return { allowed: false, reason: "trend-in-sideways-weak" };
   }
 
   // Raise minimum score for all other setups in sideways
-  const sidewaysMinScore = 5.0;
+  const sidewaysMinScore = 4.5;
   if (candidate.score < sidewaysMinScore) {
     return {
       allowed: false,
