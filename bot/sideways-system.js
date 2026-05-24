@@ -25,7 +25,7 @@
 
 import {
   sma, ema, bollingerBands, rsiSeries, atr,
-  stochRSI, fisherTransform, volumeConfirmation,
+  stochRSI, fisher as fisherTransform, volumeConfirmation,
   adx as computeADX, findSupportResistance, volumeProfile,
   detectRSIDivergence, obv as computeOBV
 } from "./indicators.js";
