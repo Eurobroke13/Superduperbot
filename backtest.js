@@ -33,7 +33,8 @@ import {
   checkEarlyReversalTighten,
   liquidityTrapQualityGate,
   sidewaysFilter,
-  bearFilter
+  bearFilter,
+  checkMeanReversionExit
 } from "./bot/entry-improvements.js";
 import { isOnCooldown, registerExit } from "./bot/cooldown.js";
 import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
@@ -407,6 +408,20 @@ function simulatePosition(pos, futureCandles) {
       );
       if (earlyCheck.tighten && earlyCheck.newSl != null) {
         sl = earlyCheck.newSl;
+      }
+    }
+
+    // ── MR exit: time-based kills + trailing SL for mean-reversion trades ─
+    if (setupType === "mean-reversion") {
+      const mrPos = { direction, entryPrice, atrVal, sl };
+      const mrCheck = checkMeanReversionExit(mrPos, close, atrVal, i + 1);
+      sl = mrPos.sl; // capture any SL trail updates
+      if (mrCheck.exit) {
+        const remainPct = tp1Hit && tp2Hit ? 0.40 : tp1Hit ? 0.70 : 1.0;
+        const pnl = (direction === "long"
+          ? (close - entryPrice)
+          : (entryPrice - close)) * size * remainPct + partialPnl;
+        return { exit: close, exitReason: mrCheck.reason, pnl, barsHeld: i + 1, events };
       }
     }
 

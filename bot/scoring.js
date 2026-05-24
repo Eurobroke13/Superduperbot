@@ -64,8 +64,9 @@ function scoreBearShort(
     bearReasons.push("bear-fisher-top");
   }
 
-  // StochRSI overbought cross-down
-  if (stochResult?.overbought) {
+  // StochRSI overbought — only meaningful when price is also at resistance
+  // (K > 80 in open air is momentum, not a reversal signal)
+  if (stochResult?.overbought && nearResistance) {
     boost += 1.0;
     bearReasons.push("bear-stoch-overbought");
   }
@@ -703,7 +704,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       true,
       TIERS.weak
     );
-    add(stochResult.crossUp && stochResult.k < 50, "stochrsi-cross-up", true, TIERS.weak);
+    // Only valid in bull/sideways — in bear regime a stoch cross-up is a bounce to fade, not a long signal
+    add(stochResult.crossUp && stochResult.k < 30 && regime?.label !== "bear", "stochrsi-cross-up", true, TIERS.weak);
     add(stochResult.crossDown && stochResult.k > 50, "stochrsi-cross-down", false, TIERS.weak);
 
     const ichiPrev = n > 53 ? ichimoku(highs.slice(0, -1), lows.slice(0, -1), closes.slice(0, -1)) : null;
@@ -1030,6 +1032,16 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (!volConfirm.isSignificant) return null;
       if (!h4Aligned || !cloudAligned || !vwapAligned) return null;
       if (deepInHVN && !hvnEdgeEscape) return null;
+
+      // Bar structure: breakout bar must close with momentum (top/bottom 60% of range)
+      // Filters late entries where the breakout candle has already reversed intra-bar
+      const barRange = highs[n - 1] - lows[n - 1];
+      const barStructureOk = barRange > 0 && (
+        signal === "long"
+          ? (closes[n - 1] - lows[n - 1]) / barRange > 0.60
+          : (highs[n - 1] - closes[n - 1]) / barRange > 0.60
+      );
+      if (!barStructureOk) return null;
     }
 
     if (setupType === "bull-pullback") {
