@@ -1,6 +1,7 @@
 import { ATR_SL_MULT } from "./config.js";
 import { registerExit, registerOverboughtExit } from "./cooldown.js";
 import { insertTrade } from "../state-store.js";
+import { applyRoundTripFriction } from "./friction.js";
 
 const EXECUTION_LOG_LIMIT = 150;
 
@@ -197,10 +198,16 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
     ? (price - pos.entryPrice) * closeSize
     : (pos.entryPrice - price) * closeSize;
   const clampPnl = Math.max(rawPnl, -closeNotional);
-  const pnlPct = closeNotional > 0 ? (clampPnl / closeNotional) * 100 : 0;
   const holdHours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
+  const frictionResult = applyRoundTripFriction({
+    entryPrice: pos.entryPrice, exitPrice: price,
+    direction: pos.direction, size: closeSize,
+    notional: closeNotional, hoursHeld: holdHours, pnl: clampPnl
+  }, symbol);
+  const netPnl = frictionResult.adjustedPnl;
+  const pnlPct = closeNotional > 0 ? (netPnl / closeNotional) * 100 : 0;
 
-  state.cash += closeNotional + clampPnl;
+  state.cash += closeNotional + netPnl;
 
   pos.size -= closeSize;
   pos.notional -= closeNotional;
@@ -214,8 +221,10 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
     size: closeSize,
     leverage: pos.leverage,
     notional: closeNotional,
-    pnl: parseFloat(clampPnl.toFixed(6)),
+    rawPnl: parseFloat(clampPnl.toFixed(6)),
+    pnl: parseFloat(netPnl.toFixed(6)),
     pnlPct: parseFloat(pnlPct.toFixed(2)),
+    friction: parseFloat(frictionResult.friction.total.toFixed(4)),
     reason: `partial-${reason}`,
     openedAt: pos.openedAt,
     closedAt: new Date().toISOString(),
@@ -247,7 +256,7 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
 
   console.log(
     `📊 [${symbol}] PARTIAL CLOSE ${(pct * 100).toFixed(0)}% @$${price.toFixed(6)} | ` +
-    `PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason} | Remaining:$${pos.notional.toFixed(2)}`
+    `PnL:$${netPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | friction:$${frictionResult.friction.total.toFixed(2)} | ${reason} | Remaining:$${pos.notional.toFixed(2)}`
   );
   pushExecutionEvent(state, {
     type: "partial-close",
@@ -276,10 +285,16 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
     ? (price - pos.entryPrice) * pos.size
     : (pos.entryPrice - price) * pos.size;
   const clampPnl = Math.max(rawPnl, -pos.notional);
-  const pnlPct = pos.notional > 0 ? (clampPnl / pos.notional) * 100 : 0;
   const holdHours = (Date.now() - new Date(pos.openedAt).getTime()) / 3600000;
+  const frictionResult = applyRoundTripFriction({
+    entryPrice: pos.entryPrice, exitPrice: price,
+    direction: pos.direction, size: pos.size,
+    notional: pos.notional, hoursHeld: holdHours, pnl: clampPnl
+  }, symbol);
+  const netPnl = frictionResult.adjustedPnl;
+  const pnlPct = pos.notional > 0 ? (netPnl / pos.notional) * 100 : 0;
 
-  state.cash += pos.notional + clampPnl;
+  state.cash += pos.notional + netPnl;
 
   state.trades.push({
     symbol,
@@ -289,8 +304,10 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
     size: pos.size,
     leverage: pos.leverage,
     notional: pos.notional,
-    pnl: parseFloat(clampPnl.toFixed(6)),
+    rawPnl: parseFloat(clampPnl.toFixed(6)),
+    pnl: parseFloat(netPnl.toFixed(6)),
     pnlPct: parseFloat(pnlPct.toFixed(2)),
+    friction: parseFloat(frictionResult.friction.total.toFixed(4)),
     reason,
     openedAt: pos.openedAt,
     closedAt: new Date().toISOString(),
@@ -339,7 +356,7 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
   const icon = clampPnl >= 0 ? "✅" : "❌";
   console.log(
     `${icon} [${symbol}] CLOSE ${pos.direction.toUpperCase()} @$${price.toFixed(6)} | ` +
-    `PnL:$${clampPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | ${reason}` +
+    `PnL:$${netPnl.toFixed(2)} (${pnlPct.toFixed(1)}%) | friction:$${frictionResult.friction.total.toFixed(2)} | ${reason}` +
     `${rawPnl <= -pos.notional ? " ⚠LIQUIDATED" : ""}`
   );
   pushExecutionEvent(state, {
