@@ -1,0 +1,296 @@
+{
+  "regimeStats": {
+    "bear": {
+      "wins": 188,
+      "losses": 217,
+      "totalPnl": 2618.29,
+      "count": 405
+    },
+    "bull": {
+      "wins": 97,
+      "losses": 99,
+      "totalPnl": 842.52,
+      "count": 196
+    },
+    "sideways": {
+      "wins": 103,
+      "losses": 139,
+      "totalPnl": 1295.26,
+      "count": 242
+    }
+  },
+  "signalStats": {
+    "ema-ribbon-bear": {
+      "wins": 266,
+      "losses": 296,
+      "totalPnl": 3295.07,
+      "count": 562
+    },
+    "h4-bear-strong": {
+      "wins": 84,
+      "losses": 113,
+      "totalPnl": 1029.1,
+      "count": 197
+    },
+    "ribbon-h4-align-bear": {
+      "wins": 284,
+      "losses": 329,
+      "totalPnl": 3321.73,
+      "count": 613
+    },
+    "volume": {
+      "wins": 239,
+      "losses": 257,
+      "totalPnl": 3188.83,
+      "count": 496
+    },
+    "bear-adx-confirmed": {
+      "wins": 162,
+      "losses": 193,
+      "totalPnl": 2372.74,
+      "count": 355
+    },
+    "4h-bb-expansion-bear": {
+      "wins": 127,
+      "losses": 140,
+      "totalPnl": 1577,
+      "count": 267
+    },
+    "below-VWAP": {
+      "wins": 193,
+      "losses": 239,
+      "totalPnl": 1828.15,
+      "count": 432
+    },
+    "bear-at-resistance": {
+      "wins": 26,
+      "losses": 27,
+      "totalPnl": 130.41,
+      "count": 53
+    },
+    "stochrsi-cross-down": {
+      "wins": 45,
+      "losses": 60,
+      "totalPnl": 334.05,
+      "count": 105
+    },
+    "bear-stoch-cross-down": {
+      "wins": 21,
+      "losses": 17,
+      "totalPnl": 309.11,
+      "count": 38
+    },
+    "4h-obv-div-bull": {
+      "wins": 36,
+      "losses": 40,
+      "totalPnl": 154.17,
+      "count": 76
+    },
+    "h4-bear": {
+      "wins": 195,
+      "losses": 218,
+      "totalPnl": 2101.76,
+      "count": 413
+    },
+    "mild-trend": {
+      "wins": 221,
+      "losses": 258,
+      "totalPnl": 2310.95,
+      "count": 479
+    },
+    "below-cloud": {
+      "wins": 57,
+      "losses": 43,
+      "totalPnl": 1038.4,
+      "count": 100
+    },
+    "chikou-bear": {
+      "wins": 55,
+      "losses": 65,
+      "totalPnl": 530.51,
+      "count": 120
+    },
+    "4h-obv-div-bear": {
+      "wins": 49,
+      "losses": 48,
+      "totalPnl": 1020.25,
+      "count": 97
+    },
+    "in-HVN": {
+      "wins": 100,
+      "losses": 121,
+      "totalPnl": 1327.18,
+      "count": 221
+    },
+    "4h-macd-cross-down": {
+      "wins": 117,
+      "losses": 88,
+      "totalPnl": 2090.33,
+      "count": 205
+    },
+    "bear-stoch-overbought": {
+      "wins": 14,
+      "losses": 14,
+      "totalPnl": 57.04,
+      "count": 28
+    },
+    "ema-ribbon-bull": {
+      "wins": 89,
+      "losses": 97,
+      "totalPnl": 1431.12,
+      "count": 186
+    },
+    "fisher-falling": {
+      "wins": 34,
+      "losses": 49,
+      "totalPnl": 270.63,
+      "count": 83
+    },
+    "h4-bull": {
+      "wins": 84,
+      "losses": 102,
+      "totalPnl": 822.37,
+      "count": 186
+    },
+    "ribbon-h4-align-bull": {
+      "wins": 97,
+      "losses": 115,
+      "totalPnl": 1483.57,
+      "count": 212
+    },
+    "trend-vs-overbought": {
+      "wins": 39,
+      "losses": 33,
+      "totalPnl": 824.55,
+      "count": 72
+    },
+    "decaying-limit-fill": {
+      "wins": 168,
+      "losses": 121,
+      "totalPnl": 3449.41,
+      "count": 289
+    },
+    "stochrsi-cross-up": {
+      "wins": 15,
+      "losses": 19,
+      "totalPnl": -28.75,
+      "count": 34
+    },
+    "4h-bb-expansion-bull": {
+      "wins": 62,
+      "losses": 70,
+      "totalPnl": 1201.4,
+      "count": 132
+    },
+    "above-VWAP": {
+      "wins": 61,
+      "losses": 78,
+      "totalPnl": 1378.18,
+      "count": 139
+    },
+    "ribbon-expansion-bull": {
+      "wins": 19,
+      "losses": 6,
+      "totalPnl": 330.44,
+      "count": 25
+    },
+    "4h-macd-cross-up": {
+      "wins": 45,
+      "losses": 29,
+      "totalPnl": 1172.15,
+      "count": 74
+    },
+    "chikou-bull": {
+      "wins": 13,
+      "losses": 16,
+      "totalPnl": -48.1,
+      "count": 29
+    },
+    "TK-bull": {
+      "wins": 6,
+      "losses": 10,
+      "totalPnl": -64.18,
+      "count": 16
+    },
+    "liquidity-bull": {
+      "wins": 5,
+      "losses": 7,
+      "totalPnl": 36.98,
+      "count": 12
+    },
+    "fisher-rising": {
+      "wins": 6,
+      "losses": 18,
+      "totalPnl": 15.41,
+      "count": 24
+    },
+    "dead-range": {
+      "wins": 6,
+      "losses": 9,
+      "totalPnl": -59.85,
+      "count": 15
+    },
+    "trap-vol-bull": {
+      "wins": 2,
+      "losses": 3,
+      "totalPnl": -38.47,
+      "count": 5
+    },
+    "OBV-bear-div": {
+      "wins": 10,
+      "losses": 21,
+      "totalPnl": -154.41,
+      "count": 31
+    },
+    "TK-bear": {
+      "wins": 10,
+      "losses": 13,
+      "totalPnl": 69.23,
+      "count": 23
+    },
+    "trend-vs-oversold": {
+      "wins": 129,
+      "losses": 88,
+      "totalPnl": 2624.86,
+      "count": 217
+    },
+    "ribbon-expansion-bear": {
+      "wins": 19,
+      "losses": 15,
+      "totalPnl": 35.97,
+      "count": 34
+    },
+    "above-cloud": {
+      "wins": 8,
+      "losses": 11,
+      "totalPnl": 2.58,
+      "count": 19
+    },
+    "stochrsi-overbought": {
+      "wins": 4,
+      "losses": 3,
+      "totalPnl": 68.38,
+      "count": 7
+    },
+    "4h-rsi-div-bull": {
+      "wins": 5,
+      "losses": 0,
+      "totalPnl": 353.74,
+      "count": 5
+    },
+    "bear-fisher-top": {
+      "wins": 1,
+      "losses": 4,
+      "totalPnl": -25.64,
+      "count": 5
+    },
+    "4h-rsi-div-bear": {
+      "wins": 3,
+      "losses": 2,
+      "totalPnl": 74.66,
+      "count": 5
+    }
+  },
+  "generatedAt": "2026-05-25T12:35:44.939Z",
+  "months": 12
+}
