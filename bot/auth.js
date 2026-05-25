@@ -27,6 +27,8 @@ export function authMiddleware(req, res, next) {
   }
 
   const authHeader = req.headers.authorization;
+  const queryToken = req.query.token;
+  if (queryToken && queryToken === token) return next();
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({
       ok: false,
