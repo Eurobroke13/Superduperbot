@@ -432,8 +432,8 @@ function simulatePosition(pos, futureCandles) {
         : 0;
       if (profitATRsLT < 0.3) {
         const tightSl = direction === "long"
-          ? entryPrice - atrVal * 0.5
-          : entryPrice + atrVal * 0.5;
+          ? entryPrice - atrVal * 0.8
+          : entryPrice + atrVal * 0.8;
         if (direction === "long" ? tightSl > sl : tightSl < sl) {
           sl = tightSl;
         }
