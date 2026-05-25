@@ -2,6 +2,7 @@
 // Requires DATABASE_URL env var to be set.
 import { readFileSync } from "fs";
 import { loadState, saveState } from "./state-store.js";
+import { closeDb } from "./db.js";
 
 const patch = JSON.parse(readFileSync("./seed-patch.json", "utf8"));
 
@@ -44,4 +45,5 @@ console.log(`  ✓ dynamicWeights: ${weightUpdated} weights updated`);
 
 await saveState(state);
 console.log("[SEED] ✅ Done — full seed complete, all weights and stats updated in production DB.");
+await closeDb();
 process.exit(0);
