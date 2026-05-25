@@ -64,20 +64,15 @@ function scoreBearShort(
     bearReasons.push("bear-fisher-top");
   }
 
-  // StochRSI overbought cross-down
-  if (stochResult?.overbought) {
+  // StochRSI overbought — only meaningful when price is also at resistance
+  // (K > 80 in open air is momentum, not a reversal signal)
+  if (stochResult?.overbought && nearResistance) {
     boost += 1.0;
     bearReasons.push("bear-stoch-overbought");
   }
   if (stochResult?.crossDown && stochResult?.k > 75) {
     boost += 1.0;
     bearReasons.push("bear-stoch-cross-down");
-  }
-
-  // OBV divergence
-  if (obvDiv === "bearish") {
-    boost += 1.0;
-    bearReasons.push("bear-obv-div");
   }
 
   // Above Bollinger Band upper (stretched, likely to snap)
@@ -473,8 +468,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           add(bbRejectionBear && mrBearConfirm >= 2, "bb-overbought", false, TIERS.weak);
         }
       } else {
-        longScore *= 0.7;
-        shortScore *= 0.7;
+        longScore *= 0.5;
+        shortScore *= 0.5;
         reasons.push("dead-range");
       }
     } else {
@@ -703,7 +698,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       true,
       TIERS.weak
     );
-    add(stochResult.crossUp && stochResult.k < 50, "stochrsi-cross-up", true, TIERS.weak);
+    // Only valid in bull/sideways — in bear regime a stoch cross-up is a bounce to fade, not a long signal
+    add(stochResult.crossUp && stochResult.k < 30 && regime?.label !== "bear", "stochrsi-cross-up", true, TIERS.weak);
     add(stochResult.crossDown && stochResult.k > 50, "stochrsi-cross-down", false, TIERS.weak);
 
     const ichiPrev = n > 53 ? ichimoku(highs.slice(0, -1), lows.slice(0, -1), closes.slice(0, -1)) : null;
@@ -947,8 +943,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       return null;
     }
     if (setupType === "momentum" && !h4Score.aligned(signal)) {
-      score *= 0.85;
-      reasons.push("h4-misaligned");
+      return null;
     }
 
     reasons.push(...h4Score.signals);
@@ -1003,6 +998,13 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (!volumeDeclining || !bandwidthContracting) return null;
     }
 
+    // ── Regime-gated setup restrictions ──
+    // Block negative-EV crosses identified by backtest analysis
+    if (setupType === "breakout" && regime?.label === "bear") return null;
+    if (setupType === "trend" && regime?.label === "bull" && score < 6) return null;
+    if (setupType === "liquidity-trap" && signal === "long" && regime?.label === "bear" && score < 6) return null;
+    if (setupType === "momentum" && signal === "long" && regime?.label === "bear" && score < 6) return null;
+
     if (setupType === "breakout") {
       const h4Aligned =
         (signal === "long" && h4Trend === "bullish") ||
@@ -1030,6 +1032,16 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (!volConfirm.isSignificant) return null;
       if (!h4Aligned || !cloudAligned || !vwapAligned) return null;
       if (deepInHVN && !hvnEdgeEscape) return null;
+
+      // Bar structure: breakout bar must close with momentum (top/bottom 60% of range)
+      // Filters late entries where the breakout candle has already reversed intra-bar
+      const barRange = highs[n - 1] - lows[n - 1];
+      const barStructureOk = barRange > 0 && (
+        signal === "long"
+          ? (closes[n - 1] - lows[n - 1]) / barRange > 0.60
+          : (highs[n - 1] - closes[n - 1]) / barRange > 0.60
+      );
+      if (!barStructureOk) return null;
     }
 
     if (setupType === "bull-pullback") {
@@ -1118,6 +1130,19 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         positionSizeMultiplier = bearBoost.positionSizeMultiplier;
         maxHoldHours = bearBoost.maxHoldHours;
       }
+    }
+
+    // Score exhaustion: diminishing returns above 7 — too many confirming
+    // signals means the move already happened
+    if (finalScore > 7) {
+      finalScore = 7 + (finalScore - 7) * 0.5;
+    }
+
+    // Score-based position sizing: sweet spot (5-7) gets more size, 7+ gets less
+    if (finalScore >= 5 && finalScore <= 7) {
+      positionSizeMultiplier *= 1.25;
+    } else if (finalScore > 7) {
+      positionSizeMultiplier *= 0.75;
     }
 
     return {

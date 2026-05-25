@@ -271,15 +271,15 @@ export function scoreSidewaysMeanReversion({
   // Gate 1: sideways only
   if (regime?.label !== "sideways") return null;
 
-  // Gate 2: ADX must be low — if > 25, a trend is forming, don't fade it
-  if (adxResult?.adx > 25) return null;
+  // Gate 2: ADX must be below trending threshold — > 35 means a real trend, not ranging chop
+  if (adxResult?.adx > 35) return null;
 
   // Gate 3: Bollinger Bands must exist
   if (!bbUpper || !bbLower || !bbMiddle || bbWidth === undefined) return null;
 
-  // Gate 4: Price must be at a range edge
-  const atLowerEdge = pctB < 0.10;
-  const atUpperEdge = pctB > 0.90;
+  // Gate 4: Price must be at a range edge (widened from 10/90 to 20/80 for more coverage)
+  const atLowerEdge = pctB < 0.20;
+  const atUpperEdge = pctB > 0.80;
   if (!atLowerEdge && !atUpperEdge) return null;
 
   let score = 0;
