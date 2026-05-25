@@ -5,7 +5,8 @@ import {
   premarketScan,
   reevaluatePositions
 } from "./bot/deps.js";
-import { closeDb } from "./db.js";
+import { closeDb, pool } from "./db.js";
+import { initDb } from "./db.js";
 
 const task = process.argv[2];
 const env = process.env;
@@ -32,10 +33,27 @@ async function main() {
     case "reevaluate":
       await reevaluatePositions(env);
       break;
+    case "reset-state":
+      await resetState();
+      break;
     default:
       throw new Error(
-        "Unknown task. Use one of: fast-scan, run-bot, daily-report, weekly-review, premarket, reevaluate"
+        "Unknown task. Use one of: fast-scan, run-bot, daily-report, weekly-review, premarket, reevaluate, reset-state"
       );
+  }
+}
+
+async function resetState() {
+  console.log("[RESET] Clearing bot state...");
+  await initDb();
+  
+  try {
+    // Delete the main state record
+    await pool.query("DELETE FROM bot_state WHERE state_key = $1", ["bot_state_v1"]);
+    console.log("[RESET] ✅ State cleared. Bot will start fresh on next run.");
+  } catch (err) {
+    console.error("[RESET] Error clearing state:", err.message);
+    throw err;
   }
 }
 
@@ -51,3 +69,4 @@ main()
     } catch (_) {}
     process.exit(1);
   });
+
