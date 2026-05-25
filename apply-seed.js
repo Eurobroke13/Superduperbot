@@ -31,8 +31,17 @@ for (const [sig, ss] of Object.entries(patch.signalStats)) {
   }
 }
 console.log(`  ✓ signalStats: ${sigUpdated} signals updated`);
-console.log("  • dynamicWeights left untouched (safe-seed mode)");
+
+// ── Dynamic weights ───────────────────────────────────────────────────────────
+if (!state.dynamicWeights) state.dynamicWeights = {};
+let weightUpdated = 0;
+for (const [sig, w] of Object.entries(patch.dynamicWeights)) {
+  state.dynamicWeights[sig] = w;
+  weightUpdated++;
+}
+state.lastWeightUpdate = Date.now();
+console.log(`  ✓ dynamicWeights: ${weightUpdated} weights updated`);
 
 await saveState(state);
-console.log("[SEED] ✅ Done — regimeStats and signalStats updated in production DB.");
+console.log("[SEED] ✅ Done — full seed complete, all weights and stats updated in production DB.");
 process.exit(0);
