@@ -75,12 +75,6 @@ function scoreBearShort(
     bearReasons.push("bear-stoch-cross-down");
   }
 
-  // OBV divergence
-  if (obvDiv === "bearish") {
-    boost += 1.0;
-    bearReasons.push("bear-obv-div");
-  }
-
   // Above Bollinger Band upper (stretched, likely to snap)
   if (pctB > 1.0) {
     boost += 0.75;
@@ -474,8 +468,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           add(bbRejectionBear && mrBearConfirm >= 2, "bb-overbought", false, TIERS.weak);
         }
       } else {
-        longScore *= 0.7;
-        shortScore *= 0.7;
+        longScore *= 0.5;
+        shortScore *= 0.5;
         reasons.push("dead-range");
       }
     } else {
@@ -949,8 +943,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       return null;
     }
     if (setupType === "momentum" && !h4Score.aligned(signal)) {
-      score *= 0.85;
-      reasons.push("h4-misaligned");
+      return null;
     }
 
     reasons.push(...h4Score.signals);
@@ -1004,6 +997,13 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) return null;
       if (!volumeDeclining || !bandwidthContracting) return null;
     }
+
+    // ── Regime-gated setup restrictions ──
+    // Block negative-EV crosses identified by backtest analysis
+    if (setupType === "breakout" && regime?.label === "bear") return null;
+    if (setupType === "trend" && regime?.label === "bull" && score < 6) return null;
+    if (setupType === "liquidity-trap" && signal === "long" && regime?.label === "bear" && score < 6) return null;
+    if (setupType === "momentum" && signal === "long" && regime?.label === "bear" && score < 6) return null;
 
     if (setupType === "breakout") {
       const h4Aligned =
@@ -1130,6 +1130,19 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         positionSizeMultiplier = bearBoost.positionSizeMultiplier;
         maxHoldHours = bearBoost.maxHoldHours;
       }
+    }
+
+    // Score exhaustion: diminishing returns above 7 — too many confirming
+    // signals means the move already happened
+    if (finalScore > 7) {
+      finalScore = 7 + (finalScore - 7) * 0.5;
+    }
+
+    // Score-based position sizing: sweet spot (5-7) gets more size, 7+ gets less
+    if (finalScore >= 5 && finalScore <= 7) {
+      positionSizeMultiplier *= 1.25;
+    } else if (finalScore > 7) {
+      positionSizeMultiplier *= 0.75;
     }
 
     return {

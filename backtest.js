@@ -425,6 +425,21 @@ function simulatePosition(pos, futureCandles) {
       }
     }
 
+    // ── LT 6h dead-zone exit: tighten SL when trade stalls ─────────────
+    if (setupType === "liquidity-trap" && i >= 6 && !tp1Hit) {
+      const profitATRsLT = atrVal > 0
+        ? (direction === "long" ? (close - entryPrice) : (entryPrice - close)) / atrVal
+        : 0;
+      if (profitATRsLT < 0.3) {
+        const tightSl = direction === "long"
+          ? entryPrice - atrVal * 0.5
+          : entryPrice + atrVal * 0.5;
+        if (direction === "long" ? tightSl > sl : tightSl < sl) {
+          sl = tightSl;
+        }
+      }
+    }
+
     // ── Stop loss ────────────────────────────────────────────────────────
     if (direction === "long" ? low <= sl : high >= sl) {
       const remainPct = tp1Hit && tp2Hit ? 0.40 : tp1Hit ? 0.70 : 1.0;
@@ -524,9 +539,15 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
     const tranche1   = fullSize * 0.40;
     const notional   = tranche1 * price;
 
+    // Score-based position sizing: 5-7 gets 25% more, 7+ gets 25% less
+    const scoreSizeMult = candidate.score >= 5 && candidate.score <= 7 ? 1.25
+      : candidate.score > 7 ? 0.75 : 1.0;
+    const adjTranche1 = tranche1 * scoreSizeMult * (candidate.positionSizeMultiplier || 1.0);
+
     const pos = {
       symbol, direction: candidate.signal, entryPrice: price,
-      size: tranche1, notional, sl, tp, atrVal
+      size: adjTranche1, notional: adjTranche1 * price, sl, tp, atrVal,
+      setupType: candidate.setupType
     };
 
     const futureCandles = candles1h.slice(bar + 1, bar + 170);
@@ -833,16 +854,21 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
       const reservedNotional = Math.min(totalNotionalRaw, maxNotional);
       if (reservedNotional <= 0 || reservedNotional > cash) continue;
 
-      const tranche1Size = (reservedNotional / price) * 0.40;
+      // Score-based position sizing: 5-7 gets 25% more, 7+ gets 25% less
+      const pScoreSizeMult = candidate.score >= 5 && candidate.score <= 7 ? 1.25
+        : candidate.score > 7 ? 0.75 : 1.0;
+      const pSizeMult = pScoreSizeMult * (candidate.positionSizeMultiplier || 1.0);
+      const tranche1Size = (reservedNotional / price) * 0.40 * pSizeMult;
       const pos = {
         symbol: sym,
         direction: candidate.signal,
         entryPrice: price,
         size: tranche1Size,
-        notional: reservedNotional * 0.40,
+        notional: reservedNotional * 0.40 * pSizeMult,
         sl,
         tp,
-        atrVal
+        atrVal,
+        setupType: candidate.setupType
       };
 
       const futureCandles = c1h.slice(idx1h + 1, idx1h + 170);
