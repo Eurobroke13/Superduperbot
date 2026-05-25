@@ -50,7 +50,8 @@ const FORCE_REPLACE_REGIMES = ARGS.includes("--force-replace-regimes");
 const NO_DB        = ARGS.includes("--no-db");
 const DIAGNOSTIC_GATES = ARGS.includes("--diagnostic-gates");
 const monthsFlag   = ARGS.indexOf("--months");
-const BACKTEST_MONTHS = monthsFlag !== -1 ? parseInt(ARGS[monthsFlag + 1]) || 6 : 6;
+const BACKTEST_MONTHS = monthsFlag !== -1 ? parseInt(ARGS[monthsFlag + 1]) || 6
+  : (SEED_MODE || SAFE_SEED_MODE) ? 12 : 6;
 const WARM_UP      = 520; // bars needed for SMA200 + buffer
 const DISABLED_OVERRIDE = process.env.DISABLE_SIGNAL
   ? process.env.DISABLE_SIGNAL.split(",").map(s => s.trim()).filter(Boolean)
