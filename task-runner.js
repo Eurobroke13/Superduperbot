@@ -6,6 +6,7 @@ import {
   reevaluatePositions
 } from "./bot/deps.js";
 import { closeDb } from "./db.js";
+import { loadState, saveState } from "./state-store.js";
 
 const task = process.argv[2];
 const env = process.env;
@@ -32,9 +33,27 @@ async function main() {
     case "reevaluate":
       await reevaluatePositions(env);
       break;
+    case "reset-state": {
+      const state = await loadState();
+      state.regimeStats = {
+        bull:     { wins: 0, losses: 0, totalPnl: 0, count: 0 },
+        bear:     { wins: 0, losses: 0, totalPnl: 0, count: 0 },
+        sideways: { wins: 0, losses: 0, totalPnl: 0, count: 0 }
+      };
+      state.driftStatus         = null;
+      state.cooldowns           = {};
+      state.disabledSignals     = [];
+      state.circuitBreakerActive = false;
+      state.coinHistory         = {};
+      state.lastRunSummary      = null;
+      state.drawdown            = 0;
+      await saveState(state);
+      console.log("[reset-state] Done — regimeStats, driftStatus, cooldowns, disabledSignals, circuitBreaker, coinHistory, lastRunSummary, drawdown cleared.");
+      break;
+    }
     default:
       throw new Error(
-        "Unknown task. Use one of: fast-scan, run-bot, daily-report, weekly-review, premarket, reevaluate"
+        "Unknown task. Use one of: fast-scan, run-bot, daily-report, weekly-review, premarket, reevaluate, reset-state"
       );
   }
 }
