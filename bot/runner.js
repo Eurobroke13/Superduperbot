@@ -871,11 +871,19 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       if (fundSig.reason === "funding-extreme-long") {
         c.score += c.signal === "short" ? 2.0 : -0.5;
         c.reasons.push("funding-extreme-long");
+        if (regime.label === "sideways" && c.signal === "short" && c.setupType === "range-fade") {
+          c.score += 1.0;
+          c.reasons.push("rf-funding-confirm");
+        }
       }
 
       if (fundSig.reason === "funding-extreme-short") {
         c.score += c.signal === "long" ? 2.0 : -0.5;
         c.reasons.push("funding-extreme-short");
+        if (regime.label === "sideways" && c.signal === "long" && c.setupType === "range-fade") {
+          c.score += 1.0;
+          c.reasons.push("rf-funding-confirm");
+        }
       }
 
       if (fundSig.reason === "funding-crowded-long" && fundRate > 0.0015) {

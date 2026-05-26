@@ -6,6 +6,7 @@
 //   FIX 2: liquidityTrapQualityGate()     — require 2+ confirmations for LT
 //   FIX 3: sidewaysFilter()               — block trend setups in sideways
 //   NEW:   scoreSidewaysMeanReversion()   — dedicated MR scoring for sideways
+//   NEW:   scoreRangeFade()               — high-conviction range-fade setup
 //   NEW:   check15mReversal()             — 15m candle reversal detection
 //   NEW:   stochRSI15m()                  — 15m StochRSI oscillator
 //   NEW:   confirmMeanReversionEntry()    — combined MR go/no-go decision
@@ -197,9 +198,9 @@ export function sidewaysFilter(candidate, regimeLabel, regimeStats) {
     return { allowed: true, reason: "not-sideways" };
   }
 
-  // Mean-reversion setups are the RIGHT play in sideways — let them through
-  if (candidate.setupType === "mean-reversion") {
-    return { allowed: true, reason: "mr-exempt-from-sideways-filter" };
+  // Mean-reversion and range-fade are the RIGHT plays in sideways — let them through
+  if (candidate.setupType === "mean-reversion" || candidate.setupType === "range-fade") {
+    return { allowed: true, reason: `${candidate.setupType}-exempt-from-sideways-filter` };
   }
 
   // Block trend setups — negative expectancy in sideways
@@ -261,9 +262,10 @@ export function sidewaysFilter(candidate, regimeLabel, regimeStats) {
 export function scoreSidewaysMeanReversion({
   price, closes, highs, lows, volumes,
   rsiVal, stochResult, fisherVal, fisherPrev,
-  pctB, bbUpper, bbLower, bbMiddle, bbWidth,
+  pctB, bbUpper, bbLower, bbMiddle, bbWidth, bbWidthPrev,
   vwapVal, currentEMA20,
   supports, resistances,
+  highVolumeNodes,
   adxResult, atrVal,
   obvDiv, volConfirm,
   regime
@@ -298,6 +300,15 @@ export function scoreSidewaysMeanReversion({
 
     const nearSupport = supports?.some(s => Math.abs(price - s) / price < 0.005);
     if (nearSupport)                                    { score += 2.0; reasons.push("mr-at-support"); }
+
+    const atHVNBottom = highVolumeNodes?.some(node => {
+      const depth = node.high - node.low;
+      return price >= node.low - depth * 0.1 && price <= node.low + depth * 0.2;
+    });
+    if (atHVNBottom)                                   { score += 1.5; reasons.push("mr-hvn-support"); }
+
+    if (Number.isFinite(bbWidthPrev) && Number.isFinite(bbWidth) && bbWidth < bbWidthPrev) {
+                                                         score += 1.0; reasons.push("mr-bb-squeeze"); }
 
     // Volume exhaustion: declining volume on the drop
     if (volumes && volumes.length >= 10) {
@@ -337,6 +348,15 @@ export function scoreSidewaysMeanReversion({
     const nearResistance = resistances?.some(r => Math.abs(price - r) / price < 0.005);
     if (nearResistance)                                 { score += 2.0; reasons.push("mr-at-resistance"); }
 
+    const atHVNTop = highVolumeNodes?.some(node => {
+      const depth = node.high - node.low;
+      return price >= node.high - depth * 0.2 && price <= node.high + depth * 0.1;
+    });
+    if (atHVNTop)                                      { score += 1.5; reasons.push("mr-hvn-resistance"); }
+
+    if (Number.isFinite(bbWidthPrev) && Number.isFinite(bbWidth) && bbWidth < bbWidthPrev) {
+                                                         score += 1.0; reasons.push("mr-bb-squeeze"); }
+
     if (volumes && volumes.length >= 10) {
       const recentVol = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
       const priorVol  = volumes.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
@@ -358,6 +378,131 @@ export function scoreSidewaysMeanReversion({
       riskReward: Math.abs(price - tp) / Math.abs(sl - price),
       positionSizeMultiplier: 0.70,
       maxHoldHours: 12
+    };
+  }
+}
+
+
+// =============================================================================
+// RANGE-FADE SETUP
+//
+// Higher-conviction sideways entry than mean-reversion:
+//   - Tighter BB edge (pctB < 0.15 / > 0.85)
+//   - Fisher extreme is a REQUIRED gate (not optional)
+//   - Rewards: HVN edge, OBV divergence, oscillator confluence
+//   - Shorter hold (8h), tighter SL (1.0 ATR), smaller size (65%)
+// =============================================================================
+
+export function scoreRangeFade({
+  price, volumes,
+  rsiVal, stochResult, fisherVal, fisherPrev,
+  pctB, bbMiddle, bbWidth, bbWidthPrev,
+  vwapVal, currentEMA20,
+  supports, resistances,
+  highVolumeNodes,
+  adxResult, atrVal,
+  obvDiv, volConfirm,
+  regime
+}) {
+  if (regime?.label !== "sideways") return null;
+  if (adxResult?.adx > 30) return null;
+  if (!Number.isFinite(pctB) || !Number.isFinite(atrVal)) return null;
+
+  const atLowerEdge = pctB < 0.15;
+  const atUpperEdge = pctB > 0.85;
+  if (!atLowerEdge && !atUpperEdge) return null;
+
+  let score = 0;
+  const reasons = [];
+
+  if (atLowerEdge) {
+    // Fisher extreme required — this is the distinguishing gate vs plain MR
+    if (fisherVal < -2.0 && fisherVal > fisherPrev)  { score += 2.0; reasons.push("rf-fisher-extreme"); }
+    else return null;
+
+    if (rsiVal < 28)                                 { score += 2.0; reasons.push("rf-rsi-extreme"); }
+    else if (rsiVal < 32)                            { score += 1.0; reasons.push("rf-rsi-low"); }
+
+    if (stochResult?.oversold)                       { score += 1.5; reasons.push("rf-stoch-oversold"); }
+    if (stochResult?.crossUp && stochResult?.k < 20) { score += 1.0; reasons.push("rf-stoch-cross"); }
+
+    if (obvDiv === "bullish")                        { score += 1.5; reasons.push("rf-obv-div"); }
+
+    const nearSupport = supports?.some(s => Math.abs(price - s) / price < 0.005);
+    if (nearSupport)                                 { score += 1.5; reasons.push("rf-at-support"); }
+
+    const atHVNBottom = highVolumeNodes?.some(node => {
+      const depth = node.high - node.low;
+      return price >= node.low - depth * 0.1 && price <= node.low + depth * 0.2;
+    });
+    if (atHVNBottom)                                 { score += 2.0; reasons.push("rf-hvn-support"); }
+
+    if (Number.isFinite(bbWidthPrev) && bbWidth < bbWidthPrev) {
+                                                       score += 1.0; reasons.push("rf-bb-squeeze"); }
+
+    if (volumes && volumes.length >= 10) {
+      const rv = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const pv = volumes.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
+      if (pv > 0 && rv < pv * 0.65)                 { score += 1.0; reasons.push("rf-vol-exhaustion"); }
+    }
+
+    if (score < 4.5) return null;
+
+    const sl = price - atrVal * 1.0;
+    const meanTarget = Math.min(currentEMA20 || bbMiddle, vwapVal || bbMiddle);
+    const tp = meanTarget > price ? meanTarget - atrVal * 0.1 : price + atrVal * 1.5;
+
+    return {
+      signal: "long", score, setupType: "range-fade", reasons, price,
+      sl, tp, atrVal,
+      riskReward: Math.abs(tp - price) / Math.abs(price - sl),
+      positionSizeMultiplier: 0.65,
+      maxHoldHours: 8
+    };
+
+  } else {
+    // Fisher extreme required
+    if (fisherVal > 2.0 && fisherVal < fisherPrev)   { score += 2.0; reasons.push("rf-fisher-extreme"); }
+    else return null;
+
+    if (rsiVal > 72)                                 { score += 2.0; reasons.push("rf-rsi-extreme"); }
+    else if (rsiVal > 68)                            { score += 1.0; reasons.push("rf-rsi-high"); }
+
+    if (stochResult?.overbought)                     { score += 1.5; reasons.push("rf-stoch-overbought"); }
+    if (stochResult?.crossDown && stochResult?.k > 80) { score += 1.0; reasons.push("rf-stoch-cross"); }
+
+    if (obvDiv === "bearish")                        { score += 1.5; reasons.push("rf-obv-div"); }
+
+    const nearResistance = resistances?.some(r => Math.abs(price - r) / price < 0.005);
+    if (nearResistance)                              { score += 1.5; reasons.push("rf-at-resistance"); }
+
+    const atHVNTop = highVolumeNodes?.some(node => {
+      const depth = node.high - node.low;
+      return price >= node.high - depth * 0.2 && price <= node.high + depth * 0.1;
+    });
+    if (atHVNTop)                                    { score += 2.0; reasons.push("rf-hvn-resistance"); }
+
+    if (Number.isFinite(bbWidthPrev) && bbWidth < bbWidthPrev) {
+                                                       score += 1.0; reasons.push("rf-bb-squeeze"); }
+
+    if (volumes && volumes.length >= 10) {
+      const rv = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const pv = volumes.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
+      if (pv > 0 && rv < pv * 0.65)                 { score += 1.0; reasons.push("rf-vol-exhaustion"); }
+    }
+
+    if (score < 4.5) return null;
+
+    const sl = price + atrVal * 1.0;
+    const meanTarget = Math.max(currentEMA20 || bbMiddle, vwapVal || bbMiddle);
+    const tp = meanTarget < price ? meanTarget + atrVal * 0.1 : price - atrVal * 1.5;
+
+    return {
+      signal: "short", score, setupType: "range-fade", reasons, price,
+      sl, tp, atrVal,
+      riskReward: Math.abs(price - tp) / Math.abs(sl - price),
+      positionSizeMultiplier: 0.65,
+      maxHoldHours: 8
     };
   }
 }

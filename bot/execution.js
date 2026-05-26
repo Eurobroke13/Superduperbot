@@ -136,6 +136,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   if (setupType === "breakout") sizeMultiplier *= 1.15;
   else if (setupType === "liquidity-trap") sizeMultiplier *= 1.0;
   else if (setupType === "mean-reversion") sizeMultiplier *= 0.85;
+  else if (setupType === "range-fade") sizeMultiplier *= 0.80;
 
   if (drawdown > 0.10) sizeMultiplier *= 0.7;
 

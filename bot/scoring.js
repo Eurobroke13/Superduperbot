@@ -26,7 +26,7 @@ import {
   vwap
 } from "./indicators.js";
 import { portfolioValue } from "./execution.js";
-import { scoreSidewaysMeanReversion } from "./entry-improvements.js";
+import { scoreSidewaysMeanReversion, scoreRangeFade } from "./entry-improvements.js";
 
 /**
  * Score bear regime short signals with specific indicators
@@ -1063,6 +1063,9 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     if (quality < 2 || setupType === "unknown") {
       // Sideways regime fallback: try dedicated MR scoring at BB edges
       if (regime?.label === "sideways") {
+        const bbWidthPrev = bb.width?.[n - 5] ?? bbWidth;
+        const highVolumeNodes = Array.isArray(vpvr?.highVolumeNodes) ? vpvr.highVolumeNodes : [];
+
         const mrResult = scoreSidewaysMeanReversion({
           price, closes, highs, lows, volumes,
           rsiVal, stochResult, fisherVal, fisherPrev,
@@ -1070,17 +1073,38 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           bbUpper:  bb.upper[n - 1],
           bbLower:  bb.lower[n - 1],
           bbMiddle: bb.middle[n - 1],
-          bbWidth,
+          bbWidth, bbWidthPrev,
           vwapVal, currentEMA20: ema21Val,
           supports, resistances,
+          highVolumeNodes,
           adxResult, atrVal,
           obvDiv: obvDiv.type, volConfirm,
           regime
         });
-        if (mrResult) {
+
+        const rfResult = scoreRangeFade({
+          price, volumes,
+          rsiVal, stochResult, fisherVal, fisherPrev,
+          pctB,
+          bbMiddle: bb.middle[n - 1],
+          bbWidth, bbWidthPrev,
+          vwapVal, currentEMA20: ema21Val,
+          supports, resistances,
+          highVolumeNodes,
+          adxResult, atrVal,
+          obvDiv: obvDiv.type, volConfirm,
+          regime
+        });
+
+        // Pick the higher-scoring result; range-fade wins ties (stricter gates = higher confidence)
+        const sidewaysResult = (rfResult && (!mrResult || rfResult.score >= mrResult.score))
+          ? rfResult
+          : mrResult;
+
+        if (sidewaysResult) {
           return {
             symbol,
-            direction: mrResult.signal,
+            direction: sidewaysResult.signal,
             ema21: ema21Val,
             signalCandleHigh: highs[n - 1],
             signalCandleLow:  lows[n - 1],
@@ -1089,7 +1113,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
             h4Trend, atrPct,
             _candles1h: candles1h,
             _srLevels: srLevels,
-            ...mrResult   // signal, score, setupType, reasons, price, sl, tp, riskReward, atrVal, positionSizeMultiplier, maxHoldHours
+            ...sidewaysResult
           };
         }
       }
