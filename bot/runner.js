@@ -700,11 +700,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   const startIdx = Math.floor(rankedTradeable.length * startFrac);
   const endIdx = Math.floor(rankedTradeable.length * endFrac);
-  const maxSymbolsPerRun = 20;
-  const rawBatch = rankedTradeable.slice(
-    startIdx,
-    Math.min(endIdx, startIdx + maxSymbolsPerRun)
-  );
+  const rawBatch = rankedTradeable.slice(startIdx, endIdx);
   const flagged = Object.keys(state.volatilityFlags || {});
   const batch = !FAST_SCAN
     ? [
@@ -719,7 +715,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   console.log(
     `[SCAN] Scoring ${batch.length} contracts ` +
-    `(${startIdx}-${Math.min(endIdx, startIdx + maxSymbolsPerRun)} of ${rankedTradeable.length})`
+    `(${startIdx}-${endIdx} of ${rankedTradeable.length})`
   );
 
   const candidates = [];
