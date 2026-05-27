@@ -468,9 +468,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           add(bbRejectionBear && mrBearConfirm >= 2, "bb-overbought", false, TIERS.weak);
         }
       } else {
-        longScore *= 0.7;
-        shortScore *= 0.7;
-        reasons.push("dead-range");
+        return null;
       }
     } else {
       const adxVal = adxResult?.adx ?? 0;
@@ -998,6 +996,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (!volumeDeclining && !bandwidthContracting) {
         score *= 0.8;
         reasons.push("mr-no-vol-confirm");
+        if (score < minScore) return null;
       }
     }
 
