@@ -725,7 +725,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   console.log(
     `[SCAN] Scoring ${batch.length} contracts ` +
-    `(${startIdx}-${Math.min(endIdx, startIdx + maxSymbolsPerRun)} of ${rankedTradeable.length})`
+    `(${effectiveStart}-${Math.min(effectiveEnd, effectiveStart + maxSymbolsPerRun)} of ${rankedTradeable.length})`
   );
 
   const candidates = [];
