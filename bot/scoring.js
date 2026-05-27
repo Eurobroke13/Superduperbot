@@ -468,8 +468,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           add(bbRejectionBear && mrBearConfirm >= 2, "bb-overbought", false, TIERS.weak);
         }
       } else {
-        longScore *= 0.5;
-        shortScore *= 0.5;
+        longScore *= 0.7;
+        shortScore *= 0.7;
         reasons.push("dead-range");
       }
     } else {
@@ -995,7 +995,10 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (!isSidewaysRegime) return null;
       if (!hasLocationEdge || !hasExtreme) return null;
       if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) return null;
-      if (!volumeDeclining || !bandwidthContracting) return null;
+      if (!volumeDeclining && !bandwidthContracting) {
+        score *= 0.8;
+        reasons.push("mr-no-vol-confirm");
+      }
     }
 
     // ── Regime-gated setup restrictions ──
