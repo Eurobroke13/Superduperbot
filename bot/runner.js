@@ -689,21 +689,27 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
           ? Math.abs((last - open24h) / open24h)
           : 0;
 
+      // In sideways, weight movement heavily — coins near range extremes
+      // have wider BB and are more likely to produce mean-reversion setups.
+      const movePctWeight = regime?.label === "sideways" ? 1.5 : 0.3;
       const rankScore =
         (vol / 1_000_000) +
-        (movePct * 100 * 0.3);
+        (movePct * 100 * movePctWeight);
 
       return { symbol, vol, movePct, rankScore };
     })
     .sort((a, b) => b.rankScore - a.rankScore)
     .map(x => x.symbol);
 
-  const startIdx = Math.floor(rankedTradeable.length * startFrac);
-  const endIdx = Math.floor(rankedTradeable.length * endFrac);
-  const maxSymbolsPerRun = 20;
+  const isSidewaysRegime = regime?.label === "sideways";
+  // In sideways: always scan from the top of the ranked list (no phase rotation),
+  // and use a larger batch to find the rare coins not in BB compression.
+  const maxSymbolsPerRun = isSidewaysRegime ? 60 : 20;
+  const effectiveStart = isSidewaysRegime ? 0 : Math.floor(rankedTradeable.length * startFrac);
+  const effectiveEnd   = isSidewaysRegime ? rankedTradeable.length : Math.floor(rankedTradeable.length * endFrac);
   const rawBatch = rankedTradeable.slice(
-    startIdx,
-    Math.min(endIdx, startIdx + maxSymbolsPerRun)
+    effectiveStart,
+    Math.min(effectiveEnd, effectiveStart + maxSymbolsPerRun)
   );
   const flagged = Object.keys(state.volatilityFlags || {});
   const batch = !FAST_SCAN
