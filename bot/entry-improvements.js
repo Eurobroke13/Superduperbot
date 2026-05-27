@@ -202,9 +202,9 @@ export function sidewaysFilter(candidate, regimeLabel, regimeStats) {
     return { allowed: true, reason: "mr-exempt-from-sideways-filter" };
   }
 
-  // Block trend setups — negative expectancy in sideways
-  if (candidate.setupType === "trend") {
-    return { allowed: false, reason: "trend-in-sideways-blocked(neg-EV)" };
+  // Block trend and momentum setups — negative expectancy in sideways
+  if (candidate.setupType === "trend" || candidate.setupType === "momentum") {
+    return { allowed: false, reason: `${candidate.setupType}-in-sideways-blocked(neg-EV)` };
   }
 
   // Raise minimum score for all other setups in sideways
