@@ -818,17 +818,25 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     const base = c.symbol.replace("-USDT-SWAP", "");
     const lunar = lunarData[base];
     if (!lunar) continue;
-    c.lunarSentiment = lunar.sentiment;
-    c.lunarGalaxyScore = lunar.galaxyScore;
 
-    if (lunar.galaxyScore > 60 && c.signal === "long") {
-      c.score += getWeight("lunar-bull", state);
-      c.reasons.push(`lunar-bull(${lunar.galaxyScore})`);
+    c.lunarSentiment    = lunar.sentiment;
+    c.lunarGalaxyScore  = lunar.galaxyScore;
+    c.lunarSocialVolume = lunar.socialVolume;
+    c.lunarAltRank      = lunar.altRank;
+
+    // 1. GRADIENT GALAXY SCORE (replaces binary >60 / <30)
+    const galaxyNorm = ((lunar.galaxyScore - 50) / 50);          // -1.0 to +1.0
+    const directionSign = c.signal === "long" ? 1 : -1;
+    const galaxyContrib = galaxyNorm * directionSign;             // positive = aligned
+
+    if (Math.abs(galaxyContrib) > 0.15) {
+      const galaxyWeight = getWeight("lunar-galaxy-gradient", state);
+      const galaxyScore = galaxyContrib * galaxyWeight;
+      c.score += galaxyScore;
+      c.reasons.push(`lunar-galaxy(${lunar.galaxyScore},${galaxyScore > 0 ? "+" : ""}${galaxyScore.toFixed(2)})`);
     }
-    if (lunar.galaxyScore < 30 && c.signal === "short") {
-      c.score += getWeight("lunar-bear", state);
-      c.reasons.push(`lunar-bear(${lunar.galaxyScore})`);
-    }
+
+    // 2. SENTIMENT WARNING (unchanged)
     if (c.signal === "long" && lunar.sentiment < 30) {
       c.score += getWeight("lunar-sentiment-warning", state);
       c.reasons.push("lunar-sentiment-warning");
@@ -837,6 +845,54 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       c.score += getWeight("lunar-sentiment-warning", state);
       c.reasons.push("lunar-sentiment-warning");
     }
+
+    // 3. ALT RANK SCORING
+    if (lunar.altRank <= 20) {
+      const rankBoost = getWeight("lunar-alt-rank", state);
+      c.score += rankBoost;
+      c.reasons.push(`lunar-rank(${lunar.altRank})`);
+    } else if (lunar.altRank <= 50) {
+      const rankBoost = getWeight("lunar-alt-rank", state) * 0.4;
+      c.score += rankBoost;
+      c.reasons.push(`lunar-rank(${lunar.altRank})`);
+    } else if (lunar.altRank >= 200) {
+      c.score -= 0.3;
+      c.reasons.push(`lunar-rank-low(${lunar.altRank})`);
+    }
+
+    // 4. SOCIAL VOLUME SPIKE DETECTION
+    if (!state.lunarSocialHistory) state.lunarSocialHistory = {};
+    if (!state.lunarSocialHistory[base]) state.lunarSocialHistory[base] = [];
+
+    const history = state.lunarSocialHistory[base];
+    const currentVol = lunar.socialVolume || 0;
+
+    if (history.length >= 3 && currentVol > 0) {
+      const avg = history.reduce((s, v) => s + v, 0) / history.length;
+
+      if (avg > 0) {
+        const ratio = currentVol / avg;
+
+        if (ratio >= 2.0) {
+          const sentimentAligned =
+            (c.signal === "long"  && lunar.sentiment >= 50) ||
+            (c.signal === "short" && lunar.sentiment <= 50);
+
+          if (sentimentAligned) {
+            const spikeBoost = getWeight("lunar-social-volume-spike", state);
+            c.score += spikeBoost;
+            c.reasons.push(`lunar-vol-spike(${ratio.toFixed(1)}x,aligned)`);
+          } else {
+            const spikeWarn = getWeight("lunar-social-volume-warn", state);
+            c.score += spikeWarn;
+            c.reasons.push(`lunar-vol-spike(${ratio.toFixed(1)}x,against)`);
+          }
+        }
+      }
+    }
+
+    history.push(currentVol);
+    if (history.length > 10) history.shift();
   }
 
   const scores = candidates.map(c => c.score).sort((a, b) => b - a);

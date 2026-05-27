@@ -226,6 +226,8 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     signalSet: [...new Set((reasons || []).slice().sort())],
     lunarSentiment: candidate.lunarSentiment ?? null,
     lunarGalaxyScore: candidate.lunarGalaxyScore ?? null,
+    lunarSocialVolume: candidate.lunarSocialVolume ?? null,
+    lunarAltRank: candidate.lunarAltRank ?? null,
     liquidationPrice: liqPrice,
     maxFavorable: price,
     forceClose: false,

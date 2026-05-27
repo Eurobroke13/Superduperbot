@@ -66,8 +66,11 @@ export const SIGNAL_WEIGHTS = {
   "funding-extreme-long": 1.5, "funding-extreme-short": 1.5,
   "h4-bull": 2.0, "h4-bear": 2.0,
   "news-boost": 0.8,
-  "lunar-bull": 0.7, "lunar-bear": 0.7,
-  "lunar-sentiment-warning": -1.0,
+  "lunar-galaxy-gradient":     0.7,
+  "lunar-alt-rank":            0.5,
+  "lunar-social-volume-spike": 0.8,
+  "lunar-social-volume-warn": -0.6,
+  "lunar-sentiment-warning":  -1.0,
 };
 
 // Snapshot of the original weights — used to reset dynamic adjustments

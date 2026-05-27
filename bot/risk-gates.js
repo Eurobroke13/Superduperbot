@@ -120,6 +120,7 @@ const SIGNAL_PAIRS = [
   ["adx-strong-bull", "adx-strong-bear"],
   ["funding-crowded-long", "funding-crowded-short"],
   ["funding-extreme-long", "funding-extreme-short"],
+  ["lunar-social-volume-spike", "lunar-social-volume-warn"],
 ];
 
 /**
