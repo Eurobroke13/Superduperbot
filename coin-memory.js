@@ -331,7 +331,7 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
       `Price: $${c.price.toFixed(4)} | RSI: ${c.rsiVal.toFixed(0)} | ` +
       `Fisher: ${c.fisherVal.toFixed(2)} | ADX: ${c.adxResult?.adx?.toFixed(0)||"?"} | ` +
       `4H: ${c.h4Trend} | OBV: ${c.obvDiv}\n` +
-      `Galaxy: ${c.lunarGalaxyScore||"?"} | Funding: ${c.fundingRate!=null?(c.fundingRate*100).toFixed(3)+"%":"?"}\n` +
+      `Galaxy: ${c.lunarGalaxyScore||"?"} | AltRank: ${c.lunarAltRank||"?"} | SocVol: ${c.lunarSocialVolume||"?"} | Funding: ${c.fundingRate!=null?(c.fundingRate*100).toFixed(3)+"%":"?"}\n` +
       `Signals: [${signalPerf}]\n` +
       `Avg signal weight: ${avgWeight.toFixed(2)}x\n` +
       `${memText}`

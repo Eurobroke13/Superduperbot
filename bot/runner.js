@@ -808,11 +808,13 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   }
 
   const lunarSymbols = [...new Set([
-    ...candidates.filter(c => c.score >= ENTRY_THRESHOLD).slice(0, 25).map(c => c.symbol.replace("-USDT-SWAP", "")),
+    ...candidates.filter(c => c.score >= ENTRY_THRESHOLD * 0.5).map(c => c.symbol.replace("-USDT-SWAP", "")),
     ...Object.keys(state.positions).map(s => s.replace("-USDT-SWAP", ""))
-  ])].slice(0, 15);
+  ])].slice(0, 40);
 
   const lunarData = await fetchLunarCrush(lunarSymbols, env, state);
+
+  if (!state.lunarSocialHistory) state.lunarSocialHistory = {};
 
   for (const c of candidates) {
     const base = c.symbol.replace("-USDT-SWAP", "");
@@ -861,7 +863,6 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
 
     // 4. SOCIAL VOLUME SPIKE DETECTION
-    if (!state.lunarSocialHistory) state.lunarSocialHistory = {};
     if (!state.lunarSocialHistory[base]) state.lunarSocialHistory[base] = [];
 
     const history = state.lunarSocialHistory[base];

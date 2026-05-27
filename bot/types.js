@@ -33,6 +33,8 @@
  * @property {string} [entryType] - market, limit, decaying-limit, decaying-market.
  * @property {number|null} [lunarSentiment]
  * @property {number|null} [lunarGalaxyScore]
+ * @property {number|null} [lunarSocialVolume]
+ * @property {number|null} [lunarAltRank]
  */
 
 export {};

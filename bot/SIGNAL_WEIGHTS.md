@@ -15,6 +15,14 @@ still apply in bull and bear regimes.
 | `trap-vol-bull` / `trap-vol-bear` | `0.05` / `0.0` | Volume confirmation around trap signals. | Both are effectively disabled because trap volume alone was too noisy. `trap-vol-bear` is also added to `disabledSignals` on state load. | Manual safety override; re-enable only after isolated fixture/backtest proof. |
 | `OBV-bull-div` / `OBV-bear-div` | `0.5` / `0.35` | OBV divergence against price. | Mild long bias from historical follow-through. | Backtest-derived, low asymmetry; safe to revisit during regular weight reviews. |
 | `above-cloud` / `below-cloud` | `0.5` / `1.5` | Ichimoku cloud position. | Short-side cloud breaks carried more informational value in the seeded period. | Backtest-derived; watch for regime drift. |
+| `lunar-galaxy-gradient` | `0.7` | Continuous galaxy score (0–100 → −1 to +1, ×weight). Replaces binary `lunar-bull`/`lunar-bear`. Dead zone ±15% filters noise. | Gradient preserves information lost at binary cutoffs — Galaxy 58 was invisible before, now contributes proportionally. | New signal; review after 50+ lunar-tagged trades. |
+| `lunar-alt-rank` | `0.5` | Top-20 altRank: full boost. Top-50: 40%. 200+: −0.3 penalty. | Top-ranked coins correlate social momentum with price action; low-ranked coins are riskier on social signals. | Conservative start; increase if top-rank WR exceeds baseline by 5%+. |
+| `lunar-social-volume-spike` / `lunar-social-volume-warn` | `0.8` / `−0.6` | 2x+ social volume vs 10-sample rolling avg. Boost if sentiment aligns, warn if opposing. | Sudden social attention often front-runs moves; opposing attention = crowd disagrees with your direction. | Needs ~5h warmup per coin. Review 2x threshold after 30 spike-tagged trades. |
+
+## Retired Signals
+
+- `lunar-bull: 0.7`: replaced by `lunar-galaxy-gradient`. Binary >60 cutoff discarded information in the 30–60 and 60–80 ranges.
+- `lunar-bear: 0.7`: replaced by `lunar-galaxy-gradient`. Same reason as above; direction sign is now handled internally by the gradient.
 
 ## Disabled Signals
 
