@@ -908,7 +908,8 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       candles: c._candles1h,
       srLevels: c._srLevels || { supports: [], resistances: [] },
       direction: c.signal,
-      atrVal: c.atrVal
+      atrVal: c.atrVal,
+      regime: regime.label
     });
     if (!sweep.confirmed) {
       console.log(`[${c.symbol}] Liquidity-trap blocked: no confirmed sweep (${sweep.details.reason})`);

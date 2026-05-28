@@ -208,7 +208,7 @@ export function sidewaysFilter(candidate, regimeLabel, regimeStats) {
   }
 
   // Raise minimum score for all other setups in sideways
-  const sidewaysMinScore = 5.0;
+  const sidewaysMinScore = 4.5;
   if (candidate.score < sidewaysMinScore) {
     return {
       allowed: false,
