@@ -313,6 +313,108 @@ export function volumeProfile(closes, volumes, bins = 20) {
   return { profile, highVolumeNodes: profile.filter((bucket) => bucket.volume >= avg * 1.5) };
 }
 
+// Merge levels within clusterPct of each other into one stronger level.
+// Returns array of { price, strength, count } sorted by price descending for supports,
+// ascending for resistances (caller chooses sort).
+export function clusterLevels(levels, clusterPct = 0.003) {
+  if (!levels.length) return [];
+  const sorted = [...levels].sort((a, b) => a.price - b.price);
+  const clusters = [];
+  let current = { ...sorted[0], count: 1 };
+  for (let i = 1; i < sorted.length; i++) {
+    const pct = Math.abs(sorted[i].price - current.price) / current.price;
+    if (pct <= clusterPct) {
+      // Merge: weighted average price, accumulate strength
+      const totalStr = current.strength + sorted[i].strength;
+      current.price = (current.price * current.strength + sorted[i].price * sorted[i].strength) / totalStr;
+      current.strength = totalStr;
+      current.count += 1;
+      current.type = current.type; // keep dominant type
+    } else {
+      clusters.push(current);
+      current = { ...sorted[i], count: 1 };
+    }
+  }
+  clusters.push(current);
+  return clusters;
+}
+
+// 4H swing pivots using 3-bar comparison — captures institutional structure levels
+// that 1H pivots miss. Use for SL/TP placement.
+export function findSupportResistanceH4(candles4h, lookback = 60) {
+  if (!candles4h || candles4h.length < 8) return { supports: [], resistances: [] };
+  const highs = candles4h.map(c => c.high);
+  const lows = candles4h.map(c => c.low);
+  const n = highs.length;
+  const supports = [];
+  const resistances = [];
+  const order = 3; // 3-bar comparison each side
+  for (let i = order; i < Math.min(n - order, lookback + order); i++) {
+    const idx = n - 1 - (i - order); // scan from most recent
+    if (idx < order || idx >= n - order) continue;
+    // Support: local low with 3 bars each side
+    if (
+      lows[idx] < lows[idx - 1] && lows[idx] < lows[idx - 2] && lows[idx] < lows[idx - 3] &&
+      lows[idx] < lows[idx + 1] && lows[idx] < lows[idx + 2] && lows[idx] < lows[idx + 3]
+    ) {
+      supports.push({ price: lows[idx], type: "h4-swing-support", strength: 1.4 });
+    }
+    // Resistance: local high with 3 bars each side
+    if (
+      highs[idx] > highs[idx - 1] && highs[idx] > highs[idx - 2] && highs[idx] > highs[idx - 3] &&
+      highs[idx] > highs[idx + 1] && highs[idx] > highs[idx + 2] && highs[idx] > highs[idx + 3]
+    ) {
+      resistances.push({ price: highs[idx], type: "h4-swing-resistance", strength: 1.4 });
+    }
+  }
+  return { supports, resistances };
+}
+
+// Detect sequence of RSI higher lows on 4H candles, confirming bullish momentum shift.
+// Requires at least minLows consecutive higher RSI lows while price lows are flat or lower.
+// Returns { detected, lowCount, rsiLowValues, priceLowValues, strength }
+export function detectRsiHigherLows(candles4h, minLows = 3, lookback = 80) {
+  if (!candles4h || candles4h.length < 20) return { detected: false, lowCount: 0, strength: 0 };
+  const closes4h = candles4h.map(c => c.close);
+  const lows4h = candles4h.map(c => c.low);
+  const rsi4h = rsiSeries(closes4h, 14);
+  const n = candles4h.length;
+  const slice = Math.min(lookback, n);
+
+  // Find swing lows in the 4H RSI (order=3 = 3-bar comparison)
+  const rsiSlice = rsi4h.slice(n - slice);
+  const priceSlice = lows4h.slice(n - slice);
+  const rsiLows = findSwingPoints(rsiSlice, "low", 3);
+
+  if (rsiLows.length < minLows) return { detected: false, lowCount: rsiLows.length, strength: 0 };
+
+  // Take the last minLows RSI swing lows and verify they are strictly ascending
+  const recent = rsiLows.slice(-minLows);
+  let rsiAscending = true;
+  for (let i = 1; i < recent.length; i++) {
+    if (recent[i].value <= recent[i - 1].value) { rsiAscending = false; break; }
+  }
+  if (!rsiAscending) return { detected: false, lowCount: rsiLows.length, strength: 0 };
+
+  // Verify price lows at the same swing indices are flat or descending (actual divergence)
+  const priceLowVals = recent.map(p => priceSlice[p.index]);
+  let priceNotRising = true;
+  for (let i = 1; i < priceLowVals.length; i++) {
+    // Allow up to 0.5% price rise — avoids filtering out flat accumulation
+    if (priceLowVals[i] > priceLowVals[i - 1] * 1.005) { priceNotRising = false; break; }
+  }
+  if (!priceNotRising) return { detected: false, lowCount: rsiLows.length, strength: 0 };
+
+  const strength = recent[recent.length - 1].value - recent[0].value; // total RSI rise across lows
+  return {
+    detected: true,
+    lowCount: recent.length,
+    rsiLowValues: recent.map(p => p.value),
+    priceLowValues: priceLowVals,
+    strength
+  };
+}
+
 export function findSupportResistance(highs, lows, lookback = 50) {
   const n = highs.length;
   const supports = [];
