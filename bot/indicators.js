@@ -415,6 +415,50 @@ export function detectRsiHigherLows(candles4h, minLows = 3, lookback = 80) {
   };
 }
 
+// Detect sequence of RSI lower highs on 4H candles — bearish momentum divergence.
+// Requires >= minHighs consecutive lower RSI highs while price highs are flat or higher.
+// Symmetric counterpart to detectRsiHigherLows.
+export function detectRsiLowerHighs(candles4h, minHighs = 3, lookback = 80) {
+  if (!candles4h || candles4h.length < 20) return { detected: false, highCount: 0, strength: 0 };
+  const closes4h = candles4h.map(c => c.close);
+  const highs4h = candles4h.map(c => c.high);
+  const rsi4h = rsiSeries(closes4h, 14);
+  const n = candles4h.length;
+  const slice = Math.min(lookback, n);
+
+  const rsiSlice = rsi4h.slice(n - slice);
+  const priceSlice = highs4h.slice(n - slice);
+  const rsiHighs = findSwingPoints(rsiSlice, "high", 3);
+
+  if (rsiHighs.length < minHighs) return { detected: false, highCount: rsiHighs.length, strength: 0 };
+
+  // Last minHighs RSI swing highs must be strictly descending
+  const recent = rsiHighs.slice(-minHighs);
+  let rsiDescending = true;
+  for (let i = 1; i < recent.length; i++) {
+    if (recent[i].value >= recent[i - 1].value) { rsiDescending = false; break; }
+  }
+  if (!rsiDescending) return { detected: false, highCount: rsiHighs.length, strength: 0 };
+
+  // Price highs at the same swing indices must be flat or rising (actual divergence)
+  const priceHighVals = recent.map(p => priceSlice[p.index]);
+  let priceNotFalling = true;
+  for (let i = 1; i < priceHighVals.length; i++) {
+    // Allow up to 0.5% price drop — avoids filtering out flat distribution
+    if (priceHighVals[i] < priceHighVals[i - 1] * 0.995) { priceNotFalling = false; break; }
+  }
+  if (!priceNotFalling) return { detected: false, highCount: rsiHighs.length, strength: 0 };
+
+  const strength = recent[0].value - recent[recent.length - 1].value; // total RSI drop across highs
+  return {
+    detected: true,
+    highCount: recent.length,
+    rsiHighValues: recent.map(p => p.value),
+    priceHighValues: priceHighVals,
+    strength
+  };
+}
+
 export function findSupportResistance(highs, lows, lookback = 50) {
   const n = highs.length;
   const supports = [];

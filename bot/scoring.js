@@ -17,6 +17,7 @@ import {
   findSupportResistanceH4,
   clusterLevels,
   detectRsiHigherLows,
+  detectRsiLowerHighs,
   fisher,
   ichimoku,
   macd,
@@ -403,10 +404,15 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       }
     }
 
-    // 4H RSI higher lows: detect bullish momentum divergence across >= 3 swing lows
+    // 4H RSI higher lows: bullish momentum divergence across >= 3 swing lows
     const rsiHigherLows = (candles4h && candles4h.length >= 20)
       ? detectRsiHigherLows(candles4h, 3, 80)
       : { detected: false, lowCount: 0, strength: 0 };
+
+    // 4H RSI lower highs: bearish momentum divergence across >= 3 swing highs
+    const rsiLowerHighs = (candles4h && candles4h.length >= 20)
+      ? detectRsiLowerHighs(candles4h, 3, 80)
+      : { detected: false, highCount: 0, strength: 0 };
 
     let longScore = 0;
     let shortScore = 0;
@@ -870,18 +876,63 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
 
     // 4H RSI higher lows: 3+ consecutive higher RSI swing lows while price flat/lower
     // = classic hidden bullish divergence. Gate with h4=bullish + bull regime.
-    // Strength bonus scales with how much RSI has risen across the sequence.
     const rsiHLBullSignal =
       rsiHigherLows.detected &&
       regime?.label === "bull" &&
       h4Trend === "bullish" &&
       ribbon.bullishAligned;
     add(rsiHLBullSignal, "4h-rsi-higher-lows", true, TIERS.strong);
-    // Extra boost when confirmed by other setups (stoch or vwap bounce)
     add(
       rsiHLBullSignal && (stochResult.crossUp || vwapBounce),
       "4h-rsi-hl-confirmed",
       true,
+      TIERS.medium
+    );
+
+    // 4H RSI higher lows in sideways: accumulation inside range — only valid when
+    // price is in lower half of BB (pctB < 0.40), near support, with 1 MR confirm.
+    // Without location + confirmation it fires mid-range with no edge.
+    const nearSupportSideways = supports.some(s => Math.abs(price - s) / price < 0.005);
+    const mrConfirmSideways =
+      (stochResult.crossUp && stochResult.k < 40) ||
+      (fisherVal < -1.5 && fisherVal > fisherPrev) ||
+      rsiDiv.type === "bullish";
+    const rsiHLSidewaysSignal =
+      rsiHigherLows.detected &&
+      regime?.label === "sideways" &&
+      pctB < 0.40 &&
+      nearSupportSideways &&
+      mrConfirmSideways;
+    add(rsiHLSidewaysSignal, "4h-rsi-hl-sideways", true, TIERS.medium);
+
+    // 4H RSI lower highs: 3+ consecutive lower RSI highs while price highs flat/rising
+    // = bearish momentum divergence.
+    // Bear regime: valid whenever h4=bearish + ribbon bearish aligned.
+    // Sideways: additionally requires nearResistance + MR confirmation (otherwise fires mid-range).
+    const nearResistanceSideways = resistances.some(r => Math.abs(price - r) / price < 0.005);
+    const mrConfirmBearSideways =
+      (stochResult.crossDown && stochResult.k > 60) ||
+      (fisherVal > 1.5 && fisherVal < fisherPrev) ||
+      rsiDiv.type === "bearish";
+
+    const rsiLHBearBase =
+      rsiLowerHighs.detected &&
+      h4Trend === "bearish" &&
+      ribbon.bearishAligned;
+
+    const rsiLHBearSignal =
+      rsiLHBearBase && regime?.label === "bear";
+    const rsiLHSidewaysSignal =
+      rsiLHBearBase && regime?.label === "sideways" &&
+      nearResistanceSideways && mrConfirmBearSideways;
+
+    add(rsiLHBearSignal, "4h-rsi-lower-highs", false, TIERS.strong);
+    add(rsiLHSidewaysSignal, "4h-rsi-lh-sideways", false, TIERS.medium);
+    // Extra confirmation bonus for bear regime (stoch cross-down or VWAP reject)
+    add(
+      rsiLHBearSignal && (stochResult.crossDown || vwapReject),
+      "4h-rsi-lh-confirmed",
+      false,
       TIERS.medium
     );
 
