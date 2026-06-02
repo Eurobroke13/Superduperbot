@@ -931,14 +931,82 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     }
 
     if (!signal) {
-      _trackNull("no-signal");
-      // Track score buckets to understand how far below minScore coins are
-      const best = Math.max(longScore, shortScore);
-      if (best < 1)       _trackNull("no-signal:<1");
-      else if (best < 2)  _trackNull("no-signal:1-2");
-      else if (best < 3)  _trackNull("no-signal:2-3");
-      else                _trackNull("no-signal:>=3(wrong-dir)");
-      return null;
+      // ── Pre-boost rescue paths before giving up ──────────────────────────
+
+      // BEAR: apply scoreBearShort boost to shortScore pre-selection so
+      // marginal shorts (scoring 1-2) can qualify instead of dying here
+      if (regime?.label === "bear") {
+        const nearRes = resistances.some(r => Math.abs(price - r) / price < 0.005);
+        const bearBoostEarly = scoreBearShort(
+          "short", price, rsiVal, fisherVal, stochResult,
+          vwapVal, adxResult, pctB, nearRes, obvDiv.type,
+          atrVal, bb.upper[n - 1], bb.middle[n - 1], reasons, shortScore
+        );
+        shortScore += bearBoostEarly.scoreBoost;
+        if (shortScore >= minScore) {
+          signal = "short";
+          score = shortScore;
+        }
+      }
+
+      // BULL: symmetric boost for longs — RSI oversold bounce at support,
+      // VWAP reclaim, ribbon bullish aligned
+      if (!signal && regime?.label === "bull") {
+        const nearSup = supports.some(s => Math.abs(price - s) / price < 0.005);
+        let bullBoost = 0;
+        if (nearSup && rsiVal < 40)            bullBoost += 1.5;
+        if (price > vwapVal && rsiTurningUp)   bullBoost += 1.0;
+        if (ribbon.bullishAligned)             bullBoost += 1.0;
+        if (h4Trend === "bullish")             bullBoost += 0.75;
+        longScore += bullBoost;
+        if (longScore >= minScore && longScore > shortScore) {
+          signal = "long";
+          score = longScore;
+        }
+      }
+
+      // SIDEWAYS: try dedicated MR scorer before giving up
+      if (!signal && regime?.label === "sideways") {
+        const mrResult = scoreSidewaysMeanReversion({
+          price, closes, highs, lows, volumes,
+          rsiVal, stochResult, fisherVal, fisherPrev,
+          pctB,
+          bbUpper:  bb.upper[n - 1],
+          bbLower:  bb.lower[n - 1],
+          bbMiddle: bb.middle[n - 1],
+          bbWidth,
+          vwapVal, currentEMA20: ema21Val,
+          supports, resistances,
+          adxResult, atrVal,
+          obvDiv: obvDiv.type, volConfirm,
+          regime
+        });
+        if (mrResult) {
+          return {
+            symbol,
+            direction: mrResult.signal,
+            ema21: ema21Val,
+            signalCandleHigh: highs[n - 1],
+            signalCandleLow:  lows[n - 1],
+            signalCandleClose: closes[n - 1],
+            fundingRate: null,
+            h4Trend, atrPct,
+            _candles1h: candles1h,
+            _srLevels: srLevels,
+            ...mrResult
+          };
+        }
+      }
+
+      if (!signal) {
+        _trackNull("no-signal");
+        const best = Math.max(longScore, shortScore);
+        if (best < 1)       _trackNull("no-signal:<1");
+        else if (best < 2)  _trackNull("no-signal:1-2");
+        else if (best < 3)  _trackNull("no-signal:2-3");
+        else                _trackNull("no-signal:>=3(wrong-dir)");
+        return null;
+      }
     }
 
     if (
