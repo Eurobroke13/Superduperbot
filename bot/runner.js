@@ -38,6 +38,7 @@ import {
 import {
   autoApproveSignal,
   checkCorrelationExposure,
+  drainNullReasons,
   fundingRateSignal,
   scoreSymbol,
   confirm15mBearShort
@@ -740,6 +741,9 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   }
   scanSummary.candidatesScored = candidates.length;
   scanSummary.candidatesFilteredByScorer = Math.max(0, batch.length - candidates.length);
+  const nullReasons = drainNullReasons();
+  const nullSummary = Object.entries(nullReasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(" ");
+  if (nullSummary) console.log(`[SCAN NULL] ${nullSummary}`);
 
   const decisions = new Set();
   const topSignalSet = new Set();
