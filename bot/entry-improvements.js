@@ -277,9 +277,9 @@ export function scoreSidewaysMeanReversion({
   // Gate 3: Bollinger Bands must exist
   if (!bbUpper || !bbLower || !bbMiddle || bbWidth === undefined) return null;
 
-  // Gate 4: Price must be at a range edge (widened from 10/90 to 20/80 for more coverage)
-  const atLowerEdge = pctB < 0.20;
-  const atUpperEdge = pctB > 0.80;
+  // Gate 4: Price must be at a range edge (widened to 25/75 for narrow-band sideways)
+  const atLowerEdge = pctB < 0.25;
+  const atUpperEdge = pctB > 0.75;
   if (!atLowerEdge && !atUpperEdge) return null;
 
   let score = 0;
@@ -309,7 +309,7 @@ export function scoreSidewaysMeanReversion({
     if (obvDiv === "bullish")                           { score += 1.5; reasons.push("mr-obv-div-bull"); }
     if (pctB < 0.0)                                     { score += 0.5; reasons.push("mr-below-bb"); }
 
-    if (score < 4.5) return null;
+    if (score < 3.5) return null;
 
     const sl = price - atrVal * 1.2;
     const meanTarget = Math.min(currentEMA20 || bbMiddle, vwapVal || bbMiddle);
@@ -346,7 +346,7 @@ export function scoreSidewaysMeanReversion({
     if (obvDiv === "bearish")                           { score += 1.5; reasons.push("mr-obv-div-bear"); }
     if (pctB > 1.0)                                     { score += 0.5; reasons.push("mr-above-bb"); }
 
-    if (score < 4.5) return null;
+    if (score < 3.5) return null;
 
     const sl = price + atrVal * 1.2;
     const meanTarget = Math.max(currentEMA20 || bbMiddle, vwapVal || bbMiddle);

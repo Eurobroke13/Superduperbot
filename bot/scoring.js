@@ -430,25 +430,26 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       add(h4Trend === "bearish" && h4RecentCross && !h4BearStrong, "h4-bear", false, TIERS.strong);
       add(h4Trend === "bearish" && h4PullbackEntry && !h4RecentCross, "h4-bear-pb", false, TIERS.medium);
     } else if (!isTrending) {
+      // Lowered bbWidth threshold: quiet sideways markets have BBs at 0.015-0.025
       const isGoodRange =
         (adxResult?.adx ?? 0) < 18 &&
-        bbWidth > 0.03;
+        bbWidth > 0.015;
 
       const nearSupport = supports.some(s => Math.abs(price - s) / price < 0.003);
       const nearResistance = resistances.some(r => Math.abs(price - r) / price < 0.003);
 
       const mrBullConfirm = [
         rsiDiv.type === "bullish",
-        stochResult.crossUp && stochResult.k < 30,
-        volConfirm.isSignificant && pctB < 0.10,
-        fisherVal < -1.8 && fisherVal > fisherPrev
+        stochResult.crossUp && stochResult.k < 35,
+        volConfirm.isSignificant && pctB < 0.20,
+        fisherVal < -1.5 && fisherVal > fisherPrev
       ].filter(Boolean).length;
 
       const mrBearConfirm = [
         rsiDiv.type === "bearish",
-        stochResult.crossDown && stochResult.k > 70,
-        volConfirm.isSignificant && pctB > 0.90,
-        fisherVal > 1.8 && fisherVal < fisherPrev
+        stochResult.crossDown && stochResult.k > 65,
+        volConfirm.isSignificant && pctB > 0.80,
+        fisherVal > 1.5 && fisherVal < fisherPrev
       ].filter(Boolean).length;
 
       if (isGoodRange) {
@@ -456,44 +457,52 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           lows.slice(-4).some(l => l <= s * 1.002) &&
           closes[n - 1] > s
         );
-        add(rsiVal < 35 && supportActuallyTested && mrBullConfirm >= 1, "rsi-support-bounce", true, TIERS.medium);
-        add(rsiVal > 68 && nearResistance && mrBearConfirm >= 1, "rsi-resistance-reject", false, TIERS.medium);
+        add(rsiVal < 38 && supportActuallyTested && mrBullConfirm >= 1, "rsi-support-bounce", true, TIERS.medium);
+        add(rsiVal > 65 && nearResistance && mrBearConfirm >= 1, "rsi-resistance-reject", false, TIERS.medium);
 
         if (!nearSupport && !nearResistance) {
           const rsiPrev2 = rsiArr[n - 3] ?? rsiVal;
           const rsiTurningDown = rsiArr[n - 1] < rsiArr[n - 2] && rsiArr[n - 2] < rsiPrev2;
           const rsiTurningUp = rsiArr[n - 1] > rsiArr[n - 2] && rsiArr[n - 2] > rsiPrev2;
           const bbRejectionBear =
-            pctB > 0.90 &&
+            pctB > 0.85 &&
             closes[n - 1] < bb.upper[n - 1] &&
             closes[n - 2] >= bb.upper[n - 2];
           const bbRejectionBull =
-            pctB < 0.10 &&
+            pctB < 0.15 &&
             closes[n - 1] > bb.lower[n - 1] &&
             closes[n - 2] <= bb.lower[n - 2];
 
-          add(rsiVal < 32 && rsiTurningUp && mrBullConfirm >= 2, "rsi-oversold", true, TIERS.weak);
-          add(rsiVal > 68 && rsiTurningDown && mrBearConfirm >= 2, "rsi-overbought", false, TIERS.weak);
-          add(bbRejectionBull && mrBullConfirm >= 2, "bb-oversold", true, TIERS.weak);
-          add(bbRejectionBear && mrBearConfirm >= 2, "bb-overbought", false, TIERS.weak);
+          add(rsiVal < 35 && rsiTurningUp && mrBullConfirm >= 1, "rsi-oversold", true, TIERS.medium);
+          add(rsiVal > 65 && rsiTurningDown && mrBearConfirm >= 1, "rsi-overbought", false, TIERS.medium);
+          add(bbRejectionBull && mrBullConfirm >= 1, "bb-oversold", true, TIERS.medium);
+          add(bbRejectionBear && mrBearConfirm >= 1, "bb-overbought", false, TIERS.medium);
         }
       } else {
+        _trackNull("no-good-range");
         return null;
       }
     } else {
       const adxVal = adxResult?.adx ?? 0;
 
       if (adxVal >= 18) {
-        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.medium);
-        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.medium);
-        add(h4Trend === "bullish", "h4-bull", true, TIERS.medium);
-        add(h4Trend === "bearish", "h4-bear", false, TIERS.medium);
+        // Mild trend: raise weights so ribbon+h4 alignment alone can approach minScore
+        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.strong);
+        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.strong);
+        add(h4Trend === "bullish", "h4-bull", true, TIERS.strong);
+        add(h4Trend === "bearish", "h4-bear", false, TIERS.strong);
+        // Add VWAP alignment as secondary boost in mild trend
+        add(ribbon.bullishAligned && price > vwapVal, "mild-vwap-bull", true, TIERS.medium);
+        add(ribbon.bearishAligned && price < vwapVal, "mild-vwap-bear", false, TIERS.medium);
         longScore *= 0.90;
         shortScore *= 0.90;
         reasons.push("mild-trend");
       } else {
-        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.weak);
-        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.weak);
+        // Transition: add h4 alignment and raise ribbon to medium
+        add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.medium);
+        add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.medium);
+        add(h4Trend === "bullish", "h4-bull", true, TIERS.medium);
+        add(h4Trend === "bearish", "h4-bear", false, TIERS.medium);
         longScore *= 0.90;
         shortScore *= 0.90;
         reasons.push("transition-market");
