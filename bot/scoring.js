@@ -14,6 +14,9 @@ import {
   ema,
   emaRibbon,
   findSupportResistance,
+  findSupportResistanceH4,
+  clusterLevels,
+  detectRsiHigherLows,
   fisher,
   ichimoku,
   macd,
@@ -399,6 +402,11 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         h4BearStrong = !!belowE200 && lowerHighs;
       }
     }
+
+    // 4H RSI higher lows: detect bullish momentum divergence across >= 3 swing lows
+    const rsiHigherLows = (candles4h && candles4h.length >= 20)
+      ? detectRsiHigherLows(candles4h, 3, 80)
+      : { detected: false, lowCount: 0, strength: 0 };
 
     let longScore = 0;
     let shortScore = 0;
@@ -860,6 +868,23 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       rsiTurningUp;
     add(ema21Bounce, "ema21-bounce-bull", true, TIERS.strong);
 
+    // 4H RSI higher lows: 3+ consecutive higher RSI swing lows while price flat/lower
+    // = classic hidden bullish divergence. Gate with h4=bullish + bull regime.
+    // Strength bonus scales with how much RSI has risen across the sequence.
+    const rsiHLBullSignal =
+      rsiHigherLows.detected &&
+      regime?.label === "bull" &&
+      h4Trend === "bullish" &&
+      ribbon.bullishAligned;
+    add(rsiHLBullSignal, "4h-rsi-higher-lows", true, TIERS.strong);
+    // Extra boost when confirmed by other setups (stoch or vwap bounce)
+    add(
+      rsiHLBullSignal && (stochResult.crossUp || vwapBounce),
+      "4h-rsi-hl-confirmed",
+      true,
+      TIERS.medium
+    );
+
     if (volConfirm.isSignificant) {
       longScore += 1;
       shortScore += 1;
@@ -1241,7 +1266,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       lows,
       closes,
       volumes,
-      { symbol, setupType, vwapVal }
+      { symbol, setupType, vwapVal, candles4h }
     );
 
     // Bear regime short scoring boost
@@ -1385,7 +1410,7 @@ export function checkCorrelationExposure(candidate, state) {
 }
 
 export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, closes, volumes, context = {}) {
-  const { symbol, setupType, vwapVal } = context;
+  const { symbol, setupType, vwapVal, candles4h } = context;
   const n = closes.length;
   const sr = findSupportResistance(highs, lows, 80);
   const ma50 = sma(closes, 50);
@@ -1405,6 +1430,13 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
 
   for (const s of sr.supports) supportLevels.push({ price: s, type: "swing-support", strength: 1.0 });
   for (const r of sr.resistances) resistanceLevels.push({ price: r, type: "swing-resistance", strength: 1.0 });
+
+  // 4H swing pivots: institutional structure levels with 3-bar comparison
+  if (candles4h && candles4h.length >= 8) {
+    const h4sr = findSupportResistanceH4(candles4h, 60);
+    for (const s of h4sr.supports) supportLevels.push(s);
+    for (const r of h4sr.resistances) resistanceLevels.push(r);
+  }
 
   if (currentMA50) {
     if (currentMA50 < price) supportLevels.push({ price: currentMA50, type: "MA50", strength: 1.2 });
@@ -1428,8 +1460,12 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
     if (nodeCenter > price) resistanceLevels.push({ price: node.low, type: "HVN-bottom", strength: 1.3 });
   }
 
-  supportLevels.sort((a, b) => b.price - a.price);
-  resistanceLevels.sort((a, b) => a.price - b.price);
+  // Cluster levels within 0.3% of each other into one stronger level
+  const clusteredSupports = clusterLevels(supportLevels, 0.003).sort((a, b) => b.price - a.price);
+  const clusteredResistances = clusterLevels(resistanceLevels, 0.003).sort((a, b) => a.price - b.price);
+  // Replace raw arrays with clustered (promote to local vars for the rest of the function)
+  const supportLevelsFinal = clusteredSupports;
+  const resistanceLevelsFinal = clusteredResistances;
 
   const atrSL = signal === "long" ? price - atrVal * ATR_SL_MULT : price + atrVal * ATR_SL_MULT;
   const atrTP = signal === "long" ? price + atrVal * ATR_TP_MULT : price - atrVal * ATR_TP_MULT;
@@ -1437,7 +1473,7 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
   let sl, tp, slType, tpType;
 
   if (signal === "long") {
-    const nearestSupport = supportLevels.find(s =>
+    const nearestSupport = supportLevelsFinal.find(s =>
       s.price < price &&
       s.price > price * 0.95 &&
       (price - s.price) > atrVal * 0.3
@@ -1457,7 +1493,7 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
       slType = "atr-default(no-support)";
     }
 
-    const nearestResistance = resistanceLevels.find(r =>
+    const nearestResistance = resistanceLevelsFinal.find(r =>
       r.price > price &&
       r.price < price * 1.10 &&
       (r.price - price) > atrVal * 1.0
@@ -1471,7 +1507,7 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
       tpType = "atr-default(no-resistance)";
     }
   } else {
-    const nearestResistance = resistanceLevels.find(r =>
+    const nearestResistance = resistanceLevelsFinal.find(r =>
       r.price > price &&
       r.price < price * 1.05 &&
       (r.price - price) > atrVal * 0.3
@@ -1489,7 +1525,7 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
       slType = "atr-default(no-resistance)";
     }
 
-    const nearestSupport = supportLevels.find(s =>
+    const nearestSupport = supportLevelsFinal.find(s =>
       s.price < price &&
       s.price > price * 0.90 &&
       (price - s.price) > atrVal * 1.0
