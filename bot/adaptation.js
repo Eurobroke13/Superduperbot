@@ -106,7 +106,7 @@ function getAdaptiveThreshold(state, currentRegime) {
 
   const rs = state.regimeStats[currentRegime];
   if (!rs || rs.count < 15) {
-    return currentRegime === "chop" || currentRegime === "sideways"
+    return currentRegime === "chop"
       ? ENTRY_THRESHOLD + 0.5
       : ENTRY_THRESHOLD;
   }
@@ -125,7 +125,7 @@ function getAdaptiveThreshold(state, currentRegime) {
     adjustment = 1;
   }
 
-  if (currentRegime === "chop" || currentRegime === "sideways") {
+  if (currentRegime === "chop") {
     adjustment += 0.5;
   }
 
