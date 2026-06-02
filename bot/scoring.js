@@ -835,6 +835,31 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     add(ribbon.bullishAligned && h4Trend === "bullish", "ribbon-h4-align-bull", true, TIERS.medium);
     add(ribbon.bearishAligned && h4Trend === "bearish", "ribbon-h4-align-bear", false, TIERS.medium);
 
+    // (b) Bull-pullback boost: RSI dipping to 40-50 with stoch cross-up is the
+    // clearest dip-buy signal in a bull trend — weight it above weak signals
+    const bullPullbackDip =
+      regime?.label === "bull" &&
+      h4Trend === "bullish" &&
+      ribbon.bullishAligned &&
+      rsiVal >= 38 && rsiVal <= 52 &&
+      stochResult.crossUp &&
+      stochResult.k < 50;
+    add(bullPullbackDip, "bull-pb-dip-buy", true, TIERS.strong);
+
+    // (c) EMA21 bounce: price tagging EMA21 from above while h4 bullish + ribbon aligned
+    // is a high-quality continuation entry missed by existing signals
+    const ema21Bounce =
+      regime?.label === "bull" &&
+      h4Trend === "bullish" &&
+      ribbon.bullishAligned &&
+      ema21Val !== null &&
+      price > ema21Val &&
+      lows[n - 1] <= ema21Val * 1.005 &&
+      closes[n - 1] > ema21Val &&
+      rsiVal < 55 &&
+      rsiTurningUp;
+    add(ema21Bounce, "ema21-bounce-bull", true, TIERS.strong);
+
     if (volConfirm.isSignificant) {
       longScore += 1;
       shortScore += 1;
@@ -1104,6 +1129,19 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     if (setupType === "liquidity-trap" && signal === "long" && regime?.label === "bear" && score < 6) { _trackNull("lt-bear-long"); return null; }
     if (setupType === "momentum" && signal === "long" && regime?.label === "bear" && score < 6) { _trackNull("momentum-bear-long"); return null; }
 
+    // (a) Block shorts in strong bull: h4 bullish + ribbon aligned + bull regime requires
+    // very high conviction to short — fighting the trend destroys WR
+    if (
+      signal === "short" &&
+      regime?.label === "bull" &&
+      h4Trend === "bullish" &&
+      ribbon.bullishAligned &&
+      score < 6
+    ) {
+      _trackNull("short-in-bull-trend");
+      return null;
+    }
+
     if (setupType === "breakout") {
       const h4Aligned =
         (signal === "long" && h4Trend === "bullish") ||
@@ -1229,6 +1267,18 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         positionSizeMultiplier = bearBoost.positionSizeMultiplier;
         maxHoldHours = bearBoost.maxHoldHours;
       }
+    }
+
+    // (d) High-cap position size reduction: BTC/ETH/BNB have 3-4x lower EV per trade
+    // than mid/low caps. In non-strong-trend regimes they consolidate too long,
+    // waste slots, and drag portfolio EV.
+    const HIGH_CAP_SYMBOLS = ["BTC-USDT-SWAP", "ETH-USDT-SWAP", "BNB-USDT-SWAP"];
+    if (
+      HIGH_CAP_SYMBOLS.includes(symbol) &&
+      !isStrongTrend &&
+      regime?.label !== "bear"
+    ) {
+      positionSizeMultiplier *= 0.50;
     }
 
     // Score exhaustion: diminishing returns above 7 — too many confirming
