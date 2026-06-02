@@ -941,7 +941,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       return null;
     }
     if (setupType === "momentum" && !h4Score.aligned(signal)) {
-      return null;
+      score *= 0.85; // penalty, not hard block
+      if (score < minScore) return null;
     }
 
     reasons.push(...h4Score.signals);
@@ -1003,7 +1004,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     // ── Regime-gated setup restrictions ──
     // Block negative-EV crosses identified by backtest analysis
     if (setupType === "breakout" && regime?.label === "bear") return null;
-    if (setupType === "trend" && regime?.label === "bull" && score < 6) return null;
+    if (setupType === "trend" && regime?.label === "bull" && score < 5) return null;
     if (setupType === "liquidity-trap" && signal === "long" && regime?.label === "bear" && score < 6) return null;
     if (setupType === "momentum" && signal === "long" && regime?.label === "bear" && score < 6) return null;
 
