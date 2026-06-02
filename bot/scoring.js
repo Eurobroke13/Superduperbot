@@ -291,17 +291,18 @@ export async function scoreSymbol(symbol, regime, state) {
       fetchCandles(symbol, "1h", CANDLE_LIMIT),
       fetchCandles(symbol, "4h", 200)
     ]);
-    if (!candles1h || candles1h.length < 100) return null;
+    if (!candles1h || candles1h.length < 100) { _trackNull("insufficient-candles"); return null; }
     return scoreFromData(symbol, candles1h, candles4h, regime, state);
   } catch (err) {
     console.error(`[scoreSymbol:${symbol}]`, err.message || err);
+    _trackNull("score-error");
     return null;
   }
 }
 
 export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
   try {
-    if (!candles1h || candles1h.length < 100) return null;
+    if (!candles1h || candles1h.length < 100) { _trackNull("insufficient-candles"); return null; }
     const disabled = state.disabledSignals || [];
 
     const closes = candles1h.map(c => c.close);
@@ -929,7 +930,16 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       score = shortScore;
     }
 
-    if (!signal) { _trackNull("no-signal"); return null; }
+    if (!signal) {
+      _trackNull("no-signal");
+      // Track score buckets to understand how far below minScore coins are
+      const best = Math.max(longScore, shortScore);
+      if (best < 1)       _trackNull("no-signal:<1");
+      else if (best < 2)  _trackNull("no-signal:1-2");
+      else if (best < 3)  _trackNull("no-signal:2-3");
+      else                _trackNull("no-signal:>=3(wrong-dir)");
+      return null;
+    }
 
     if (
       signal === "short" &&
@@ -1190,6 +1200,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     };
   } catch (err) {
     console.error(`[scoreFromData:${symbol}]`, err.message || err);
+    _trackNull("score-error");
     return null;
   }
 }
