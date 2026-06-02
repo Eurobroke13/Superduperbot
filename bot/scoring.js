@@ -960,7 +960,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     const inHVN = highVolumeNodes.some(node => price >= node.low && price <= node.high);
 
     if (setupType === "liquidity-trap" && reasons.includes("transition-market")) {
-      return null;
+      score *= 0.80; // penalty, not hard block
+      if (score < minScore) return null;
     }
 
     if (setupType === "mean-reversion") {
