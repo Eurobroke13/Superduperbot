@@ -38,6 +38,7 @@ import {
 import {
   autoApproveSignal,
   checkCorrelationExposure,
+  drainNullReasons,
   fundingRateSignal,
   scoreSymbol,
   confirm15mBearShort
@@ -704,7 +705,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const isSidewaysRegime = regime?.label === "sideways";
   // In sideways: always scan from the top of the ranked list (no phase rotation),
   // and use a larger batch to find the rare coins not in BB compression.
-  const maxSymbolsPerRun = isSidewaysRegime ? 60 : 20;
+  const maxSymbolsPerRun = isSidewaysRegime ? 60 : 50;
   const effectiveStart = isSidewaysRegime ? 0 : Math.floor(rankedTradeable.length * startFrac);
   const effectiveEnd   = isSidewaysRegime ? rankedTradeable.length : Math.floor(rankedTradeable.length * endFrac);
   const rawBatch = rankedTradeable.slice(
@@ -740,6 +741,9 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   }
   scanSummary.candidatesScored = candidates.length;
   scanSummary.candidatesFilteredByScorer = Math.max(0, batch.length - candidates.length);
+  const nullReasons = drainNullReasons();
+  const nullSummary = Object.entries(nullReasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k}:${v}`).join(" ");
+  if (nullSummary) console.log(`[SCAN NULL] ${nullSummary}`);
 
   const decisions = new Set();
   const topSignalSet = new Set();

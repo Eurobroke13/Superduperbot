@@ -28,6 +28,15 @@ import {
 import { portfolioValue } from "./execution.js";
 import { scoreSidewaysMeanReversion } from "./entry-improvements.js";
 
+// ── Null-reason diagnostic counter ──────────────────────────────────────────
+const _nullReasons = {};
+function _trackNull(reason) { _nullReasons[reason] = (_nullReasons[reason] || 0) + 1; }
+export function drainNullReasons() {
+  const snap = { ..._nullReasons };
+  for (const k of Object.keys(_nullReasons)) delete _nullReasons[k];
+  return snap;
+}
+
 /**
  * Score bear regime short signals with specific indicators
  * Returns boost points + reasons for downstream integration
@@ -484,8 +493,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       } else {
         add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.weak);
         add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.weak);
-        longScore *= 0.80;
-        shortScore *= 0.80;
+        longScore *= 0.90;
+        shortScore *= 0.90;
         reasons.push("transition-market");
       }
     }
@@ -860,8 +869,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     }
 
     const scoreDiff = Math.abs(longScore - shortScore);
-    const minDiff = regime.label === "chop" ? 1.5 : 1.0;
-    if (scoreDiff < minDiff) return null;
+    const minDiff = regime.label === "chop" ? 1.5 : 0.75;
+    if (scoreDiff < minDiff) { _trackNull("scoreDiff"); return null; }
 
     const isBullPullback =
       regime?.label === "bull" &&
@@ -920,7 +929,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       score = shortScore;
     }
 
-    if (!signal) return null;
+    if (!signal) { _trackNull("no-signal"); return null; }
 
     if (
       signal === "short" &&
@@ -932,16 +941,17 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         rsiVal > 60
       )
     ) {
-      return null;
+      _trackNull("trap-bear-confirm"); return null;
     }
 
     const h4Score = score4H(candles4h);
 
     if ((setupType === "trend" || setupType === "breakout") && !h4Score.aligned(signal)) {
-      return null;
+      _trackNull("h4-misaligned"); return null;
     }
     if (setupType === "momentum" && !h4Score.aligned(signal)) {
-      return null;
+      score *= 0.80;
+      if (score < minScore) { _trackNull("momentum-h4-penalty"); return null; }
     }
 
     reasons.push(...h4Score.signals);
@@ -959,7 +969,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     const inHVN = highVolumeNodes.some(node => price >= node.low && price <= node.high);
 
     if (setupType === "liquidity-trap" && reasons.includes("transition-market")) {
-      return null;
+      score *= 0.85;
     }
 
     if (setupType === "mean-reversion") {
@@ -990,22 +1000,22 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         Number.isFinite(bbWidthPrev) &&
         bbWidth < bbWidthPrev;
 
-      if (!isSidewaysRegime) return null;
-      if (!hasLocationEdge || !hasExtreme) return null;
-      if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) return null;
+      if (!isSidewaysRegime) { _trackNull("mr-not-sideways"); return null; }
+      if (!hasLocationEdge || !hasExtreme) { _trackNull("mr-no-edge"); return null; }
+      if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) { _trackNull("mr-transition"); return null; }
       if (!volumeDeclining && !bandwidthContracting) {
         score *= 0.8;
         reasons.push("mr-no-vol-confirm");
-        if (score < minScore) return null;
+        if (score < minScore) { _trackNull("mr-no-vol"); return null; }
       }
     }
 
     // ── Regime-gated setup restrictions ──
     // Block negative-EV crosses identified by backtest analysis
-    if (setupType === "breakout" && regime?.label === "bear") return null;
-    if (setupType === "trend" && regime?.label === "bull" && score < 6) return null;
-    if (setupType === "liquidity-trap" && signal === "long" && regime?.label === "bear" && score < 6) return null;
-    if (setupType === "momentum" && signal === "long" && regime?.label === "bear" && score < 6) return null;
+    if (setupType === "breakout" && regime?.label === "bear") { _trackNull("breakout-bear"); return null; }
+    if (setupType === "trend" && regime?.label === "bull" && signal === "short" && score < 6) { _trackNull("trend-bull-short"); return null; }
+    if (setupType === "liquidity-trap" && signal === "long" && regime?.label === "bear" && score < 6) { _trackNull("lt-bear-long"); return null; }
+    if (setupType === "momentum" && signal === "long" && regime?.label === "bear" && score < 6) { _trackNull("momentum-bear-long"); return null; }
 
     if (setupType === "breakout") {
       const h4Aligned =
@@ -1030,10 +1040,10 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         return atTopEdge || atBottomEdge;
       })();
 
-      if (!ribbon.wasCompressed || !ribbon.expanding) return null;
-      if (!volConfirm.isSignificant) return null;
-      if (!h4Aligned || !cloudAligned || !vwapAligned) return null;
-      if (deepInHVN && !hvnEdgeEscape) return null;
+      if (!ribbon.wasCompressed || !ribbon.expanding) { _trackNull("breakout-no-ribbon"); return null; }
+      if (!volConfirm.isSignificant) { _trackNull("breakout-no-vol"); return null; }
+      if (!h4Aligned || !cloudAligned || !vwapAligned) { _trackNull("breakout-align"); return null; }
+      if (deepInHVN && !hvnEdgeEscape) { _trackNull("breakout-hvn"); return null; }
 
       // Bar structure: breakout bar must close with momentum (top/bottom 60% of range)
       // Filters late entries where the breakout candle has already reversed intra-bar
@@ -1043,23 +1053,23 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           ? (closes[n - 1] - lows[n - 1]) / barRange > 0.60
           : (highs[n - 1] - closes[n - 1]) / barRange > 0.60
       );
-      if (!barStructureOk) return null;
+      if (!barStructureOk) { _trackNull("breakout-bar-struct"); return null; }
     }
 
     if (setupType === "bull-pullback") {
-      if (signal !== "long") return null;
-      if (!h4Score.aligned("long")) return null;
+      if (signal !== "long") { _trackNull("bp-not-long"); return null; }
+      if (!h4Score.aligned("long")) { _trackNull("bp-h4"); return null; }
       const hasPullbackTrigger = rsiTurningUp || stochResult.crossUp || vwapBounce;
       const hasPullbackLocation =
         Math.abs(price - vwapVal) / price < 0.005 ||
         (!ribbon.priceAboveAll && ribbon.bullishAligned);
-      if (!hasPullbackTrigger || !hasPullbackLocation) return null;
+      if (!hasPullbackTrigger || !hasPullbackLocation) { _trackNull("bp-no-trigger"); return null; }
     }
 
     if (setupType === "bull-continuation") {
-      if (!h4Score.aligned("long")) return null;
+      if (!h4Score.aligned("long")) { _trackNull("bc-h4"); return null; }
       const hasEntry = rsiTurningUp || stochResult.crossUp || macdCrossUpValid;
-      if (!hasEntry) return null;
+      if (!hasEntry) { _trackNull("bc-no-entry"); return null; }
     }
 
     if (quality < 2 || setupType === "unknown") {
@@ -1095,7 +1105,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
           };
         }
       }
-      return null;
+      _trackNull("low-quality"); return null;
     }
 
     const structured = calculateStructuredSLTP(
