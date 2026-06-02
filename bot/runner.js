@@ -704,7 +704,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const isSidewaysRegime = regime?.label === "sideways";
   // In sideways: always scan from the top of the ranked list (no phase rotation),
   // and use a larger batch to find the rare coins not in BB compression.
-  const maxSymbolsPerRun = isSidewaysRegime ? 60 : 20;
+  const maxSymbolsPerRun = isSidewaysRegime ? 60 : 50;
   const effectiveStart = isSidewaysRegime ? 0 : Math.floor(rankedTradeable.length * startFrac);
   const effectiveEnd   = isSidewaysRegime ? rankedTradeable.length : Math.floor(rankedTradeable.length * endFrac);
   const rawBatch = rankedTradeable.slice(

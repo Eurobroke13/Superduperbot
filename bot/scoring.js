@@ -484,8 +484,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       } else {
         add(ribbon.bullishAligned, "ema-ribbon-bull", true, TIERS.weak);
         add(ribbon.bearishAligned, "ema-ribbon-bear", false, TIERS.weak);
-        longScore *= 0.80;
-        shortScore *= 0.80;
+        longScore *= 0.90;
+        shortScore *= 0.90;
         reasons.push("transition-market");
       }
     }
@@ -860,7 +860,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     }
 
     const scoreDiff = Math.abs(longScore - shortScore);
-    const minDiff = regime.label === "chop" ? 1.5 : 1.0;
+    const minDiff = regime.label === "chop" ? 1.5 : 0.75;
     if (scoreDiff < minDiff) return null;
 
     const isBullPullback =
@@ -941,7 +941,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       return null;
     }
     if (setupType === "momentum" && !h4Score.aligned(signal)) {
-      score *= 0.85; // penalty, not hard block
+      score *= 0.80;
       if (score < minScore) return null;
     }
 
@@ -960,8 +960,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     const inHVN = highVolumeNodes.some(node => price >= node.low && price <= node.high);
 
     if (setupType === "liquidity-trap" && reasons.includes("transition-market")) {
-      score *= 0.80; // penalty, not hard block
-      if (score < minScore) return null;
+      score *= 0.85;
     }
 
     if (setupType === "mean-reversion") {
@@ -1005,7 +1004,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     // ── Regime-gated setup restrictions ──
     // Block negative-EV crosses identified by backtest analysis
     if (setupType === "breakout" && regime?.label === "bear") return null;
-    if (setupType === "trend" && regime?.label === "bull" && score < 5) return null;
+    if (setupType === "trend" && regime?.label === "bull" && signal === "short" && score < 6) return null;
     if (setupType === "liquidity-trap" && signal === "long" && regime?.label === "bear" && score < 6) return null;
     if (setupType === "momentum" && signal === "long" && regime?.label === "bear" && score < 6) return null;
 
