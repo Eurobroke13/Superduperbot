@@ -879,7 +879,7 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     }
 
     const scoreDiff = Math.abs(longScore - shortScore);
-    const minDiff = regime.label === "chop" ? 1.5 : 0.75;
+    const minDiff = regime.label === "chop" ? 1.5 : 0.5;
     if (scoreDiff < minDiff) { _trackNull("scoreDiff"); return null; }
 
     const isBullPullback =
