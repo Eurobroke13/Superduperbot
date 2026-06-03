@@ -1,0 +1,274 @@
+/**
+ * Golden-master harness for phaseScan.
+ *
+ * All network/IO seams are injected via deps so no real OKX/DB/Claude calls
+ * are made. The test pins the scanSummary shape and key counters that
+ * represent phaseScan's observable output — enabling safe structural
+ * refactoring one extract at a time.
+ *
+ * Architecture note: phaseScan is invoked by importing runBot's deps path.
+ * We access it via the runner.js module which exports the pure helpers; the
+ * function itself is internal, so we drive it through a thin state machine:
+ * set state.lastPhase=1, call runBot with fully mocked deps, then inspect
+ * state.lastScanSummary.
+ */
+import assert from "node:assert/strict";
+import test from "node:test";
+
+process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://test:test@127.0.0.1:1/test";
+
+const { runBot } = await import("../bot/runner.js");
+
+// ── Fixtures ────────────────────────────────────────────────────────────────
+
+function makeTicker(contract, vol = 2_000_000, last = 100, open24h = 95) {
+  return { contract, volume_24h_quote: String(vol), last: String(last), open24h: String(open24h) };
+}
+
+function makeCandle(close, high, low, open, volume) {
+  return { close, high, low, open, volume };
+}
+
+// Minimal candle set: 50 candles with a gentle uptrend so regime → bull.
+function makeBullCandles(n = 60) {
+  return Array.from({ length: n }, (_, i) => ({
+    close: 100 + i * 0.1,
+    high:  101 + i * 0.1,
+    low:   99  + i * 0.1,
+    open:  100 + i * 0.1,
+    volume: 1000
+  }));
+}
+
+// A minimal "scored" candidate object.
+function makeCandidate(symbol, signal = "long", score = 5.5) {
+  return {
+    symbol, signal, score,
+    setupType: "trend-following",
+    reasons: ["ema-ribbon-bull"],
+    price: 100,
+    stopLoss: 95,
+    takeProfit: 110,
+    atrVal: 2,
+    atrPct: 0.02,
+    h4Trend: "bullish",
+    obvDiv: "none",
+    _candles1h: makeBullCandles(50),
+    _srLevels: { supports: [], resistances: [] }
+  };
+}
+
+// Minimal bot state that passes all early gates.
+function makeState(overrides = {}) {
+  return {
+    cash: 10000,
+    positions: {},
+    pendingLimits: {},
+    decayingLimits: {},
+    newsBlocked: [],
+    newsBoosted: [],
+    trades: [],
+    _pendingTrades: [],
+    lastPhase: 1,
+    lastRegime: { label: "bull", strength: 0.7 },
+    lastScanSummary: null,
+    runCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    ...overrides
+  };
+}
+
+// Minimal env object (not used by the mocked seams, but required by runBot).
+const ENV = { TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: "" };
+
+// Build a complete deps object for runBot. Every IO seam is mocked.
+function makeDeps(overrides = {}) {
+  const {
+    tickers     = [makeTicker("BTC-USDT-SWAP"), makeTicker("ETH-USDT-SWAP")],
+    contracts   = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"],
+    scored      = [makeCandidate("BTC-USDT-SWAP")],
+    lunarData   = {},
+    fundingRate = 0.001,
+    todayTrades = [],
+    apiHealth   = { tripped: false, consecutiveFailures: 0 },
+    timeFilter  = { shouldAvoidEntry: false, scoreAdjustment: 0, utcHour: 10, utcMin: 0 }
+  } = overrides;
+
+  return {
+    // runBot-level deps
+    loadState:            async () => makeState(),
+    saveState:            async () => {},
+    printPortfolioSummary: () => {},
+
+    // phaseScan pass-through deps
+    claudeBatchAnalysis:   async () => ({ validations: {}, newsBlocked: [], newsBoosted: [] }),
+    getAdaptiveThreshold:  () => 4,
+    getWeight:             (name) => ({ "lunar-bull": 0.7, "lunar-bear": 0.7, "lunar-sentiment-warning": -1.0, "news-boost": 0.8 }[name] ?? 0),
+    notifyTrade:           async () => {},
+    sendTelegram:          async () => {},
+    sleep:                 async () => {},
+
+    // IO seams
+    _fetchAllTickers:    async () => tickers,
+    _fetchAllContracts:  async () => contracts,
+    _fetchCandles:       async () => makeBullCandles(60),
+    _fetchFundingRate:   async () => fundingRate,
+    _fetchLunarCrush:    async () => lunarData,
+    _loadTodayTrades:    async () => todayTrades,
+    _scoreSymbol:        async (symbol) => scored.find(c => c.symbol === symbol) ?? null,
+    _getApiHealth:       () => apiHealth,
+    _getTimeFilter:      () => timeFilter,
+    _stageCandidateEntry: async () => false,  // no actual entry in golden master
+    ...overrides.depOverrides
+  };
+}
+
+// ── Golden-master tests ─────────────────────────────────────────────────────
+
+test("phaseScan golden - produces lastScanSummary with required shape", async () => {
+  const state = makeState();
+  const deps = makeDeps({ depOverrides: { loadState: async () => state } });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  assert.ok(s, "lastScanSummary must be set");
+  assert.equal(typeof s.ranAt, "string");
+  assert.equal(typeof s.candidatesScored, "number");
+  assert.equal(typeof s.candidatesQualified, "number");
+  assert.equal(typeof s.openedCount, "number");
+  assert.equal(typeof s.blockedByReason, "object");
+  assert.equal(typeof s.openedBySetup, "object");
+  assert.equal(typeof s.skippedByReason, "object");
+  assert.equal(typeof s.regime, "string");
+});
+
+test("phaseScan golden - regime label is passed through", async () => {
+  const state = makeState({ lastRegime: { label: "sideways", strength: 0.5 } });
+  const deps = makeDeps({ depOverrides: { loadState: async () => state } });
+  await runBot(ENV, deps);
+  assert.equal(state.lastScanSummary?.regime, "sideways");
+});
+
+test("phaseScan golden - api circuit-open skips scoring and sets skippedByReason", async () => {
+  const state = makeState();
+  const deps = makeDeps({
+    apiHealth: { tripped: true, consecutiveFailures: 5 },
+    depOverrides: { loadState: async () => state }
+  });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  assert.ok(s, "summary set even on circuit-open");
+  assert.equal(s.candidatesScored, 0);
+  assert.ok(s.skippedByReason["api-circuit-open"] >= 1);
+});
+
+test("phaseScan golden - funding-settlement window skips scoring", async () => {
+  const state = makeState();
+  const deps = makeDeps({
+    timeFilter: { shouldAvoidEntry: true, scoreAdjustment: 0, utcHour: 0, utcMin: 5 },
+    depOverrides: { loadState: async () => state }
+  });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  assert.ok(s?.skippedByReason["funding-settlement-window"] >= 1);
+});
+
+test("phaseScan golden - no contracts returns without crash", async () => {
+  const state = makeState();
+  const deps = makeDeps({
+    contracts: [],
+    depOverrides: { loadState: async () => state }
+  });
+  await runBot(ENV, deps);
+  // No summary set when contracts are empty (function returns early).
+  // Just verify no throw.
+});
+
+test("phaseScan golden - zero scored candidates sets candidatesScored=0", async () => {
+  const state = makeState();
+  const deps = makeDeps({
+    scored: [],
+    depOverrides: { loadState: async () => state }
+  });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  if (s) assert.equal(s.candidatesScored, 0);
+});
+
+test("phaseScan golden - below-threshold candidate appears in skippedByReason or rejectedByReason", async () => {
+  const state = makeState();
+  const lowScore = { ...makeCandidate("BTC-USDT-SWAP"), score: 1.0 };
+  const deps = makeDeps({
+    scored: [lowScore],
+    depOverrides: {
+      loadState: async () => state,
+      getAdaptiveThreshold: () => 4
+    }
+  });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  if (!s) return; // early return guard
+  const totalRejected = Object.values(s.rejectedByReason).reduce((a, b) => a + b, 0);
+  const totalSkipped  = Object.values(s.skippedByReason).reduce((a, b) => a + b, 0);
+  assert.ok(totalRejected + totalSkipped >= 1, "low-score candidate must be tracked");
+});
+
+test("phaseScan golden - mid-run drawdown halt fires when PnL is -2%", async () => {
+  // checkMidRunDrawdown reads state.trades (already-committed) not _pendingTrades.
+  const state = makeState({
+    trades: [{ pnl: -300, closedAt: new Date().toISOString() }],
+    cash: 10000,
+    positions: {}
+  });
+  const deps = makeDeps({ depOverrides: { loadState: async () => state } });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  assert.ok(s?.skippedByReason?.["mid-run-drawdown-halt"] >= 1, "halt must fire");
+});
+
+test("phaseScan golden - all-slots-full guard skips scan", async () => {
+  const positions = {};
+  for (let i = 0; i < 10; i++) positions[`COIN${i}-USDT-SWAP`] = { size: 1, notional: 1000 };
+  const state = makeState({ positions });
+  const deps = makeDeps({ depOverrides: { loadState: async () => state } });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  // phaseScan returns before setting summary when slotsAvailable <= 0
+  // (matches existing inline guard). Either null or openedCount=0.
+  if (s) assert.equal(s.openedCount, 0);
+});
+
+test("phaseScan golden - no regime skips the scan silently", async () => {
+  const state = makeState({ lastRegime: null });
+  const deps = makeDeps({ depOverrides: { loadState: async () => state } });
+  await runBot(ENV, deps);
+  // No summary, no crash.
+  assert.equal(state.lastScanSummary, null);
+});
+
+test("phaseScan golden - scoreSymbol called once per symbol in batch", async () => {
+  // Phase 1 calls phaseScan(0, 0.5), so with 4 symbols the slice covers 2.
+  // Verify every symbol that enters the batch gets scored exactly once.
+  const called = [];
+  const state = makeState();
+  const symbols = ["A-USDT-SWAP", "B-USDT-SWAP", "C-USDT-SWAP", "D-USDT-SWAP"];
+  const deps = makeDeps({
+    contracts: symbols,
+    tickers: symbols.map(s => makeTicker(s, 2_000_000)),
+    depOverrides: {
+      loadState: async () => state,
+      _scoreSymbol: async (sym) => { called.push(sym); return null; }
+    }
+  });
+  await runBot(ENV, deps);
+  // Exactly 2 symbols should have been scored (the [0, 0.5) half of 4).
+  assert.equal(called.length, 2, "scored half the list");
+  // Each symbol scored at most once (no duplicate calls).
+  assert.equal(new Set(called).size, called.length, "no duplicate scoring");
+});
