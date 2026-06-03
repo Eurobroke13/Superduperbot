@@ -255,6 +255,28 @@ app.get("/run", authMiddleware, limiter, async (_, res) => {
   }
 });
 
+app.post("/admin/seed", authMiddleware, async (req, res) => {
+  const months = Math.min(Number(req.query.months || 12), 24);
+  console.log(`[SEED] Manual seed triggered via HTTP (months=${months})`);
+  // Run in background — respond immediately so the HTTP connection doesn't timeout
+  res.json({ ok: true, message: `Safe seed started for ${months} months. Check logs for progress.` });
+  try {
+    const { default: { execFile } } = await import("child_process");
+    const { promisify } = await import("util");
+    const execFileAsync = promisify(execFile);
+    const { stdout, stderr } = await execFileAsync(
+      "node",
+      ["backtest.js", "--seed-safe", `--months`, String(months)],
+      { cwd: process.cwd(), timeout: 300000 }
+    );
+    if (stdout) console.log("[SEED] Output:\n" + stdout);
+    if (stderr) console.error("[SEED] Stderr:\n" + stderr);
+    console.log("[SEED] Safe seed completed successfully");
+  } catch (err) {
+    console.error("[SEED] Safe seed failed:", err.message);
+  }
+});
+
 app.listen(port, () => {
   console.log(`Server listening on ${port}`);
   if (SCHEDULER_DISABLED) {
