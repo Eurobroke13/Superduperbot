@@ -575,7 +575,10 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       (closes[n - 1] - lows[n - 1]) > (highs[n - 1] - closes[n - 1]);
     const candleRange = highs[n - 1] - lows[n - 1];
     const upperWick = highs[n - 1] - closes[n - 1];
+    const lowerWick = lows[n - 1] > 0 ? (Math.min(closes[n - 1], candles1h[n - 1]?.open ?? closes[n - 1]) - lows[n - 1]) : 0;
     const bearishCandle = candleRange > 0 && upperWick / candleRange > 0.5;
+    // Hammer: lower wick > 60% of range AND close in top 40% — absorption candle at support
+    const hammerCandle = candleRange > 0 && lowerWick / candleRange > 0.60 && (closes[n - 1] - lows[n - 1]) / candleRange > 0.60;
     const lastVolumes = volumes.slice(-5);
     const maxVolIdx = lastVolumes.indexOf(Math.max(...lastVolumes));
     const climaxBarIndex = Math.max(0, n - 5 + maxVolIdx);
@@ -615,6 +618,41 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       bearTrapCandleLayer,
       bearTrapVolumeLayer
     ].filter(Boolean).length;
+
+    // ── Liquidity trap quality bonuses (additive, no veto) ───────────────────
+    // 1. Second-bar reclaim: both last 2 candles close above swept support = absorption confirmed
+    const sweepLevel = srLevels.supports.find(s => lows.slice(-3).some(l => l < s));
+    const trapSecondBarReclaim = trap === "bear-trap" && sweepLevel != null &&
+      closes[n - 1] > sweepLevel && closes[n - 2] > sweepLevel;
+    add(trapSecondBarReclaim, "trap-reclaim-2bar", true, TIERS.medium);
+
+    // 2. Wick penetration depth: ideal sweep is 0.3-1.5x ATR below level (not noise, not breakdown)
+    const sweepWickDepth = sweepLevel != null ? sweepLevel - Math.min(...lows.slice(-3)) : 0;
+    const trapCleanSweepBull = trap === "bear-trap" && sweepLevel != null &&
+      sweepWickDepth >= atrVal * 0.3 && sweepWickDepth <= atrVal * 1.8;
+    add(trapCleanSweepBull, "trap-clean-sweep-bull", true, TIERS.weak);
+
+    const sweepResLevel = srLevels.resistances.find(r => highs.slice(-3).some(h => h > r));
+    const sweepResWickDepth = sweepResLevel != null ? Math.max(...highs.slice(-3)) - sweepResLevel : 0;
+    const trapCleanSweepBear = trap === "bull-trap" && sweepResLevel != null &&
+      sweepResWickDepth >= atrVal * 0.3 && sweepResWickDepth <= atrVal * 1.8;
+    add(trapCleanSweepBear, "trap-clean-sweep-bear", false, TIERS.weak);
+
+    // 3. ADX ranging gate: traps in low-ADX (ranging) environment are more reliable reversals
+    const trapRangingAdx = adxResult.adx < 22;
+    add(trap === "bear-trap" && trapRangingAdx, "trap-adx-ranging-bull", true, TIERS.weak);
+    add(trap === "bull-trap" && trapRangingAdx, "trap-adx-ranging-bear", false, TIERS.weak);
+
+    // 4. Reclaim candle volume: the bar that reclaims the swept level should have above-avg volume
+    const avgVol5 = volumes.slice(-6, -1).reduce((a, b) => a + b, 0) / 5;
+    const reclaimVolConfirm = avgVol5 > 0 && volumes[n - 1] > avgVol5 * 1.5;
+    add(trap === "bear-trap" && reclaimVolConfirm && closes[n - 1] > (sweepLevel ?? 0), "trap-reclaim-vol-bull", true, TIERS.weak);
+    add(trap === "bull-trap" && reclaimVolConfirm && closes[n - 1] < (sweepResLevel ?? Infinity), "trap-reclaim-vol-bear", false, TIERS.weak);
+
+    // 5. Hammer absorption candle at sweep: close in top 40%, lower wick > 60% of range
+    add(trap === "bear-trap" && hammerCandle, "trap-hammer-bull", true, TIERS.medium);
+    const shootingStarCandle = candleRange > 0 && upperWick / candleRange > 0.60 && (highs[n - 1] - closes[n - 1]) / candleRange < 0.40;
+    add(trap === "bull-trap" && shootingStarCandle, "trap-shooting-star-bear", false, TIERS.medium);
     const trapBearQuality =
       trap === "bull-trap" &&
       price < vwapVal &&
@@ -1196,7 +1234,79 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
         reasons.push("mr-no-vol-confirm");
         if (score < minScore) { _trackNull("mr-no-vol"); return null; }
       }
+
+      // ── MR quality bonuses (additive — improve score for high-confluence setups) ──
+      // 1. 4H RSI confluence: both timeframes oversold/overbought = stronger MR signal
+      const h4RsiArr = candles4h ? rsiSeries(candles4h.map(c => c.close), 14) : [];
+      const h4RsiVal = h4RsiArr.length ? h4RsiArr[h4RsiArr.length - 1] : 50;
+      const h4RsiOversold = h4RsiVal < 42;
+      const h4RsiOverbought = h4RsiVal > 60;
+      if (signal === "long" && h4RsiOversold) {
+        score += TIERS.medium;
+        reasons.push("mr-h4-rsi-oversold");
+      }
+      if (signal === "short" && h4RsiOverbought) {
+        score += TIERS.medium;
+        reasons.push("mr-h4-rsi-overbought");
+      }
+
+      // 2. OBV accumulation/distribution while price at extreme
+      const obvFlat = obvSeries.length >= 5 && Math.abs(obvSeries[n - 1] - obvSeries[n - 5]) / (Math.abs(obvSeries[n - 1]) + 1) < 0.02;
+      const obvRising = obvSeries.length >= 3 && obvSeries[n - 1] > obvSeries[n - 3];
+      const obvFalling = obvSeries.length >= 3 && obvSeries[n - 1] < obvSeries[n - 3];
+      if (signal === "long" && (obvRising || obvFlat)) {
+        score += TIERS.medium;
+        reasons.push("mr-obv-accumulation");
+      }
+      if (signal === "short" && (obvFalling || obvFlat)) {
+        score += TIERS.medium;
+        reasons.push("mr-obv-distribution");
+      }
+
+      // 3. Hammer/shooting-star absorption candle at the extreme = real reversal pressure
+      if (signal === "long" && hammerCandle) {
+        score += TIERS.medium;
+        reasons.push("mr-hammer-absorb");
+      }
+      if (signal === "short" && shootingStarCandle) {
+        score += TIERS.medium;
+        reasons.push("mr-shooting-star-absorb");
+      }
+
+      // 4. Consecutive bearish candles check: 4+ reds = likely cascade (score penalty, not veto)
+      const recentBearCount = [n - 1, n - 2, n - 3, n - 4].filter(i => i >= 0 && closes[i] < (candles1h[i]?.open ?? closes[i])).length;
+      if (signal === "long" && recentBearCount >= 4) {
+        score *= 0.85;
+        reasons.push("mr-cascade-caution");
+      }
+      const recentBullCount = [n - 1, n - 2, n - 3, n - 4].filter(i => i >= 0 && closes[i] > (candles1h[i]?.open ?? closes[i])).length;
+      if (signal === "short" && recentBullCount >= 4) {
+        score *= 0.85;
+        reasons.push("mr-cascade-caution");
+      }
+
+      // 5. Funding rate confluence: if passed in state/fundingRates, check crowding vs direction
+      const fundingRates = state?.fundingRates || {};
+      const fr = fundingRates[symbol];
+      if (fr != null) {
+        // MR long: funding negative (shorts crowded) = contrarian long has real edge
+        if (signal === "long" && fr < -0.0001) {
+          score += TIERS.medium;
+          reasons.push("mr-funding-bear-crowded");
+        }
+        // MR short: funding positive (longs crowded) = contrarian short has real edge
+        if (signal === "short" && fr > 0.0001) {
+          score += TIERS.medium;
+          reasons.push("mr-funding-bull-crowded");
+        }
+        // Opposing: longs still crowded when trying to MR long = be cautious (small penalty, not veto)
+        if (signal === "long" && fr > 0.0003) {
+          score *= 0.90;
+          reasons.push("mr-funding-longs-crowded");
+        }
+      }
     }
+
 
     // ── Regime-gated setup restrictions ──
     // Block negative-EV crosses identified by backtest analysis
