@@ -69,8 +69,8 @@ import {
   bearFilter
 } from "./entry-improvements.js";
 
-import { checkMidRunDrawdown, claudeSpendMode, compute4hBias } from "./runner-utils.js";
-export { checkMidRunDrawdown, claudeSpendMode, compute4hBias };
+import { checkMidRunDrawdown, claudeSpendMode, compute4hBias, rankTradeable } from "./runner-utils.js";
+export { checkMidRunDrawdown, claudeSpendMode, compute4hBias, rankTradeable };
 
 const DECISION_LOG_LIMIT = 150;
 const FAST_SCAN = process.env.FAST_SCAN_MODE === "true";
@@ -670,22 +670,12 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   // ── Mid-run drawdown halt ────────────────────────────────────────────────────
   // If positions hit SL earlier in this same run, block new entries immediately
   // rather than waiting for the daily cap to trigger retroactively next run.
-  {
-    const today = new Date().toISOString().slice(0, 10);
-    const todayRealizedPnl = (state.trades || [])
-      .filter(t => t.closedAt?.startsWith(today))
-      .reduce((sum, t) => sum + (t.pnl || 0), 0);
-    const approxPortfolioVal = (state.cash || 0) +
-      Object.values(state.positions).reduce((s, p) => s + (p.notional || 0), 0);
-    if (approxPortfolioVal > 0 && todayRealizedPnl / approxPortfolioVal < -0.015) {
-      console.warn(
-        `[SCAN] Mid-run drawdown halt: today PnL $${todayRealizedPnl.toFixed(2)} ` +
-        `(${(todayRealizedPnl / approxPortfolioVal * 100).toFixed(1)}%) exceeds -1.5% — skipping new entries`
-      );
-      incrementCount(scanSummary.skippedByReason, "mid-run-drawdown-halt");
-      state.lastScanSummary = scanSummary;
-      return;
-    }
+  // Logic lives in the unit-tested checkMidRunDrawdown helper (runner-utils.js).
+  if (checkMidRunDrawdown(state)) {
+    console.warn("[SCAN] Mid-run drawdown halt: today's realized PnL exceeds -1.5% — skipping new entries");
+    incrementCount(scanSummary.skippedByReason, "mid-run-drawdown-halt");
+    state.lastScanSummary = scanSummary;
+    return;
   }
 
   const entryThreshold = getAdaptiveThreshold(state, regime.label);
@@ -733,28 +723,11 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
   }
 
-  const rankedTradeable = tradeable
-    .map(symbol => {
-      const t = tickerMap[symbol] || {};
-      const vol = volumeMap[symbol] || 0;
-      const last = parseFloat(t.last || 0);
-      const open24h = parseFloat(t.open24h || t.open_24h || t.open24hPrice || 0);
-      const movePct =
-        open24h > 0 && last > 0
-          ? Math.abs((last - open24h) / open24h)
-          : 0;
-
-      // In sideways, weight movement heavily — coins near range extremes
-      // have wider BB and are more likely to produce mean-reversion setups.
-      const movePctWeight = regime?.label === "sideways" ? 1.5 : 0.3;
-      const rankScore =
-        (vol / 1_000_000) +
-        (movePct * 100 * movePctWeight);
-
-      return { symbol, vol, movePct, rankScore };
-    })
-    .sort((a, b) => b.rankScore - a.rankScore)
-    .map(x => x.symbol);
+  const rankedTradeable = rankTradeable(tradeable, {
+    tickerMap,
+    volumeMap,
+    regimeLabel: regime?.label
+  });
 
   const isSidewaysRegime = regime?.label === "sideways";
   // In sideways: always scan from the top of the ranked list (no phase rotation),
