@@ -653,6 +653,35 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     add(trap === "bear-trap" && hammerCandle, "trap-hammer-bull", true, TIERS.medium);
     const shootingStarCandle = candleRange > 0 && upperWick / candleRange > 0.60 && (highs[n - 1] - closes[n - 1]) / candleRange < 0.40;
     add(trap === "bull-trap" && shootingStarCandle, "trap-shooting-star-bear", false, TIERS.medium);
+
+    // ── Liquidity trap quality penalties (-0.4 each, stacking) ───────────────
+    // P1. Tiny wick: < 0.2x ATR = spread noise, not a real sweep
+    if (trap === "bear-trap" && sweepLevel != null && sweepWickDepth < atrVal * 0.2) {
+      longScore -= 0.4; reasons.push("trap-penalty-tiny-wick");
+    }
+    if (trap === "bull-trap" && sweepResLevel != null && sweepResWickDepth < atrVal * 0.2) {
+      shortScore -= 0.4; reasons.push("trap-penalty-tiny-wick");
+    }
+
+    // P2. Sweep candle itself closed below the level (weak reclaim — needs next bar to rescue it)
+    if (trap === "bear-trap" && sweepLevel != null && closes[n - 1] < sweepLevel) {
+      longScore -= 0.4; reasons.push("trap-penalty-no-close-reclaim");
+    }
+    if (trap === "bull-trap" && sweepResLevel != null && closes[n - 1] > sweepResLevel) {
+      shortScore -= 0.4; reasons.push("trap-penalty-no-close-reclaim");
+    }
+
+    // P3. High ADX + no second-bar reclaim = trending move disguised as a trap
+    const trapHighAdxNoReclaim =
+      adxResult.adx > 25 &&
+      !(trap === "bear-trap" ? trapSecondBarReclaim : (trap === "bull-trap" && sweepResLevel != null && closes[n - 1] < sweepResLevel && closes[n - 2] < sweepResLevel));
+    if (trap === "bear-trap" && trapHighAdxNoReclaim) {
+      longScore -= 0.4; reasons.push("trap-penalty-trending-no-reclaim");
+    }
+    if (trap === "bull-trap" && trapHighAdxNoReclaim) {
+      shortScore -= 0.4; reasons.push("trap-penalty-trending-no-reclaim");
+    }
+
     const trapBearQuality =
       trap === "bull-trap" &&
       price < vwapVal &&
@@ -1283,6 +1312,23 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       if (signal === "short" && recentBullCount >= 4) {
         score *= 0.85;
         reasons.push("mr-cascade-caution");
+      }
+
+      // ── MR quality penalties (-0.4 each) ─────────────────────────────────
+      // P4. OBV actively moving against MR direction = distribution/accumulation still ongoing
+      const obvActivelyAgainst =
+        (signal === "long" && obvSeries.length >= 3 && obvSeries[n - 1] < obvSeries[n - 3] * 0.99) ||
+        (signal === "short" && obvSeries.length >= 3 && obvSeries[n - 1] > obvSeries[n - 3] * 1.01);
+      if (obvActivelyAgainst) {
+        score -= 0.4; reasons.push("mr-penalty-obv-against");
+      }
+
+      // P5. Volume expanding into the extreme = momentum continuation, not exhaustion
+      const recentAvgVolMR = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+      const priorAvgVolMR  = volumes.slice(-10, -5).reduce((a, b) => a + b, 0) / 5;
+      const volExpandingAgainst = priorAvgVolMR > 0 && recentAvgVolMR > priorAvgVolMR * 1.3;
+      if (volExpandingAgainst) {
+        score -= 0.4; reasons.push("mr-penalty-vol-expanding");
       }
 
       // 5. Funding rate confluence: if passed in state/fundingRates, check crowding vs direction
