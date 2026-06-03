@@ -69,6 +69,9 @@ import {
   bearFilter
 } from "./entry-improvements.js";
 
+import { checkMidRunDrawdown, claudeSpendMode, compute4hBias } from "./runner-utils.js";
+export { checkMidRunDrawdown, claudeSpendMode, compute4hBias };
+
 const DECISION_LOG_LIMIT = 150;
 const FAST_SCAN = process.env.FAST_SCAN_MODE === "true";
 const CLAUDE_SETUP_COOLDOWN_MS = 20 * 60 * 1000;
@@ -507,17 +510,8 @@ async function phaseRegimeAndExits(env, state, deps) {
   try {
     const btc4h = await fetchCandles("BTC-USDT-SWAP", "4h", 60);
     if (btc4h && btc4h.length >= 20) {
-      const c4 = btc4h.map(c => c.close);
-      const h4 = btc4h.map(c => c.high);
-      const l4 = btc4h.map(c => c.low);
-      const n4 = c4.length;
-      // Simple 4H bias: EMA20 vs EMA50 direction over last 3 bars
       const { ema } = await import("./indicators.js");
-      const e20 = ema(c4, 20);
-      const e50 = ema(c4, 50);
-      const last3Bullish = [n4 - 1, n4 - 2, n4 - 3].every(i => e20[i] > e50[i]);
-      const last3Bearish = [n4 - 1, n4 - 2, n4 - 3].every(i => e20[i] < e50[i]);
-      const h4Bias = last3Bullish ? "bull" : last3Bearish ? "bear" : "sideways";
+      const h4Bias = compute4hBias(btc4h, { ema });
       regime.h4Bias = h4Bias;
 
       if (h4Bias !== "sideways" && h4Bias !== regime.label) {
