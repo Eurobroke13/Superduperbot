@@ -69,8 +69,26 @@ import {
   bearFilter
 } from "./entry-improvements.js";
 
-import { checkMidRunDrawdown, claudeSpendMode, compute4hBias, rankTradeable } from "./runner-utils.js";
-export { checkMidRunDrawdown, claudeSpendMode, compute4hBias, rankTradeable };
+import {
+  applyFundingAdjustments,
+  applyLunarAdjustments,
+  checkMidRunDrawdown,
+  claudeSpendMode,
+  compute4hBias,
+  interleaveLongsShorts,
+  rankTradeable,
+  selectTopSignals
+} from "./runner-utils.js";
+export {
+  applyFundingAdjustments,
+  applyLunarAdjustments,
+  checkMidRunDrawdown,
+  claudeSpendMode,
+  compute4hBias,
+  interleaveLongsShorts,
+  rankTradeable,
+  selectTopSignals
+};
 
 const DECISION_LOG_LIMIT = 150;
 const FAST_SCAN = process.env.FAST_SCAN_MODE === "true";
@@ -858,27 +876,16 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     c.lunarSentiment = lunar.sentiment;
     c.lunarGalaxyScore = lunar.galaxyScore;
 
-    if (lunar.galaxyScore > 60 && c.signal === "long") {
-      c.score += getWeight("lunar-bull", state);
-      c.reasons.push(`lunar-bull(${lunar.galaxyScore})`);
-    }
-    if (lunar.galaxyScore < 30 && c.signal === "short") {
-      c.score += getWeight("lunar-bear", state);
-      c.reasons.push(`lunar-bear(${lunar.galaxyScore})`);
-    }
-    if (c.signal === "long" && lunar.sentiment < 30) {
-      c.score += getWeight("lunar-sentiment-warning", state);
-      c.reasons.push("lunar-sentiment-warning");
-    }
-    if (c.signal === "short" && lunar.sentiment > 70) {
-      c.score += getWeight("lunar-sentiment-warning", state);
-      c.reasons.push("lunar-sentiment-warning");
-    }
+    const { scoreDelta, reasons } = applyLunarAdjustments(c, lunar, {
+      bull: getWeight("lunar-bull", state),
+      bear: getWeight("lunar-bear", state),
+      warning: getWeight("lunar-sentiment-warning", state)
+    });
+    c.score += scoreDelta;
+    c.reasons.push(...reasons);
   }
 
-  const scores = candidates.map(c => c.score).sort((a, b) => b - a);
-  const cutoff = scores[Math.floor(scores.length * 0.2)] ?? -Infinity;
-  const topSignals = candidates.filter(c => c.score >= cutoff);
+  const topSignals = selectTopSignals(candidates, 0.2);
   for (const candidate of topSignals) topSignalSet.add(candidate.symbol);
 
   if (topSignals.length > 0) {
@@ -899,35 +906,9 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
       c.fundingRate = fundRate;
 
-      if (fundSig.signal === "short" && c.h4Trend === "bullish") {
-        c.score += 1.5;
-        c.reasons.push("funding-squeeze");
-      }
-
-      if (fundSig.signal === "long" && c.h4Trend === "bearish") {
-        c.score += 1.5;
-        c.reasons.push("funding-squeeze");
-      }
-
-      if (fundSig.reason === "funding-extreme-long") {
-        c.score += c.signal === "short" ? 2.0 : -0.5;
-        c.reasons.push("funding-extreme-long");
-      }
-
-      if (fundSig.reason === "funding-extreme-short") {
-        c.score += c.signal === "long" ? 2.0 : -0.5;
-        c.reasons.push("funding-extreme-short");
-      }
-
-      if (fundSig.reason === "funding-crowded-long" && fundRate > 0.0015) {
-        if (c.signal === "short") c.score += 1.0;
-        c.reasons.push("funding-skew-short");
-      }
-
-      if (fundSig.reason === "funding-crowded-short" && fundRate < -0.0015) {
-        if (c.signal === "long") c.score += 1.0;
-        c.reasons.push("funding-skew-long");
-      }
+      const { scoreDelta, reasons } = applyFundingAdjustments(c, fundSig, fundRate);
+      c.score += scoreDelta;
+      c.reasons.push(...reasons);
     }
   }
 
@@ -1035,12 +1016,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const longs = qualified.filter(c => c.signal === "long").sort((a, b) => b.score - a.score);
   const shorts = qualified.filter(c => c.signal === "short").sort((a, b) => b.score - a.score);
 
-  const toConsider = [];
-  let li = 0, si = 0;
-  while (toConsider.length < slotsAvailable && (li < longs.length || si < shorts.length)) {
-    if (li < longs.length) toConsider.push(longs[li++]);
-    if (toConsider.length < slotsAvailable && si < shorts.length) toConsider.push(shorts[si++]);
-  }
+  const toConsider = interleaveLongsShorts(longs, shorts, slotsAvailable);
   for (const candidate of toConsider) consideredSet.add(candidate.symbol);
 
   const autoList = [];

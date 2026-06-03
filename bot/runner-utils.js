@@ -55,6 +55,115 @@ export function rankTradeable(tradeable, { tickerMap = {}, volumeMap = {}, regim
 }
 
 /**
+ * Selects the top-percentile candidates by score. Mirrors the inline cutoff
+ * logic in phaseScan: take the score at the 20th-percentile index of the
+ * descending-sorted scores as the cutoff, then keep everything >= cutoff.
+ *
+ * @param {Array<{score:number}>} candidates
+ * @param {number} percentile  fraction (default 0.2 = top band cutoff index)
+ * @returns {Array} candidates with score >= cutoff
+ */
+export function selectTopSignals(candidates, percentile = 0.2) {
+  const list = candidates || [];
+  const scores = list.map(c => c.score).sort((a, b) => b - a);
+  const cutoff = scores[Math.floor(scores.length * percentile)] ?? -Infinity;
+  return list.filter(c => c.score >= cutoff);
+}
+
+/**
+ * Interleaves longs and shorts (already score-sorted desc) into a single list
+ * up to `slots`, alternating long/short so neither side starves the other.
+ * Pure mirror of the phaseScan toConsider loop.
+ *
+ * @param {Array} longs   score-desc sorted long candidates
+ * @param {Array} shorts  score-desc sorted short candidates
+ * @param {number} slots  max entries to consider
+ * @returns {Array}
+ */
+export function interleaveLongsShorts(longs, shorts, slots) {
+  const out = [];
+  const L = longs || [], S = shorts || [];
+  let li = 0, si = 0;
+  while (out.length < slots && (li < L.length || si < S.length)) {
+    if (li < L.length) out.push(L[li++]);
+    if (out.length < slots && si < S.length) out.push(S[si++]);
+  }
+  return out;
+}
+
+/**
+ * Computes funding-rate score adjustments for a candidate. Pure: returns the
+ * score delta and the reason tags to push; does not mutate the candidate.
+ *
+ * @param {{signal:string, h4Trend:string}} candidate
+ * @param {{signal?:string, reason?:string}} fundSig  output of fundingRateSignal
+ * @param {number|null} fundRate  raw funding rate
+ * @returns {{scoreDelta:number, reasons:string[]}}
+ */
+export function applyFundingAdjustments(candidate, fundSig = {}, fundRate = null) {
+  const { signal, h4Trend } = candidate;
+  let scoreDelta = 0;
+  const reasons = [];
+
+  if (fundSig.signal === "short" && h4Trend === "bullish") {
+    scoreDelta += 1.5; reasons.push("funding-squeeze");
+  }
+  if (fundSig.signal === "long" && h4Trend === "bearish") {
+    scoreDelta += 1.5; reasons.push("funding-squeeze");
+  }
+  if (fundSig.reason === "funding-extreme-long") {
+    scoreDelta += signal === "short" ? 2.0 : -0.5;
+    reasons.push("funding-extreme-long");
+  }
+  if (fundSig.reason === "funding-extreme-short") {
+    scoreDelta += signal === "long" ? 2.0 : -0.5;
+    reasons.push("funding-extreme-short");
+  }
+  if (fundSig.reason === "funding-crowded-long" && fundRate > 0.0015) {
+    if (signal === "short") scoreDelta += 1.0;
+    reasons.push("funding-skew-short");
+  }
+  if (fundSig.reason === "funding-crowded-short" && fundRate < -0.0015) {
+    if (signal === "long") scoreDelta += 1.0;
+    reasons.push("funding-skew-long");
+  }
+  return { scoreDelta, reasons };
+}
+
+/**
+ * Computes LunarCrush sentiment score adjustments for a candidate. Pure:
+ * returns the score delta and reason tags; does not mutate the candidate.
+ * Weights are passed in (caller resolves them via getWeight) to keep this
+ * free of state/config dependencies.
+ *
+ * @param {{signal:string}} candidate
+ * @param {{sentiment:number, galaxyScore:number}} lunar
+ * @param {{bull:number, bear:number, warning:number}} weights
+ * @returns {{scoreDelta:number, reasons:string[]}}
+ */
+export function applyLunarAdjustments(candidate, lunar, weights = {}) {
+  const { signal } = candidate;
+  const { bull = 0, bear = 0, warning = 0 } = weights;
+  let scoreDelta = 0;
+  const reasons = [];
+  if (!lunar) return { scoreDelta, reasons };
+
+  if (lunar.galaxyScore > 60 && signal === "long") {
+    scoreDelta += bull; reasons.push(`lunar-bull(${lunar.galaxyScore})`);
+  }
+  if (lunar.galaxyScore < 30 && signal === "short") {
+    scoreDelta += bear; reasons.push(`lunar-bear(${lunar.galaxyScore})`);
+  }
+  if (signal === "long" && lunar.sentiment < 30) {
+    scoreDelta += warning; reasons.push("lunar-sentiment-warning");
+  }
+  if (signal === "short" && lunar.sentiment > 70) {
+    scoreDelta += warning; reasons.push("lunar-sentiment-warning");
+  }
+  return { scoreDelta, reasons };
+}
+
+/**
  * Computes the intraday 4H bias from a candle array.
  * Returns "bull" | "bear" | "sideways".
  * Caller must pass the ema function to avoid a dynamic import here.
