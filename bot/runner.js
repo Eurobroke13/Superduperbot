@@ -57,6 +57,8 @@ import {
   checkDailyLossLimit,
   checkMinRR
 } from "./risk-gates.js";
+import { estimateMonthlySpend } from "./stats.js";
+import { MONTHLY_BUDGET_USD } from "./config.js";
 import { isConfirmedSweep, canOpenMoreTraps } from "./sweep-confirmation.js";
 import {
   checkEarlyReversalTighten,
@@ -498,6 +500,38 @@ async function phaseRegimeAndExits(env, state, deps) {
 
   const prevLabel = state.lastRegime?.label;
   const regime = detectRegime(btcDaily, state);
+
+  // ── 4H intraday regime override ─────────────────────────────────────────────
+  // Daily HMM misses intra-day flips. If 4H structure contradicts the daily
+  // regime for the last 3 candles, treat current session as sideways.
+  try {
+    const btc4h = await fetchCandles("BTC-USDT-SWAP", "4h", 60);
+    if (btc4h && btc4h.length >= 20) {
+      const c4 = btc4h.map(c => c.close);
+      const h4 = btc4h.map(c => c.high);
+      const l4 = btc4h.map(c => c.low);
+      const n4 = c4.length;
+      // Simple 4H bias: EMA20 vs EMA50 direction over last 3 bars
+      const { ema } = await import("./indicators.js");
+      const e20 = ema(c4, 20);
+      const e50 = ema(c4, 50);
+      const last3Bullish = [n4 - 1, n4 - 2, n4 - 3].every(i => e20[i] > e50[i]);
+      const last3Bearish = [n4 - 1, n4 - 2, n4 - 3].every(i => e20[i] < e50[i]);
+      const h4Bias = last3Bullish ? "bull" : last3Bearish ? "bear" : "sideways";
+      regime.h4Bias = h4Bias;
+
+      if (h4Bias !== "sideways" && h4Bias !== regime.label) {
+        console.log(`[REGIME] 4H bias (${h4Bias}) contradicts daily (${regime.label}) — overriding to sideways`);
+        regime.label = "sideways";
+        regime.h4Override = true;
+      } else {
+        console.log(`[REGIME] 4H bias: ${h4Bias} (consistent with daily ${regime.label})`);
+      }
+    }
+  } catch (err) {
+    console.warn("[REGIME] 4H override check failed:", err.message);
+  }
+
   state.lastRegime = regime;
   console.log(`[REGIME] ${regime.label} | HMM:${regime.hmmLabel} | PI:${regime.piCycle} | Markov:${regime.markovProb.toFixed(3)}`);
 
@@ -632,6 +666,27 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     incrementCount(scanSummary.blockedByReason, "daily-loss-limit");
     state.lastScanSummary = scanSummary;
     return;
+  }
+
+  // ── Mid-run drawdown halt ────────────────────────────────────────────────────
+  // If positions hit SL earlier in this same run, block new entries immediately
+  // rather than waiting for the daily cap to trigger retroactively next run.
+  {
+    const today = new Date().toISOString().slice(0, 10);
+    const todayRealizedPnl = (state.trades || [])
+      .filter(t => t.closedAt?.startsWith(today))
+      .reduce((sum, t) => sum + (t.pnl || 0), 0);
+    const approxPortfolioVal = (state.cash || 0) +
+      Object.values(state.positions).reduce((s, p) => s + (p.notional || 0), 0);
+    if (approxPortfolioVal > 0 && todayRealizedPnl / approxPortfolioVal < -0.015) {
+      console.warn(
+        `[SCAN] Mid-run drawdown halt: today PnL $${todayRealizedPnl.toFixed(2)} ` +
+        `(${(todayRealizedPnl / approxPortfolioVal * 100).toFixed(1)}%) exceeds -1.5% — skipping new entries`
+      );
+      incrementCount(scanSummary.skippedByReason, "mid-run-drawdown-halt");
+      state.lastScanSummary = scanSummary;
+      return;
+    }
   }
 
   const entryThreshold = getAdaptiveThreshold(state, regime.label);
@@ -1126,6 +1181,19 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
         approvalType: "auto"
       });
     }
+  }
+
+  // ── Claude spend guardrail ───────────────────────────────────────────────────
+  const claudeSpend = estimateMonthlySpend(state.tokenUsage || { input: 0, output: 0 });
+  const spendFraction = MONTHLY_BUDGET_USD > 0 ? claudeSpend / MONTHLY_BUDGET_USD : 0;
+  if (spendFraction >= 1.0) {
+    console.warn(`[CLAUDE] Monthly budget exhausted ($${claudeSpend.toFixed(2)}/$${MONTHLY_BUDGET_USD}) — skipping all Claude calls`);
+    for (const c of claudeList) autoList.push({ ...c, approvalType: "auto-budget-exceeded" });
+    claudeList.length = 0;
+  } else if (spendFraction >= 0.9) {
+    console.warn(`[CLAUDE] Budget at ${(spendFraction * 100).toFixed(0)}% ($${claudeSpend.toFixed(2)}/$${MONTHLY_BUDGET_USD}) — switching to auto-only`);
+    for (const c of claudeList) autoList.push({ ...c, approvalType: "auto-budget-warning" });
+    claudeList.length = 0;
   }
 
   if (claudeList.length > 0) {

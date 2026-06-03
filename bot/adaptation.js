@@ -3,15 +3,11 @@ import { estimateMonthlySpend } from "./stats.js";
 import { portfolioValue } from "./execution.js";
 import { getWeightRegimeAware } from "./risk-gates.js";
 
-function updateDynamicWeights(state) {
-  const recent = state.trades.slice(-80);
-  if (recent.length < 10) return;
-
+function buildSignalStats(trades) {
   const stats = {};
-  for (const trade of recent) {
+  for (const trade of trades) {
     const won = trade.pnl > 0;
     const regime = trade.regime || "unknown";
-
     for (const reason of (trade.reasons || [])) {
       if (!stats[reason]) stats[reason] = { wins: 0, losses: 0, pnl: 0 };
       stats[reason].wins += won ? 1 : 0;
@@ -25,6 +21,14 @@ function updateDynamicWeights(state) {
       stats[regimeKey].pnl += trade.pnl;
     }
   }
+  return stats;
+}
+
+function updateDynamicWeights(state) {
+  const recent = state.trades.slice(-80);
+  if (recent.length < 10) return;
+
+  const stats = buildSignalStats(recent);
 
   if (!state.signalStats) state.signalStats = {};
   for (const [key, s] of Object.entries(stats)) {
@@ -59,6 +63,47 @@ function updateDynamicWeights(state) {
       console.log(`[WEIGHTS] ${signal}: 1.0 -> ${newWeights[signal]} (WR:${(wr * 100).toFixed(0)}% n=${count} ev:$${ev.toFixed(2)})`);
     }
   }
+
+  // ── Fast 20-trade window: ±15% multiplier on top of slow weights ─────────────
+  // Reacts to market structure changes in 3-5 days vs 2-3 weeks for 80-trade window.
+  const fast = state.trades.slice(-20);
+  if (fast.length >= 10) {
+    const fastStats = buildSignalStats(fast);
+    let fastDivergences = 0;
+    for (const [signal, fs] of Object.entries(fastStats)) {
+      if (signal.includes(":")) continue;
+      const count = fs.wins + fs.losses;
+      if (count < 5) continue;
+      const fastWr = fs.wins / count;
+      const slowEntry = stats[signal];
+      if (!slowEntry) continue;
+      const slowCount = slowEntry.wins + slowEntry.losses;
+      if (slowCount < 10) continue;
+      const slowWr = slowEntry.wins / slowCount;
+      const divergence = fastWr - slowWr;
+      if (Math.abs(divergence) > 0.15) {
+        const fastMult = divergence > 0 ? 1.15 : 0.85;
+        const base = newWeights[signal] ?? 1.0;
+        newWeights[signal] = parseFloat(Math.max(0.2, Math.min(1.6, base * fastMult)).toFixed(3));
+        fastDivergences++;
+      }
+    }
+    if (fastDivergences > 0) {
+      console.log(`[WEIGHTS-FAST] Applied fast-window adjustments to ${fastDivergences} signals`);
+    }
+
+    // Detect rapid regime drift: if fast-window WR diverges >15% from slow, log warning
+    const fastPnl = fast.reduce((s, t) => s + t.pnl, 0);
+    const fastWr = fast.filter(t => t.pnl > 0).length / fast.length;
+    const slowWr = recent.filter(t => t.pnl > 0).length / recent.length;
+    if (Math.abs(fastWr - slowWr) > 0.15) {
+      console.warn(
+        `[REGIME DRIFT] Fast WR ${(fastWr * 100).toFixed(1)}% vs Slow WR ${(slowWr * 100).toFixed(1)}% ` +
+        `| Fast EV $${(fastPnl / fast.length).toFixed(2)} | May indicate market structure change`
+      );
+    }
+  }
+
   state.dynamicWeights = newWeights;
 
   const disabled = [];

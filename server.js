@@ -22,6 +22,60 @@ const scheduler = {
   runCount: 0
 };
 
+async function sendTelegramAlert(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4000) })
+    });
+  } catch (err) {
+    console.error("[TG-ALERT]", err.message);
+  }
+}
+
+let lastDailySummaryDate = null;
+
+async function maybeSendDailySummary() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (lastDailySummaryDate === today) return;
+  lastDailySummaryDate = today;
+  try {
+    const { loadState } = await import("./state-store.js");
+    const { estimateMonthlySpend } = await import("./bot/stats.js");
+    const { MONTHLY_BUDGET_USD, PAPER_CASH } = await import("./bot/config.js");
+    const state = await loadState();
+    const positions = Object.values(state.positions || {});
+    const trades = state.trades || [];
+    const wins = trades.filter(t => t.pnl > 0).length;
+    const pnl = trades.reduce((s, t) => s + (t.pnl || 0), 0);
+    const portfolioVal = (state.cash || 0) + positions.reduce((s, p) => s + (p.notional || 0), 0);
+    const claudeSpend = estimateMonthlySpend(state.tokenUsage || { input: 0, output: 0 });
+    const spendPct = MONTHLY_BUDGET_USD > 0 ? (claudeSpend / MONTHLY_BUDGET_USD * 100).toFixed(0) : "?";
+    const returnPct = ((portfolioVal - PAPER_CASH) / PAPER_CASH * 100).toFixed(2);
+
+    await sendTelegramAlert(
+      `📊 DAILY SUMMARY ${today}\n` +
+      `Portfolio: $${portfolioVal.toFixed(2)} (${returnPct >= 0 ? "+" : ""}${returnPct}%)\n` +
+      `Trades: ${trades.length} | WR: ${trades.length > 0 ? ((wins / trades.length) * 100).toFixed(1) : "N/A"}% | PnL: $${pnl.toFixed(2)}\n` +
+      `Open: ${positions.length} positions | Regime: ${state.lastRegime?.label || "?"}\n` +
+      `Claude: $${claudeSpend.toFixed(2)}/$${MONTHLY_BUDGET_USD} (${spendPct}%)`
+    );
+
+    if (claudeSpend / MONTHLY_BUDGET_USD >= 0.8) {
+      await sendTelegramAlert(
+        `⚠️ CLAUDE BUDGET WARNING: $${claudeSpend.toFixed(2)} of $${MONTHLY_BUDGET_USD} used (${spendPct}%)\n` +
+        `Auto-only mode activates at 90%.`
+      );
+    }
+  } catch (err) {
+    console.error("[DAILY-SUMMARY]", err.message);
+  }
+}
+
 async function runScheduledBot(trigger = "scheduler") {
   if (scheduler.running) {
     console.log(`[SCHEDULER] Skipping ${trigger}: previous bot run still active`);
@@ -38,11 +92,13 @@ async function runScheduledBot(trigger = "scheduler") {
     scheduler.runCount += 1;
     scheduler.lastFinishedAt = new Date().toISOString();
     console.log(`[SCHEDULER] Bot run completed at ${scheduler.lastFinishedAt}`);
+    await maybeSendDailySummary();
     return { skipped: false, ok: true };
   } catch (error) {
     scheduler.lastError = error.message || String(error);
     scheduler.lastFinishedAt = new Date().toISOString();
     console.error("[SCHEDULER] Bot run failed:", scheduler.lastError);
+    await sendTelegramAlert(`🚨 BOT CRASH [${trigger}]\n${scheduler.lastError}\n${scheduler.lastStartedAt}`);
     return { skipped: false, ok: false, error: scheduler.lastError };
   } finally {
     scheduler.running = false;
