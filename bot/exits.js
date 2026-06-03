@@ -1,6 +1,6 @@
 import { ATR_SL_MULT } from "./config.js";
 import { registerExit, registerOverboughtExit } from "./cooldown.js";
-import { insertTrade } from "../state-store.js";
+import { insertTrade as insertTradeDefault } from "../state-store.js";
 
 const EXECUTION_LOG_LIMIT = 150;
 
@@ -189,7 +189,7 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
 }
 
 export function executePartialClose(symbol, price, pct, reason, pos, state, deps = {}) {
-  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {} } = deps;
+  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {}, insertTrade = insertTradeDefault } = deps;
 
   const closeSize = pos.size * pct;
   const closeNotional = pos.notional * pct;
@@ -270,7 +270,7 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
 }
 
 export function closePosition(symbol, price, reason, pos, state, journal, deps = {}) {
-  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {} } = deps;
+  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {}, insertTrade = insertTradeDefault } = deps;
 
   const rawPnl = pos.direction === "long"
     ? (price - pos.entryPrice) * pos.size
