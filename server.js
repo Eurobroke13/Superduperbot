@@ -255,6 +255,38 @@ app.get("/run", authMiddleware, limiter, async (_, res) => {
   }
 });
 
+app.post("/admin/apply-seed", authMiddleware, async (req, res) => {
+  try {
+    const { readFileSync } = await import("fs");
+    const { loadState, saveState } = await import("./state-store.js");
+    const patch = JSON.parse(readFileSync(new URL("./seed-patch.json", import.meta.url), "utf8"));
+    console.log(`[SEED] Applying patch (${patch.months}m backtest, generated ${patch.generatedAt})`);
+    const state = await loadState();
+
+    if (!state.regimeStats) state.regimeStats = {};
+    let regimeUpdated = 0;
+    for (const [regime, rs] of Object.entries(patch.regimeStats)) {
+      const cur = state.regimeStats[regime];
+      if (!cur || cur.count < rs.count) { state.regimeStats[regime] = rs; regimeUpdated++; }
+    }
+
+    if (!state.signalStats) state.signalStats = {};
+    let sigUpdated = 0;
+    for (const [sig, ss] of Object.entries(patch.signalStats)) {
+      const cur = state.signalStats[sig];
+      if (!cur || cur.count < ss.count) { state.signalStats[sig] = ss; sigUpdated++; }
+    }
+
+    await saveState(state);
+    const msg = `Seed applied: ${regimeUpdated} regimes, ${sigUpdated} signals updated`;
+    console.log(`[SEED] ✅ ${msg}`);
+    res.json({ ok: true, message: msg, regimeUpdated, sigUpdated });
+  } catch (err) {
+    console.error("[SEED] apply-seed failed:", err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post("/admin/seed", authMiddleware, async (req, res) => {
   const months = Math.min(Number(req.query.months || 12), 24);
   console.log(`[SEED] Manual seed triggered via HTTP (months=${months})`);
