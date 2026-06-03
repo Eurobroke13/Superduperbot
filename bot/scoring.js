@@ -1532,7 +1532,7 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
 
     if (nearestSupport) {
       const structureSL = nearestSupport.price - atrVal * 0.3;
-      if ((price - structureSL) <= atrVal * 3.0) {
+      if ((price - structureSL) <= atrVal * 2.5) {
         sl = structureSL;
         slType = `below-${nearestSupport.type}@${nearestSupport.price.toFixed(6)}`;
       } else {
@@ -1567,7 +1567,7 @@ export function calculateStructuredSLTP(signal, price, atrVal, highs, lows, clos
     if (nearestResistance) {
       sl = nearestResistance.price + atrVal * 0.3;
       slType = `above-${nearestResistance.type}@${nearestResistance.price.toFixed(6)}`;
-      if ((sl - price) > atrVal * 3.0) {
+      if ((sl - price) > atrVal * 2.5) {
         sl = atrSL;
         slType = "atr-default(structure-too-far)";
       }
