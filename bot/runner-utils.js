@@ -1,6 +1,64 @@
 // Pure stateless helpers extracted from runner.js for testability.
 // No DB, network, or async dependencies.
 
+import {
+  bearFilter,
+  liquidityTrapQualityGate,
+  sidewaysFilter
+} from "./entry-improvements.js";
+
+/**
+ * Applies the three synchronous candidate gates (sideways → liquidity-trap
+ * quality → bear) in order, mirroring the inline phaseScan loops exactly.
+ * Pure: does not mutate the candidate. Returns the resulting score (0 if any
+ * gate blocked) and the single block reason that fired, if any.
+ *
+ * Gate ordering & skip semantics (preserved from the original loops):
+ *   1. sideways  — skipped when candidate._sweepBlocked
+ *   2. LT-gate   — skipped when _sweepBlocked, already-zeroed, or not a
+ *                  liquidity-trap setup
+ *   3. bear      — skipped when already-zeroed
+ * Once a gate zeroes the score, later gates self-skip, so at most one reason
+ * fires per candidate.
+ *
+ * @param {object} candidate
+ * @param {{ regimeLabel: string, regimeStats?: object }} ctx
+ * @returns {{ score:number, blockReason:(string|null) }}
+ */
+export function applySyncFilters(candidate, { regimeLabel, regimeStats } = {}) {
+  let score = candidate.score;
+
+  // 1. sideways regime filter
+  if (!candidate._sweepBlocked) {
+    const swf = sidewaysFilter(candidate, regimeLabel, regimeStats);
+    if (!swf.allowed) {
+      return { score: 0, blockReason: `sideways-filter:${swf.reason}` };
+    }
+  }
+
+  // 2. liquidity-trap quality gate (requires 2+ confirmations)
+  if (!candidate._sweepBlocked && score !== 0 && candidate.setupType === "liquidity-trap") {
+    const volumeData = { ratio: (candidate.reasons || []).includes("volume") ? 1.5 : 0.8 };
+    const rsiDivergence = candidate.obvDiv && candidate.obvDiv !== "none"
+      ? { type: candidate.obvDiv }
+      : { type: "none" };
+    const ltGate = liquidityTrapQualityGate(candidate, volumeData, rsiDivergence);
+    if (!ltGate.pass) {
+      return { score: 0, blockReason: "lt-quality-gate" };
+    }
+  }
+
+  // 3. bear regime filter
+  if (score !== 0) {
+    const bearGate = bearFilter(candidate, regimeLabel, regimeStats);
+    if (!bearGate.allowed) {
+      return { score: 0, blockReason: `bear-gate:${bearGate.reason}` };
+    }
+  }
+
+  return { score, blockReason: null };
+}
+
 /**
  * Returns true when today's realized PnL breaches the -1.5% mid-run halt.
  */

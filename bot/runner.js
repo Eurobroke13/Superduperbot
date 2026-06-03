@@ -62,16 +62,14 @@ import { MONTHLY_BUDGET_USD } from "./config.js";
 import { isConfirmedSweep, canOpenMoreTraps } from "./sweep-confirmation.js";
 import {
   checkEarlyReversalTighten,
-  liquidityTrapQualityGate,
-  sidewaysFilter,
   confirmMeanReversionEntry,
-  checkMeanReversionExit,
-  bearFilter
+  checkMeanReversionExit
 } from "./entry-improvements.js";
 
 import {
   applyFundingAdjustments,
   applyLunarAdjustments,
+  applySyncFilters,
   checkMidRunDrawdown,
   claudeSpendMode,
   compute4hBias,
@@ -82,6 +80,7 @@ import {
 export {
   applyFundingAdjustments,
   applyLunarAdjustments,
+  applySyncFilters,
   checkMidRunDrawdown,
   claudeSpendMode,
   compute4hBias,
@@ -944,39 +943,18 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
   }
 
-  // ── Fix 3: sideways regime filter (blocks trend setups, raises min score) ──
+  // ── Synchronous candidate gates: sideways → liquidity-trap quality → bear ──
+  // Ordering, skip semantics, and block-reason tags live in the unit-tested
+  // applySyncFilters helper (runner-utils.js).
   for (const c of topSignals) {
-    if (c._sweepBlocked) continue;
-    const swf = sidewaysFilter(c, regime.label, state.regimeStats);
-    if (!swf.allowed) {
-      c.score = 0;
-      incrementCount(scanSummary.blockedByReason, `sideways-filter:${swf.reason}`);
-    }
-  }
-
-  // ── Fix 2: liquidity-trap quality gate (requires 2+ confirmations) ──
-  for (const c of topSignals) {
-    if (c._sweepBlocked || c.score === 0) continue;
-    if (c.setupType !== "liquidity-trap") continue;
-    const volumeData = { ratio: c.reasons.includes("volume") ? 1.5 : 0.8 };
-    const rsiDivergence = c.obvDiv && c.obvDiv !== "none"
-      ? { type: c.obvDiv }
-      : { type: "none" };
-    const ltGate = liquidityTrapQualityGate(c, volumeData, rsiDivergence);
-    if (!ltGate.pass) {
-      c.score = 0;
-      incrementCount(scanSummary.blockedByReason, "lt-quality-gate");
-      console.log(`[${c.symbol}] LT quality gate: ${ltGate.reason}`);
-    }
-  }
-
-  // ── Bear regime filter: shorts encouraged (4.0+), longs discouraged (7.0+) ──
-  for (const c of topSignals) {
-    if (c.score === 0) continue;
-    const bearGate = bearFilter(c, regime.label, state.regimeStats);
-    if (!bearGate.allowed) {
-      c.score = 0;
-      incrementCount(scanSummary.blockedByReason, `bear-gate:${bearGate.reason}`);
+    const { score, blockReason } = applySyncFilters(c, {
+      regimeLabel: regime.label,
+      regimeStats: state.regimeStats
+    });
+    c.score = score;
+    if (blockReason) {
+      incrementCount(scanSummary.blockedByReason, blockReason);
+      if (blockReason === "lt-quality-gate") console.log(`[${c.symbol}] LT quality gate blocked`);
     }
   }
 
