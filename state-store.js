@@ -1,7 +1,8 @@
-import { initDb, pool } from "./db.js";
+import { initDb, pool, withTransaction } from "./db.js";
 import {
   initTradesTable,
   insertTrade,
+  insertTradeWithClient,
   loadRecentTrades,
   migrateTradesFromState
 } from "./trade-store.js";
@@ -114,25 +115,60 @@ export async function loadState() {
   return state;
 }
 
-export async function saveState(state) {
-  await initDb();
+const UPSERT_STATE_SQL = `
+  INSERT INTO bot_state (state_key, state, updated_at)
+  VALUES ($1, $2::jsonb, NOW())
+  ON CONFLICT (state_key)
+  DO UPDATE SET
+    state = EXCLUDED.state,
+    updated_at = NOW()
+`;
+
+/**
+ * Persist the state blob. Any trades buffered on `state._pendingTrades`
+ * (closed this run) are written together with the blob in a SINGLE
+ * transaction, so a crash can never leave a trade recorded while the
+ * position is still "open" in the blob (no phantom positions / double-count).
+ *
+ * The buffer is cleared only after a successful COMMIT; if the transaction
+ * fails the trades remain buffered and the blob is left unchanged.
+ *
+ * @param {object} state
+ * @param {object} [deps] - injectable db layer for testing
+ */
+export async function saveState(state, deps = {}) {
+  const {
+    query = (text, values) => pool.query(text, values),
+    runTransaction = withTransaction,
+    insertTradeTx = insertTradeWithClient,
+    ensureSchema = async () => { await initDb(); await initTradesTable(); }
+  } = deps;
+
+  await ensureSchema();
   stampStateChecksum(state);
+
+  const pending = Array.isArray(state._pendingTrades) ? state._pendingTrades : [];
 
   const stateForBlob = { ...state };
   delete stateForBlob.trades;
   delete stateForBlob.decisionLog;
+  delete stateForBlob._pendingTrades;
 
-  await pool.query(
-    `
-      INSERT INTO bot_state (state_key, state, updated_at)
-      VALUES ($1, $2::jsonb, NOW())
-      ON CONFLICT (state_key)
-      DO UPDATE SET
-        state = EXCLUDED.state,
-        updated_at = NOW()
-    `,
-    [STATE_KEY, JSON.stringify(stateForBlob)]
-  );
+  const blobValues = [STATE_KEY, JSON.stringify(stateForBlob)];
 
+  if (pending.length === 0) {
+    await query(UPSERT_STATE_SQL, blobValues);
+    return state;
+  }
+
+  await runTransaction(async (client) => {
+    for (const trade of pending) {
+      await insertTradeTx(client, trade);
+    }
+    await client.query(UPSERT_STATE_SQL, blobValues);
+  });
+
+  // Only clear after a successful commit.
+  state._pendingTrades = [];
   return state;
 }

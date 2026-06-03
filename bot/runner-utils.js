@@ -29,6 +29,32 @@ export function claudeSpendMode(spend, budget) {
 }
 
 /**
+ * Rank tradeable symbols for scan ordering. Pure transform of the input list.
+ *   rankScore = (24h quote volume / 1M) + (abs 24h move% * 100 * moveWeight)
+ * In sideways regimes movement is weighted heavily (coins near range extremes
+ * are the mean-reversion candidates); otherwise volume dominates.
+ *
+ * @param {string[]} tradeable
+ * @param {{ tickerMap?: object, volumeMap?: object, regimeLabel?: string }} ctx
+ * @returns {string[]} symbols sorted by descending rankScore
+ */
+export function rankTradeable(tradeable, { tickerMap = {}, volumeMap = {}, regimeLabel } = {}) {
+  const movePctWeight = regimeLabel === "sideways" ? 1.5 : 0.3;
+  return (tradeable || [])
+    .map(symbol => {
+      const t = tickerMap[symbol] || {};
+      const vol = volumeMap[symbol] || 0;
+      const last = parseFloat(t.last || 0);
+      const open24h = parseFloat(t.open24h || t.open_24h || t.open24hPrice || 0);
+      const movePct = open24h > 0 && last > 0 ? Math.abs((last - open24h) / open24h) : 0;
+      const rankScore = (vol / 1_000_000) + (movePct * 100 * movePctWeight);
+      return { symbol, vol, movePct, rankScore };
+    })
+    .sort((a, b) => b.rankScore - a.rankScore)
+    .map(x => x.symbol);
+}
+
+/**
  * Computes the intraday 4H bias from a candle array.
  * Returns "bull" | "bear" | "sideways".
  * Caller must pass the ema function to avoid a dynamic import here.

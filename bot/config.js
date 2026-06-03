@@ -9,7 +9,7 @@
 export const API_BASE       = "https://www.okx.com";
 export const ANTHROPIC_API  = "https://api.anthropic.com/v1/messages";
 export const LUNARCRUSH_API = "https://lunarcrush.com/api4/public/coins";
-export const CLAUDE_MODEL   = "claude-sonnet-4-20250514";
+export const CLAUDE_MODEL   = "claude-sonnet-4-6";
 
 // -----------------------------------------------------------------------------
 // Trading parameters

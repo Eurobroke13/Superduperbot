@@ -69,11 +69,16 @@ export async function initTradesTable() {
 // -----------------------------------------------------------------------------
 // Write a single trade
 // -----------------------------------------------------------------------------
-export async function insertTrade(trade) {
-  await initTradesTable();
 
-  const result = await pool.query(
-    `INSERT INTO trades (
+/**
+ * Build the parameterized INSERT for a trade. Pure — no DB access — so it can
+ * be reused by both the pooled insert and the transactional client insert,
+ * and unit-tested without a database.
+ * @returns {{ text: string, values: any[] }}
+ */
+export function buildTradeInsert(trade) {
+  return {
+    text: `INSERT INTO trades (
       symbol, direction, entry_price, exit_price, size, leverage, notional,
       pnl, pnl_pct, reason, setup_type, approval_type, score, risk_reward,
       atr_val, hold_hours, is_partial, partial_pct, was_liquidated, regime,
@@ -81,7 +86,7 @@ export async function insertTrade(trade) {
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26
     ) RETURNING id`,
-    [
+    values: [
       trade.symbol,
       trade.direction,
       trade.entryPrice,
@@ -109,8 +114,23 @@ export async function insertTrade(trade) {
       trade.journal || null,
       JSON.stringify(trade)
     ]
-  );
+  };
+}
 
+export async function insertTrade(trade) {
+  await initTradesTable();
+  const { text, values } = buildTradeInsert(trade);
+  const result = await pool.query(text, values);
+  return result.rows[0]?.id;
+}
+
+/**
+ * Insert a trade using a caller-supplied transaction client.
+ * The trades table must already exist (caller runs initTradesTable first).
+ */
+export async function insertTradeWithClient(client, trade) {
+  const { text, values } = buildTradeInsert(trade);
+  const result = await client.query(text, values);
   return result.rows[0]?.id;
 }
 
