@@ -21,8 +21,7 @@ const { checkGraduatedExit, executePartialClose, closePosition, checkBearShortEx
 const noopDeps = {
   updateCoinHistory: () => {},
   updateDynamicWeights: () => {},
-  updateRegimeStats: () => {},
-  insertTrade: async () => {}
+  updateRegimeStats: () => {}
 };
 
 function makeLong(overrides = {}) {
@@ -221,6 +220,25 @@ test("closePosition - short profit math is correct", () => {
   // short pnl = (100-80)*10 = 200
   assert.equal(state.trades[0].pnl, 200);
   assert.equal(state.cash, 5000 + 1000 + 200);
+});
+
+test("closePosition - buffers the trade into _pendingTrades for atomic persist", () => {
+  const pos = makeLong({ entryPrice: 100, size: 10, notional: 1000 });
+  const state = { cash: 5000, trades: [], positions: { "TEST-USDT-SWAP": pos }, lastRegime: { label: "bull" }, cooldowns: {} };
+  closePosition("TEST-USDT-SWAP", 120, "take-profit-full", pos, state, null, noopDeps);
+  assert.ok(Array.isArray(state._pendingTrades));
+  assert.equal(state._pendingTrades.length, 1);
+  assert.equal(state._pendingTrades[0].pnl, 200);
+  // the buffered record is the same one pushed to state.trades
+  assert.equal(state._pendingTrades[0], state.trades[0]);
+});
+
+test("executePartialClose - buffers the partial trade into _pendingTrades", () => {
+  const pos = makeLong({ entryPrice: 100, size: 10, notional: 1000 });
+  const state = { cash: 5000, trades: [], lastRegime: { label: "bull" }, cooldowns: {} };
+  executePartialClose("TEST-USDT-SWAP", 110, 0.5, "tp1", pos, state, noopDeps);
+  assert.equal(state._pendingTrades.length, 1);
+  assert.equal(state._pendingTrades[0].isPartial, true);
 });
 
 // ───────────────────────── BEAR SHORT EXIT ─────────────────────────

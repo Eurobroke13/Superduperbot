@@ -653,6 +653,11 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   } catch (err) {
     console.error("[TRADE-STORE] Could not load today's trades:", err.message);
   }
+  // Trades closed earlier this run are buffered (not yet committed to the DB),
+  // so merge them in to keep the daily-loss gate accurate within the run.
+  if (todayTrades && Array.isArray(state._pendingTrades) && state._pendingTrades.length) {
+    todayTrades = [...todayTrades, ...state._pendingTrades];
+  }
   const dailyCheck = checkDailyLossLimit(state, todayTrades);
   if (!dailyCheck.allowed) {
     console.log(`[SCAN] ${dailyCheck.reason} - halting new entries for today`);

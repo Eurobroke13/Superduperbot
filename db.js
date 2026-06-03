@@ -32,4 +32,25 @@ export async function closeDb() {
   await pool.end();
 }
 
+/**
+ * Run `fn(client)` inside a single transaction. Commits on success,
+ * rolls back on any error, and always releases the client.
+ * Used to persist trades + the state blob atomically (no phantom positions).
+ */
+export async function withTransaction(fn) {
+  await initDb();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    try { await client.query("ROLLBACK"); } catch { /* ignore rollback failure */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export { pool };

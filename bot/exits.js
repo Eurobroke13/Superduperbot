@@ -1,6 +1,15 @@
 import { ATR_SL_MULT } from "./config.js";
 import { registerExit, registerOverboughtExit } from "./cooldown.js";
-import { insertTrade as insertTradeDefault } from "../state-store.js";
+
+/**
+ * Buffer a closed trade for atomic persistence. saveState() flushes
+ * state._pendingTrades together with the state blob in one transaction,
+ * so the trade and the position-removal/cash-update always land together.
+ */
+function bufferTrade(state, tradeRecord) {
+  if (!Array.isArray(state._pendingTrades)) state._pendingTrades = [];
+  state._pendingTrades.push(tradeRecord);
+}
 
 const EXECUTION_LOG_LIMIT = 150;
 
@@ -189,7 +198,7 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
 }
 
 export function executePartialClose(symbol, price, pct, reason, pos, state, deps = {}) {
-  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {}, insertTrade = insertTradeDefault } = deps;
+  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {} } = deps;
 
   const closeSize = pos.size * pct;
   const closeNotional = pos.notional * pct;
@@ -234,9 +243,7 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
   state.trades[state.trades.length - 1].regime = state.lastRegime?.label || "unknown";
 
   const tradeRecord = state.trades[state.trades.length - 1];
-  insertTrade(tradeRecord).catch(err =>
-    console.error("[TRADE-STORE]", err.message)
-  );
+  bufferTrade(state, tradeRecord);
   updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
   registerExit(state.cooldowns || (state.cooldowns = {}), {
@@ -270,7 +277,7 @@ export function executePartialClose(symbol, price, pct, reason, pos, state, deps
 }
 
 export function closePosition(symbol, price, reason, pos, state, journal, deps = {}) {
-  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {}, insertTrade = insertTradeDefault } = deps;
+  const { updateCoinHistory = () => {}, updateDynamicWeights = () => {}, updateRegimeStats = () => {} } = deps;
 
   const rawPnl = pos.direction === "long"
     ? (price - pos.entryPrice) * pos.size
@@ -309,9 +316,7 @@ export function closePosition(symbol, price, reason, pos, state, journal, deps =
   state.trades[state.trades.length - 1].regime = state.lastRegime?.label || "unknown";
 
   const tradeRecord = state.trades[state.trades.length - 1];
-  insertTrade(tradeRecord).catch(err =>
-    console.error("[TRADE-STORE]", err.message)
-  );
+  bufferTrade(state, tradeRecord);
   updateCoinHistory(state, symbol, tradeRecord);
   updateRegimeStats(state, tradeRecord);
   const cooldowns = state.cooldowns || (state.cooldowns = {});
