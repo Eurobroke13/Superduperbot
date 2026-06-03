@@ -613,7 +613,18 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     getWeight,
     notifyTrade,
     sendTelegram,
-    sleep
+    sleep,
+    // IO seams — default to real implementations; injectable for testing
+    _fetchAllTickers   = fetchAllTickers,
+    _fetchAllContracts = fetchAllContracts,
+    _fetchCandles      = fetchCandles,
+    _fetchFundingRate  = fetchFundingRate,
+    _fetchLunarCrush   = fetchLunarCrush,
+    _loadTodayTrades   = loadTodayTrades,
+    _scoreSymbol       = scoreSymbol,
+    _getApiHealth      = getApiHealth,
+    _getTimeFilter     = getTimeFilter,
+    _stageCandidateEntry = stageCandidateEntry
   } = deps;
 
   const regime = state.lastRegime;
@@ -644,7 +655,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     rejectedByReason: {}
   };
 
-  const apiHealth = getApiHealth();
+  const apiHealth = _getApiHealth();
   if (apiHealth.tripped) {
     console.warn(
       `[SCAN] OKX API circuit open: ${apiHealth.consecutiveFailures} consecutive failures; skipping scoring.`
@@ -656,7 +667,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     return;
   }
 
-  const timeFilter = getTimeFilter();
+  const timeFilter = _getTimeFilter();
   if (timeFilter.shouldAvoidEntry) {
     console.log(`[SCAN] Avoiding entries - near funding settlement (${timeFilter.utcHour}:${String(timeFilter.utcMin).padStart(2, "0")} UTC)`);
     incrementCount(scanSummary.skippedByReason, "funding-settlement-window");
@@ -667,7 +678,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   let todayTrades = null;
   try {
-    todayTrades = await loadTodayTrades();
+    todayTrades = await _loadTodayTrades();
   } catch (err) {
     console.error("[TRADE-STORE] Could not load today's trades:", err.message);
   }
@@ -711,7 +722,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   pruneEntryCooldowns(state);
 
-  const tickers = await fetchAllTickers();
+  const tickers = await _fetchAllTickers();
   const volumeMap = {};
   const livePrices = {};
   if (tickers) for (const t of tickers) {
@@ -719,7 +730,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     if (t.last) livePrices[t.contract] = t.last;
   }
 
-  const allContracts = await fetchAllContracts();
+  const allContracts = await _fetchAllContracts();
   if (!allContracts || allContracts.length === 0) return;
 
   const blocked = state.newsBlocked || [];
@@ -778,7 +789,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const chunkSize = 10;
   for (let i = 0; i < batch.length; i += chunkSize) {
     const chunk = batch.slice(i, i + chunkSize);
-    const results = await Promise.allSettled(chunk.map(s => scoreSymbol(s, regime, state)));
+    const results = await Promise.allSettled(chunk.map(s => _scoreSymbol(s, regime, state)));
     for (const r of results) {
       if (r.status === "fulfilled" && r.value) candidates.push(r.value);
     }
@@ -867,7 +878,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     ...Object.keys(state.positions).map(s => s.replace("-USDT-SWAP", ""))
   ])].slice(0, 15);
 
-  const lunarData = await fetchLunarCrush(lunarSymbols, env, state);
+  const lunarData = await _fetchLunarCrush(lunarSymbols, env, state);
 
   for (const c of candidates) {
     const base = c.symbol.replace("-USDT-SWAP", "");
@@ -890,7 +901,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   if (topSignals.length > 0) {
     const fundingResults = await Promise.allSettled(
-      topSignals.map(c => fetchFundingRate(c.symbol))
+      topSignals.map(c => _fetchFundingRate(c.symbol))
     );
 
     for (let i = 0; i < topSignals.length; i++) {
@@ -990,7 +1001,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
     // Fetch 15m candles (1 API call per bear short)
     try {
-      const candles15m = await fetchCandles(c.symbol, "15m", 50);
+      const candles15m = await _fetchCandles(c.symbol, "15m", 50);
       if (candles15m && candles15m.length >= 12) {
         const confirm = confirm15mBearShort(candles15m, c.price, c.atrVal);
         c._15mConfirmation = confirm;
@@ -1087,7 +1098,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       const canOpen = cachedApproved || autoApproveSignal(c, regime);
       const approvalType = cachedApproved ? "claude-cached" : "auto-fast";
       if (canOpen) {
-        const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
+        const staged = await _stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
         if (!staged) {
           finalizeDecision(c, "skipped", "entry-not-staged", { approvalType });
         }
@@ -1120,7 +1131,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   for (const c of autoList) {
     const approvalType = c.approvalType || "auto";
     if (approvalType === "claude-cached" || autoApproveSignal(c, regime)) {
-      const staged = await stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
+      const staged = await _stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
       if (!staged) {
         finalizeDecision(c, "skipped", "entry-not-staged", { approvalType });
       }
@@ -1170,7 +1181,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       for (const c of claudeList) {
         const v = claudeResult.validations[c.symbol];
         if (v?.approved === true) {
-          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
+          const staged = await _stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
           if (staged) {
             console.log(`[${c.symbol}] Claude approved: ${v.reason}`);
           } else {
@@ -1199,7 +1210,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       console.error("[CLAUDE VALIDATE]", err.message);
       for (const c of claudeList) {
         if (c.score >= 9 && autoApproveSignal(c, regime)) {
-          const staged = await stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
+          const staged = await _stageCandidateEntry(c, "claude", state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
           if (staged) {
             console.log(`[${c.symbol}] Claude unavailable, fallback decision: auto-fallback`);
           } else {
