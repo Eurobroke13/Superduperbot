@@ -267,7 +267,7 @@ app.post("/admin/seed", authMiddleware, async (req, res) => {
     const { stdout, stderr } = await execFileAsync(
       "node",
       ["backtest.js", "--seed-safe", `--months`, String(months)],
-      { cwd: process.cwd(), timeout: 300000 }
+      { cwd: process.cwd(), timeout: 600000 }
     );
     if (stdout) console.log("[SEED] Output:\n" + stdout);
     if (stderr) console.error("[SEED] Stderr:\n" + stderr);
