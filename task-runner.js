@@ -3,7 +3,8 @@ import {
   sendDailyReport,
   sendWeeklyReview,
   premarketScan,
-  reevaluatePositions
+  reevaluatePositions,
+  sendTradeAnalysis
 } from "./bot/deps.js";
 import { closeDb } from "./db.js";
 
@@ -32,9 +33,12 @@ async function main() {
     case "reevaluate":
       await reevaluatePositions(env);
       break;
+    case "trade-analysis":
+      await sendTradeAnalysis(env);
+      break;
     default:
       throw new Error(
-        "Unknown task. Use one of: fast-scan, run-bot, daily-report, weekly-review, premarket, reevaluate"
+        "Unknown task. Use one of: fast-scan, run-bot, daily-report, weekly-review, premarket, reevaluate, trade-analysis"
       );
   }
 }

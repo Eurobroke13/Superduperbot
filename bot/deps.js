@@ -20,7 +20,8 @@ import {
   premarketScan as premarketScanCore,
   reevaluatePositions as reevaluatePositionsCore,
   sendDailyReport as sendDailyReportCore,
-  sendWeeklyReview as sendWeeklyReviewCore
+  sendWeeklyReview as sendWeeklyReviewCore,
+  sendTradeAnalysis as sendTradeAnalysisCore
 } from "./reports.js";
 import {
   updateCoinHistory,
@@ -113,4 +114,8 @@ async function reevaluatePositions(env) {
   return reevaluatePositionsCore(env, reportDeps);
 }
 
-export { runBot, sendDailyReport, sendWeeklyReview, premarketScan, reevaluatePositions };
+async function sendTradeAnalysis(env) {
+  return sendTradeAnalysisCore(env, reportDeps);
+}
+
+export { runBot, sendDailyReport, sendWeeklyReview, premarketScan, reevaluatePositions, sendTradeAnalysis };

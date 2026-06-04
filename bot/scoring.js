@@ -4,6 +4,7 @@ import {
   CANDLE_LIMIT
 } from "./config.js";
 import { fetchCandles } from "./market-data.js";
+import { trimToClosedCandles } from "./runner-utils.js";
 import {
   adx,
   atr,
@@ -291,11 +292,16 @@ export function score4H(candles4h) {
 
 export async function scoreSymbol(symbol, regime, state) {
   try {
-    const [candles1h, candles4h] = await Promise.all([
+    const [raw1h, raw4h] = await Promise.all([
       fetchCandles(symbol, "1h", CANDLE_LIMIT),
       fetchCandles(symbol, "4h", 200)
     ]);
-    if (!candles1h || candles1h.length < 100) { _trackNull("insufficient-candles"); return null; }
+    if (!raw1h || raw1h.length < 100) { _trackNull("insufficient-candles"); return null; }
+    // Use only closed candles for signal generation — mid-candle data produces
+    // false signals that disappear by the actual hourly close.
+    const candles1h = trimToClosedCandles(raw1h, 60 * 60 * 1000);
+    const candles4h = raw4h ? trimToClosedCandles(raw4h, 4 * 60 * 60 * 1000) : raw4h;
+    if (candles1h.length < 100) { _trackNull("insufficient-closed-candles"); return null; }
     return scoreFromData(symbol, candles1h, candles4h, regime, state);
   } catch (err) {
     console.error(`[scoreSymbol:${symbol}]`, err.message || err);

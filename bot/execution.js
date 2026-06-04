@@ -5,11 +5,14 @@ import {
   RISK_PCT
 } from "./config.js";
 import {
+  computeKellySizing,
   getAdaptiveSetupDecision,
   getApprovalRiskMultiplier,
   getApprovalStats,
   getSetupRiskMultiplier,
-  getSymbolRiskDecision
+  getSetupStats,
+  getSymbolRiskDecision,
+  trackAtrHistory
 } from "./stats.js";
 import { fetchCandles } from "./market-data.js";
 import { ichimoku, macd, rsiSeries, vwap } from "./indicators.js";
@@ -141,7 +144,16 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
 
   const setupRiskMult = getSetupRiskMultiplier(state, setupType);
   const approvalRiskMult = getApprovalRiskMultiplier(state, approvalType);
-  const combinedRiskMult = setupRiskMult * approvalRiskMult * sizeMultiplier;
+
+  // Kelly + ATR-volatility sizing
+  const setupStats = getSetupStats(state.trades || [], setupType);
+  const atrHistory = state.atrHistory?.[symbol] || [];
+  const kellySizing = computeKellySizing(setupStats, atrVal, atrHistory);
+  if (kellySizing.mult !== 1.0) {
+    console.log(`[${symbol}] Kelly sizing: ${kellySizing.reason}`);
+  }
+
+  const combinedRiskMult = setupRiskMult * approvalRiskMult * sizeMultiplier * kellySizing.mult;
   const adjustedRiskPct = Math.max(
     0.01,
     Math.min(RISK_PCT * combinedRiskMult, 0.05)
@@ -294,6 +306,8 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     reasons: [...(reasons || [])],
     cashAfter: roundValue(state.cash, 2)
   });
+  trackAtrHistory(state, symbol, atrVal);
+
   return {
     opened: true,
     reason: "opened",
@@ -301,7 +315,8 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
       leverage,
       initialMargin: roundValue(tranche1Notional, 2),
       plannedTotalMargin: roundValue(totalNotional, 2),
-      adjustedRiskPct: roundValue(adjustedRiskPct, 4)
+      adjustedRiskPct: roundValue(adjustedRiskPct, 4),
+      kellySizing: kellySizing.reason
     }
   };
 }
