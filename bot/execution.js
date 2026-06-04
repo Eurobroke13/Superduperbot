@@ -419,7 +419,7 @@ export function checkTranches(pos, price, state) {
 }
 
 export async function checkDCA(pos, price, currentAtr, state, env, deps = {}) {
-  const { notifyTrade = async () => {} } = deps;
+  const { notifyTrade = async () => {}, _fetchCandles = fetchCandles } = deps;
 
   if (pos.dcaApplied) return;
 
@@ -436,7 +436,7 @@ export async function checkDCA(pos, price, currentAtr, state, env, deps = {}) {
   if (state.peakValue && (state.peakValue - currVal) / state.peakValue > 0.08) return;
 
   try {
-    const candles = await fetchCandles(pos.symbol, "1h", 100);
+    const candles = await _fetchCandles(pos.symbol, "1h", 100);
     if (!candles || candles.length < 50) return;
 
     const closes = candles.map((c) => c.close);
