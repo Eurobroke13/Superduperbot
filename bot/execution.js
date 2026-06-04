@@ -492,9 +492,13 @@ export async function checkDCA(pos, price, currentAtr, state, env, deps = {}) {
 
     const newSlDist = currentAtr * ATR_SL_MULT;
     if (pos.direction === "long") {
-      pos.sl = pos.entryPrice - newSlDist;
+      const slFromEntry = pos.entryPrice - newSlDist;
+      const slFromDca   = price - currentAtr;  // floor: 1 ATR below DCA price
+      pos.sl = Math.min(slFromEntry, slFromDca);
     } else {
-      pos.sl = pos.entryPrice + newSlDist;
+      const slFromEntry = pos.entryPrice + newSlDist;
+      const slFromDca   = price + currentAtr;  // ceiling: 1 ATR above DCA price
+      pos.sl = Math.max(slFromEntry, slFromDca);
     }
 
     if (pos.tpLevels) {

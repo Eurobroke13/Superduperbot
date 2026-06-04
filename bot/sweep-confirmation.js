@@ -52,7 +52,8 @@ export function isConfirmedSweep({ candles, srLevels, direction, atrVal }) {
 
   const recent = candles.slice(-SWEEP_LOOKBACK);
   const volumes = candles.slice(-20).map(c => c.volume || 0);
-  const avgVolume = sma(volumes, volumes.length);
+  const smaArr = sma(volumes, volumes.length);
+  const avgVolume = smaArr[smaArr.length - 1] ?? 0;
 
   if (direction === "long") {
     // Bear-trap: price swept below support, then reclaimed above it

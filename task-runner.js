@@ -21,7 +21,7 @@ async function main() {
       await runBot(env);
       break;
     case "daily-report":
-      await sendDailyReport(env);
+      // disabled — too frequent for Telegram
       break;
     case "weekly-review":
       await sendWeeklyReview(env);
