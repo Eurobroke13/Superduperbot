@@ -3,7 +3,8 @@ import {
   calculatePerformanceMetrics,
   estimateMonthlySpend,
   getApprovalStats,
-  getSetupStats
+  getSetupStats,
+  getSignalDegradationAlerts
 } from "./stats.js";
 import { fetchCandles } from "./market-data.js";
 import { adx, bollingerBands, rsiSeries } from "./indicators.js";
@@ -245,6 +246,115 @@ export async function premarketScan(env, deps) {
   } catch (err) {
     console.error("[PREMARKET]", err.message);
   }
+}
+
+/**
+ * Post-trade analysis pipeline.
+ *
+ * Sends a structured Telegram report with:
+ * - Setup breakdown (WR, EV, count per type)
+ * - Approval breakdown (auto vs claude)
+ * - Hold-time analysis (winners vs losers)
+ * - Top 5 / bottom 5 symbols by total PnL
+ * - Signal degradation alerts (WR < 35% over 20+ trades)
+ *
+ * No Claude API needed — pure data formatting.
+ * Runs weekly (gate: 7-day cooldown via state.lastTradeAnalysisAt).
+ */
+export async function sendTradeAnalysis(env, deps) {
+  const { loadState, saveState, sendTelegram } = deps;
+  const state = await loadState(env);
+
+  const weekAgo = Date.now() - 7 * 86400000;
+  const lastAt = state.lastTradeAnalysisAt ? new Date(state.lastTradeAnalysisAt).getTime() : 0;
+  if (lastAt && Date.now() - lastAt < 7 * 86400000) return;
+
+  const trades = state.trades || [];
+  if (trades.length < 10) {
+    await sendTelegram("📉 Trade Analysis: not enough data yet (need ≥10 trades).", env);
+    return;
+  }
+
+  const recent = trades.filter(t => new Date(t.closedAt).getTime() > weekAgo);
+  const all = trades;
+
+  // ── Setup breakdown ──────────────────────────────────────────────────────────
+  const setupTypes = ["trend", "breakout", "mean-reversion", "liquidity-trap"];
+  const setupLines = setupTypes.map(type => {
+    const s = getSetupStats(all, type);
+    if (!s || s.count < 3) return null;
+    const wr = (s.winRate * 100).toFixed(0);
+    const ev = s.expectancy >= 0 ? `+$${s.expectancy.toFixed(1)}` : `-$${Math.abs(s.expectancy).toFixed(1)}`;
+    return `  ${type}: n=${s.count} WR=${wr}% EV=${ev}`;
+  }).filter(Boolean).join("\n");
+
+  // ── Approval breakdown ────────────────────────────────────────────────────────
+  const approvalLines = ["auto", "claude"].map(type => {
+    const s = getApprovalStats(all, type);
+    if (!s || s.count < 3) return null;
+    const wr = (s.winRate * 100).toFixed(0);
+    const ev = s.expectancy >= 0 ? `+$${s.expectancy.toFixed(1)}` : `-$${Math.abs(s.expectancy).toFixed(1)}`;
+    return `  ${type}: n=${s.count} WR=${wr}% EV=${ev}`;
+  }).filter(Boolean).join("\n");
+
+  // ── Hold-time analysis ────────────────────────────────────────────────────────
+  const winners = all.filter(t => t.pnl > 0 && t.holdHours > 0);
+  const losers  = all.filter(t => t.pnl <= 0 && t.holdHours > 0);
+  const avgHoldWin  = winners.length ? (winners.reduce((s, t) => s + t.holdHours, 0) / winners.length).toFixed(1) : "—";
+  const avgHoldLoss = losers.length  ? (losers.reduce((s, t)  => s + t.holdHours, 0) / losers.length).toFixed(1) : "—";
+
+  // ── Top/bottom symbols ────────────────────────────────────────────────────────
+  const symPnl = {};
+  for (const t of all) {
+    symPnl[t.symbol] = (symPnl[t.symbol] || 0) + t.pnl;
+  }
+  const symSorted = Object.entries(symPnl).sort((a, b) => b[1] - a[1]);
+  const top5    = symSorted.slice(0, 5).map(([s, p]) => `  ${s.replace("-USDT-SWAP", "")}: $${p.toFixed(1)}`).join("\n");
+  const bottom5 = symSorted.slice(-5).reverse().map(([s, p]) => `  ${s.replace("-USDT-SWAP", "")}: $${p.toFixed(1)}`).join("\n");
+
+  // ── Signal degradation alerts ─────────────────────────────────────────────────
+  const degraded = getSignalDegradationAlerts(state);
+  const degradedSection = degraded.length
+    ? `⚠️ DEGRADED SIGNALS:\n${degraded.map(a => `  ${a}`).join("\n")}`
+    : "✅ No degraded signals";
+
+  // ── Weekly summary ────────────────────────────────────────────────────────────
+  const recentPnl = recent.reduce((s, t) => s + t.pnl, 0);
+  const recentWR  = recent.length > 0
+    ? `${((recent.filter(t => t.pnl > 0).length / recent.length) * 100).toFixed(0)}%`
+    : "N/A";
+
+  const metrics = calculatePerformanceMetrics(all);
+  const metricsLine = metrics
+    ? `Sharpe:${metrics.sharpe} PF:${metrics.profitFactor} MaxDD:${metrics.maxDrawdown}%`
+    : "";
+
+  const msg = [
+    `📊 TRADE ANALYSIS (${all.length} total trades)`,
+    `Week: ${recent.length} trades | PnL $${recentPnl.toFixed(2)} | WR ${recentWR}`,
+    metricsLine,
+    "",
+    "SETUP PERFORMANCE:",
+    setupLines || "  no data",
+    "",
+    "APPROVAL PERFORMANCE:",
+    approvalLines || "  no data",
+    "",
+    `HOLD TIME: winners avg ${avgHoldWin}h | losers avg ${avgHoldLoss}h`,
+    "",
+    "TOP 5 SYMBOLS:",
+    top5 || "  no data",
+    "",
+    "BOTTOM 5 SYMBOLS:",
+    bottom5 || "  no data",
+    "",
+    degradedSection
+  ].join("\n");
+
+  await sendTelegram(msg, env);
+
+  state.lastTradeAnalysisAt = new Date().toISOString();
+  await saveState(env, state);
 }
 
 export async function reevaluatePositions(env, deps) {

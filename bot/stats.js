@@ -418,4 +418,98 @@ function std(arr) {
   return Math.sqrt(arr.reduce((sum, x) => sum + (x - m) ** 2, 0) / arr.length);
 }
 
+/**
+ * Kelly-criterion sizing with volatility (ATR) scaling.
+ *
+ * Half-Kelly fraction: f = 0.5 × (b×p − q) / b
+ *   where b = avgWin/avgLoss, p = winRate, q = 1−p
+ *
+ * The Kelly multiplier is normalized against RISK_PCT so the caller gets a
+ * direct scaling factor on top of the existing risk budget.
+ * Clamped to [0.5, 1.5] to prevent extreme position sizes.
+ *
+ * ATR volatility scaling:
+ *   - current ATR > 1.5× median historical → scale down (high vol environment)
+ *   - current ATR < 0.7× median historical → scale up slightly (compression phase)
+ *
+ * @param {object|null} stats  output of getSetupStats / getApprovalStats
+ * @param {number} currentAtr  ATR at entry
+ * @param {number[]} atrHistory  rolling ATR values for this symbol (last 30)
+ * @returns {{ mult:number, reason:string }}
+ */
+export function computeKellySizing(stats, currentAtr, atrHistory = []) {
+  if (!stats || stats.count < 20 || stats.avgLoss === 0) {
+    return { mult: 1.0, reason: "kelly:no-data" };
+  }
+
+  const { winRate, avgWin, avgLoss } = stats;
+  const b = avgWin / avgLoss;
+  const rawKelly = (b * winRate - (1 - winRate)) / b;
+  const halfKelly = rawKelly / 2;
+
+  // Normalize: our baseline risk is RISK_PCT. Kelly says bet halfKelly of capital.
+  // We translate: kellyMult = halfKelly / RISK_PCT, but clamp hard.
+  const { RISK_PCT } = { RISK_PCT: 0.03 };
+  const kellyMult = Math.max(0.5, Math.min(1.5, halfKelly / RISK_PCT));
+
+  let atrMult = 1.0;
+  let atrNote = "atr:neutral";
+  if (atrHistory.length >= 10 && currentAtr > 0) {
+    const sorted = [...atrHistory].sort((a, b) => a - b);
+    const medianAtr = sorted[Math.floor(sorted.length / 2)];
+    if (medianAtr > 0) {
+      const ratio = currentAtr / medianAtr;
+      if (ratio > 1.5)      { atrMult = 0.75; atrNote = `atr:high(${ratio.toFixed(2)}x)`; }
+      else if (ratio > 1.2) { atrMult = 0.90; atrNote = `atr:elevated(${ratio.toFixed(2)}x)`; }
+      else if (ratio < 0.7) { atrMult = 1.10; atrNote = `atr:compressed(${ratio.toFixed(2)}x)`; }
+    }
+  }
+
+  return {
+    mult: Math.max(0.5, Math.min(1.5, kellyMult * atrMult)),
+    reason: `kelly:${halfKelly.toFixed(3)} mult:${kellyMult.toFixed(2)} ${atrNote}`
+  };
+}
+
+/**
+ * Tracks ATR values per symbol for volatility-adjusted sizing.
+ * Keeps a rolling window of the last 30 ATR values.
+ * Call this each time a position is opened.
+ *
+ * @param {object} state
+ * @param {string} symbol
+ * @param {number} atrVal
+ */
+export function trackAtrHistory(state, symbol, atrVal) {
+  if (!Number.isFinite(atrVal) || atrVal <= 0) return;
+  if (!state.atrHistory) state.atrHistory = {};
+  if (!state.atrHistory[symbol]) state.atrHistory[symbol] = [];
+  state.atrHistory[symbol].push(atrVal);
+  if (state.atrHistory[symbol].length > 30) {
+    state.atrHistory[symbol] = state.atrHistory[symbol].slice(-30);
+  }
+}
+
+/**
+ * Checks each signal in state.signalStats for degradation.
+ * Returns an array of alert strings for signals where WR has dropped below
+ * threshold over the last N trades.
+ *
+ * @param {object} state
+ * @param {{ minCount:number, wrThreshold:number }} opts
+ * @returns {string[]}
+ */
+export function getSignalDegradationAlerts(state, { minCount = 20, wrThreshold = 0.35 } = {}) {
+  const alerts = [];
+  const signalStats = state.signalStats || {};
+  for (const [signal, s] of Object.entries(signalStats)) {
+    if (!s || s.count < minCount) continue;
+    const wr = s.wins / s.count;
+    if (wr < wrThreshold) {
+      alerts.push(`${signal}: ${s.count} trades WR=${(wr * 100).toFixed(1)}% (below ${(wrThreshold * 100).toFixed(0)}%)`);
+    }
+  }
+  return alerts;
+}
+
 export { MONTHLY_BUDGET_USD };

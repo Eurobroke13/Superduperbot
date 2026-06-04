@@ -74,6 +74,7 @@ import {
   applyMrGate,
   applySyncFilters,
   buildTopUnqualified,
+  buildRegimeConsensus,
   checkMidRunDrawdown,
   claudeSpendMode,
   compute4hBias,
@@ -82,7 +83,8 @@ import {
   resolveClaudeFallback,
   resolveClaudeValidations,
   routeToApprovalLists,
-  selectTopSignals
+  selectTopSignals,
+  trimToClosedCandles
 } from "./runner-utils.js";
 export {
   applyBearShort15m,
@@ -92,6 +94,7 @@ export {
   applyMrGate,
   applySyncFilters,
   buildTopUnqualified,
+  buildRegimeConsensus,
   checkMidRunDrawdown,
   claudeSpendMode,
   compute4hBias,
@@ -100,7 +103,8 @@ export {
   resolveClaudeFallback,
   resolveClaudeValidations,
   routeToApprovalLists,
-  selectTopSignals
+  selectTopSignals,
+  trimToClosedCandles
 };
 
 const DECISION_LOG_LIMIT = 150;
@@ -535,26 +539,34 @@ async function phaseRegimeAndExits(env, state, deps) {
   const prevLabel = state.lastRegime?.label;
   const regime = detectRegime(btcDaily, state);
 
-  // ── 4H intraday regime override ─────────────────────────────────────────────
-  // Daily HMM misses intra-day flips. If 4H structure contradicts the daily
-  // regime for the last 3 candles, treat current session as sideways.
+  // ── Multi-TF regime consensus ────────────────────────────────────────────────
+  // Daily HMM alone is noisy. Require ≥2 of 3 timeframes (daily, 4H, 1H) to
+  // agree before committing to a directional label.  Bear also requires
+  // markovProb ≥ 0.55 to confirm.  Disagreement defaults to "sideways".
   try {
-    const btc4h = await fetchCandles("BTC-USDT-SWAP", "4h", 60);
-    if (btc4h && btc4h.length >= 20) {
-      const { ema } = await import("./indicators.js");
-      const h4Bias = compute4hBias(btc4h, { ema });
-      regime.h4Bias = h4Bias;
+    const { ema } = await import("./indicators.js");
+    const [btc4h, btc1h] = await Promise.all([
+      fetchCandles("BTC-USDT-SWAP", "4h", 60),
+      fetchCandles("BTC-USDT-SWAP", "1h", 60)
+    ]);
 
-      if (h4Bias !== "sideways" && h4Bias !== regime.label) {
-        console.log(`[REGIME] 4H bias (${h4Bias}) contradicts daily (${regime.label}) — overriding to sideways`);
-        regime.label = "sideways";
-        regime.h4Override = true;
-      } else {
-        console.log(`[REGIME] 4H bias: ${h4Bias} (consistent with daily ${regime.label})`);
-      }
+    const h4Bias = btc4h && btc4h.length >= 20 ? compute4hBias(btc4h, { ema }) : "sideways";
+    const h1Bias = btc1h && btc1h.length >= 20 ? compute4hBias(btc1h, { ema }) : "sideways";
+
+    regime.h4Bias = h4Bias;
+    regime.h1Bias = h1Bias;
+
+    const consensus = buildRegimeConsensus(regime.label, h4Bias, h1Bias, regime.markovProb);
+    if (consensus.label !== regime.label) {
+      console.log(`[REGIME] Consensus override: ${regime.label} → ${consensus.label} (${consensus.consensus})`);
+      regime.label = consensus.label;
+      regime.consensusOverride = true;
+    } else {
+      console.log(`[REGIME] Consensus confirmed: ${regime.label} (${consensus.consensus})`);
     }
+    regime.consensusVotes = consensus.votes;
   } catch (err) {
-    console.warn("[REGIME] 4H override check failed:", err.message);
+    console.warn("[REGIME] Consensus check failed:", err.message);
   }
 
   state.lastRegime = regime;

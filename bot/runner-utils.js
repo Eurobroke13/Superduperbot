@@ -60,6 +60,68 @@ export function applySyncFilters(candidate, { regimeLabel, regimeStats } = {}) {
 }
 
 /**
+ * Multi-timeframe regime consensus.
+ *
+ * The daily HMM alone is noisy — it can label "bear" on a strong uptrend.
+ * This function requires at least 2 of 3 timeframes (daily, 4H, 1H) to agree
+ * before committing to a directional label.  The "cautious default" when TFs
+ * disagree is "sideways", which keeps entry thresholds elevated but doesn't
+ * block all trades.
+ *
+ * Extra guard: bear label is only confirmed when markovProb ≥ 0.55 — a low
+ * probability suggests the Markov chain is uncertain and we should not act on it.
+ *
+ * @param {string} dailyLabel   "bull"|"bear"|"sideways" from HMM+daily
+ * @param {string} h4Bias       "bull"|"bear"|"sideways" from compute4hBias
+ * @param {string} h1Bias       "bull"|"bear"|"sideways" from compute4hBias on 1H
+ * @param {number} markovProb   Markov transition probability [0,1]
+ * @returns {{ label:string, consensus:string, votes:object }}
+ */
+export function buildRegimeConsensus(dailyLabel, h4Bias, h1Bias, markovProb = 0.5) {
+  const tfs = [dailyLabel, h4Bias, h1Bias];
+  const bullVotes = tfs.filter(l => l === "bull").length;
+  const bearVotes = tfs.filter(l => l === "bear").length;
+
+  let label;
+  if (bearVotes >= 2 && markovProb >= 0.55) {
+    label = "bear";
+  } else if (bullVotes >= 2) {
+    label = "bull";
+  } else {
+    label = "sideways";
+  }
+
+  return {
+    label,
+    consensus: `d:${dailyLabel} 4h:${h4Bias} 1h:${h1Bias} markov:${markovProb.toFixed(2)}`,
+    votes: { bull: bullVotes, bear: bearVotes, sideways: tfs.filter(l => l === "sideways").length }
+  };
+}
+
+/**
+ * Returns the closed-candle slice of a candle array.
+ * The last candle from OKX is the currently forming candle.  Using it for
+ * signal generation causes false signals that vanish by candle close.
+ * Strip it when the candle has been open for fewer than CONFIRM_MINUTES.
+ *
+ * @param {Array<{time:number}>} candles   sorted oldest→newest
+ * @param {number} timeframeMs             candle duration in milliseconds
+ * @param {number} [confirmMs=900000]      15 min buffer before trusting close
+ * @returns {Array}  safe closed-candle slice
+ */
+export function trimToClosedCandles(candles, timeframeMs, confirmMs = 15 * 60 * 1000) {
+  if (!candles || candles.length < 2) return candles || [];
+  const last = candles[candles.length - 1];
+  const lastOpenTime = last.time;
+  const expectedCloseTime = lastOpenTime + timeframeMs;
+  if (Date.now() < expectedCloseTime + confirmMs) {
+    // Still forming — drop it
+    return candles.slice(0, -1);
+  }
+  return candles;
+}
+
+/**
  * Returns true when today's realized PnL breaches the -1.5% mid-run halt.
  */
 export function checkMidRunDrawdown(state, todayStr) {
