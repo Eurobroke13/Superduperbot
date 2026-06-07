@@ -83,7 +83,12 @@ export function buildRegimeConsensus(dailyLabel, h4Bias, h1Bias, markovProb = 0.
   const bearVotes = tfs.filter(l => l === "bear").length;
 
   let label;
-  if (bearVotes >= 2 && markovProb >= 0.55) {
+  if (bearVotes === 3) {
+    // All three TFs agree bear — trust the vote unconditionally.
+    // markovProb gate is skipped because unanimous agreement outweighs HMM uncertainty.
+    label = "bear";
+  } else if (bearVotes === 2 && markovProb >= 0.55) {
+    // Split but Markov confirms the bear transition
     label = "bear";
   } else if (bullVotes >= 2) {
     label = "bull";

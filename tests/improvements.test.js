@@ -18,6 +18,12 @@ import {
 
 // ── buildRegimeConsensus ───────────────────────────────────────────────────────
 
+test("buildRegimeConsensus - 3/3 agree bear → bear regardless of markovProb", () => {
+  // Unanimous: trust the vote even when HMM returns exactly 0.50
+  const r = buildRegimeConsensus("bear", "bear", "bear", 0.50);
+  assert.equal(r.label, "bear");
+});
+
 test("buildRegimeConsensus - 3/3 agree bear + high markov → bear", () => {
   const r = buildRegimeConsensus("bear", "bear", "bear", 0.70);
   assert.equal(r.label, "bear");

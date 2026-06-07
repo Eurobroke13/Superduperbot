@@ -216,8 +216,15 @@ export async function premarketScan(env, deps) {
     sendTelegram
   } = deps;
   const state = await loadState(env);
-  const regime = state.lastRegime;
 
+  // Gate: fire at most once per 23 hours so daily cron doesn't spam
+  const lastAt = state.lastPremarketAt ? new Date(state.lastPremarketAt).getTime() : 0;
+  if (Date.now() - lastAt < 23 * 60 * 60 * 1000) {
+    console.log("[PREMARKET] Skipped — ran within last 23h");
+    return;
+  }
+
+  const regime = state.lastRegime;
   const btc = await fetchCandles("BTC-USDT-SWAP", "4h", 50);
   if (!btc || btc.length < 20) return;
 
@@ -242,6 +249,7 @@ export async function premarketScan(env, deps) {
     const scan = await callClaudePlaintext(prompt, env, state, 250);
     await sendTelegram(`🌅 Pre-Market\n\n${scan}`, env);
     state.dailyBias = scan;
+    state.lastPremarketAt = new Date().toISOString();
     await saveState(env, state);
   } catch (err) {
     console.error("[PREMARKET]", err.message);

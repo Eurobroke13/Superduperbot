@@ -597,7 +597,31 @@ async function phaseRegimeAndExits(env, state, deps) {
   }
 
   if (prevLabel && prevLabel !== regime.label) {
-    await sendRegimeChangeAlert(env, state, prevLabel, regime);
+    // Auto-tighten positions whose direction is now against the regime.
+    // When bear → sideways/bull: shorts lose their thesis → tighten SL to breakeven.
+    // When bull → sideways/bear: longs lose their thesis → tighten SL to breakeven.
+    // We tighten rather than force-close to let the position exit naturally via SL
+    // if price is already at entry, and avoid closing into a brief whipsaw.
+    const tightenedSymbols = [];
+    for (const pos of Object.values(state.positions)) {
+      const shortInvalidated = pos.direction === "short" && (regime.label === "bull" || (prevLabel === "bear" && regime.label === "sideways"));
+      const longInvalidated  = pos.direction === "long"  && (regime.label === "bear" || (prevLabel === "bull" && regime.label === "sideways"));
+      if (shortInvalidated || longInvalidated) {
+        const prevSl = pos.sl;
+        if (pos.direction === "short") {
+          // Tighten: SL moves down toward entry (tighter ceiling)
+          pos.sl = Math.min(pos.sl, pos.entryPrice);
+        } else {
+          // Tighten: SL moves up toward entry (tighter floor)
+          pos.sl = Math.max(pos.sl, pos.entryPrice);
+        }
+        if (pos.sl !== prevSl) {
+          tightenedSymbols.push(`${pos.symbol} ${pos.direction} SL ${prevSl.toFixed(6)}→${pos.sl.toFixed(6)}`);
+          console.log(`[REGIME] Auto-tightened ${pos.symbol} ${pos.direction} to breakeven (${prevLabel}→${regime.label})`);
+        }
+      }
+    }
+    await sendRegimeChangeAlert(env, state, prevLabel, regime, tightenedSymbols);
   }
 
   const newsResult = await fetchCryptoPanicNews(state);

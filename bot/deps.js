@@ -52,13 +52,16 @@ async function claudeBatchAnalysis(params) {
   });
 }
 
-async function sendRegimeChangeAlert(env, state, prevLabel, regime) {
+async function sendRegimeChangeAlert(env, state, prevLabel, regime, tightenedSymbols = []) {
   const positions = Object.values(state.positions);
-  const msg = `🔄 REGIME: ${prevLabel} → ${regime.label}\nHMM:${regime.hmmLabel} PI:${regime.piCycle} Markov:${regime.markovProb.toFixed(3)}\nOpen: ${positions.length} positions`;
+  const tightenNote = tightenedSymbols.length
+    ? `\n⚡ Auto-tightened to breakeven:\n${tightenedSymbols.map(s => `  ${s}`).join("\n")}`
+    : "";
+  const msg = `🔄 REGIME: ${prevLabel} → ${regime.label}\nHMM:${regime.hmmLabel} PI:${regime.piCycle} Markov:${regime.markovProb.toFixed(3)}\nOpen: ${positions.length} positions${tightenNote}`;
 
   if (env.ANTHROPIC_API_KEY) {
     try {
-      const prompt = `Crypto regime changed ${prevLabel}→${regime.label}. HMM:${regime.hmmLabel} PI:${regime.piCycle} Markov:${regime.markovProb.toFixed(3)}. ${positions.length} open positions: ${positions.map(p => `${p.symbol} ${p.direction}`).join(", ") || "none"}. In 100 words: implications and action items. Plain text.`;
+      const prompt = `Crypto regime changed ${prevLabel}→${regime.label}. HMM:${regime.hmmLabel} PI:${regime.piCycle} Markov:${regime.markovProb.toFixed(3)}. ${positions.length} open positions: ${positions.map(p => `${p.symbol} ${p.direction}`).join(", ") || "none"}. ${tightenedSymbols.length ? `Already auto-tightened to breakeven: ${tightenedSymbols.join(", ")}.` : ""} In 100 words: implications and any remaining action items. Plain text.`;
       const analysis = await callClaudePlaintext(prompt, env, state, 200);
       await sendTelegram(`${msg}\n\n${analysis}`, env);
     } catch (err) {
