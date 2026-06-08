@@ -190,8 +190,13 @@ export function rankTradeable(tradeable, { tickerMap = {}, volumeMap = {}, regim
  */
 export function selectTopSignals(candidates, percentile = 0.2) {
   const list = candidates || [];
+  if (list.length === 0) return [];
   const scores = list.map(c => c.score).sort((a, b) => b - a);
-  const cutoff = scores[Math.floor(scores.length * percentile)] ?? -Infinity;
+  // Always pass at least 5 candidates (or all if fewer), then apply percentile
+  const minCount = Math.min(5, list.length);
+  const percentileIdx = Math.floor(scores.length * percentile);
+  const cutoffIdx = Math.max(minCount - 1, percentileIdx);
+  const cutoff = scores[cutoffIdx] ?? -Infinity;
   return list.filter(c => c.score >= cutoff);
 }
 
