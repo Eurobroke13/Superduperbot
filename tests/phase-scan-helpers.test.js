@@ -15,11 +15,26 @@ import {
 
 // ── selectTopSignals ────────────────────────────────────────────────────────
 
-test("selectTopSignals - keeps candidates at/above the percentile cutoff", () => {
+test("selectTopSignals - keeps at least 5 candidates when pool is small", () => {
   const cands = [10, 8, 6, 4, 2].map((score, i) => ({ symbol: `S${i}`, score }));
-  // 5 scores, floor(5*0.2)=1 -> cutoff = sorted-desc[1] = 8
+  // 5 candidates: minCount=5 overrides the percentile cutoff, so all 5 pass
   const top = selectTopSignals(cands, 0.2);
-  assert.deepEqual(top.map(c => c.score), [10, 8]);
+  assert.deepEqual(top.map(c => c.score), [10, 8, 6, 4, 2]);
+});
+
+test("selectTopSignals - applies percentile cutoff on large pools, minimum 5 pass", () => {
+  // 10 candidates, percentile gives index 2 but minCount=5 wins → top 5 pass
+  const cands = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10].map((score, i) => ({ symbol: `S${i}`, score }));
+  const top = selectTopSignals(cands, 0.2);
+  assert.deepEqual(top.map(c => c.score), [100, 90, 80, 70, 60]);
+});
+
+test("selectTopSignals - strict percentile dominates when pool is large enough", () => {
+  // 30 candidates, floor(30*0.2)=6 > 5-1=4 → percentile wins, top 7 pass (scores >= sorted[6])
+  const cands = Array.from({ length: 30 }, (_, i) => ({ symbol: `S${i}`, score: 30 - i }));
+  const top = selectTopSignals(cands, 0.2);
+  assert.ok(top.length === 7, `expected 7, got ${top.length}`);
+  assert.equal(top[0].score, 30);
 });
 
 test("selectTopSignals - empty input returns empty array", () => {

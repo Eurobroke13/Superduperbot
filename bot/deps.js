@@ -33,7 +33,9 @@ import { getApprovalStats, getSetupStats } from "./stats.js";
 
 function fallbackResult(candidates) {
   const v = {};
-  for (const c of (candidates || [])) v[c.symbol] = { approved: c.score >= 10, reason: "auto-fallback" };
+  // Approve candidates that cleared the normal entry threshold (≥4) with a small buffer.
+  // score>=10 was far too high — typical good candidates score 4-6.
+  for (const c of (candidates || [])) v[c.symbol] = { approved: c.score >= 5, reason: "auto-fallback" };
   return { newsBlocked: [], newsBoosted: [], newsSummary: "", validations: v, journals: {} };
 }
 
