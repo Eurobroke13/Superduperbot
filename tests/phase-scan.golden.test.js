@@ -69,8 +69,8 @@ function makeState(overrides = {}) {
     newsBoosted: [],
     trades: [],
     _pendingTrades: [],
-    lastPhase: 1,
-    lastRegime: { label: "bull", strength: 0.7 },
+    lastPhase: 0,
+    lastRegime: { label: "bull", strength: 0.7, refreshedAt: new Date().toISOString() },
     lastScanSummary: null,
     runCount: 0,
     tokenUsage: { input: 0, output: 0 },
@@ -143,7 +143,7 @@ test("phaseScan golden - produces lastScanSummary with required shape", async ()
 });
 
 test("phaseScan golden - regime label is passed through", async () => {
-  const state = makeState({ lastRegime: { label: "sideways", strength: 0.5 } });
+  const state = makeState({ lastRegime: { label: "sideways", strength: 0.5, refreshedAt: new Date().toISOString() } });
   const deps = makeDeps({ depOverrides: { loadState: async () => state } });
   await runBot(ENV, deps);
   assert.equal(state.lastScanSummary?.regime, "sideways");
@@ -245,16 +245,20 @@ test("phaseScan golden - all-slots-full guard skips scan", async () => {
 });
 
 test("phaseScan golden - no regime skips the scan silently", async () => {
+  // _phaseRegimeAndExits is a no-op seam so the test doesn't hit real OKX APIs.
+  // With no lastRegime set, phaseScan should return early without setting lastScanSummary.
   const state = makeState({ lastRegime: null });
-  const deps = makeDeps({ depOverrides: { loadState: async () => state } });
+  const deps = makeDeps({ depOverrides: {
+    loadState: async () => state,
+    _phaseRegimeAndExits: async () => {} // leaves state.lastRegime = null
+  } });
   await runBot(ENV, deps);
   // No summary, no crash.
   assert.equal(state.lastScanSummary, null);
 });
 
 test("phaseScan golden - scoreSymbol called once per symbol in batch", async () => {
-  // Phase 1 calls phaseScan(0, 0.5), so with 4 symbols the slice covers 2.
-  // Verify every symbol that enters the batch gets scored exactly once.
+  // Full scan (0, 1.0): all 4 symbols should be scored exactly once.
   const called = [];
   const state = makeState();
   const symbols = ["A-USDT-SWAP", "B-USDT-SWAP", "C-USDT-SWAP", "D-USDT-SWAP"];
@@ -267,8 +271,8 @@ test("phaseScan golden - scoreSymbol called once per symbol in batch", async () 
     }
   });
   await runBot(ENV, deps);
-  // Exactly 2 symbols should have been scored (the [0, 0.5) half of 4).
-  assert.equal(called.length, 2, "scored half the list");
+  // All 4 symbols scored (full pass, no half-window).
+  assert.equal(called.length, 4, "scored full list");
   // Each symbol scored at most once (no duplicate calls).
   assert.equal(new Set(called).size, called.length, "no duplicate scoring");
 });
