@@ -1009,8 +1009,13 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
   }
 
-  // ── MR: apply 15m-based sizing gradient for mean-reversion candidates ──
+  // ── MR: fetch 15m candles then apply go/no-go gate ──
   for (const c of topSignals) {
+    if (c.score === 0 || c.setupType !== "mean-reversion") continue;
+    try {
+      const candles15m = await _fetchCandles(c.symbol, "15m", 50);
+      if (candles15m && candles15m.length >= 12) c._candles15m = candles15m;
+    } catch (_) { /* proceed without 15m — gate will penalize */ }
     const mr = applyMrGate(c, confirmMeanReversionEntry);
     if (mr.blocked) {
       c.score = 0;
