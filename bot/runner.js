@@ -220,33 +220,33 @@ export async function runBot(env, deps) {
   await checkAllExits(env, state, deps);
   await processPendingEntries(env, state, deps);
 
-  const phase = state.lastPhase || 0;
-  console.log(`[PHASE ${phase}]`);
+  // Single-pass: regime refresh + full scan every run.
+  // The old 3-phase rotation caused the bot to never scan when lastPhase failed
+  // to advance (ran Phase 0 every time). Now every 15-min run does both.
+  // Regime refresh is skipped when a custom _phaseRegimeAndExits seam is not
+  // provided and the last regime was refreshed less than 14 minutes ago.
+  state.lastPhase = 0;
 
   try {
-    switch (phase) {
-      case 0:
-        if (!FAST_SCAN) {
-          await phaseRegimeAndExits(env, state, deps);
-        } else {
-          await phaseExitsOnly(env, state, deps);
-        }
-        state.lastPhase = 1;
-        break;
-      case 1:
-        await phaseScan(env, state, 0, 0.5, deps);
-        state.lastPhase = 2;
-        break;
-      case 2:
-        await phaseScan(env, state, 0.5, 1.0, deps);
-        state.lastPhase = 0;
-        break;
-      default:
-        state.lastPhase = 0;
+    const regimeAgeMs = state.lastRegime?.refreshedAt
+      ? Date.now() - new Date(state.lastRegime.refreshedAt).getTime()
+      : Infinity;
+    const regimeFresh = regimeAgeMs < 14 * 60 * 1000;
+    // Injectable seam for tests; real runs use phaseRegimeAndExits.
+    const _runPhaseRegime = deps._phaseRegimeAndExits ?? phaseRegimeAndExits;
+
+    if (!FAST_SCAN) {
+      // Refresh regime every run unless it was just refreshed (e.g. tests pre-set it).
+      // Always refresh if no regime cached yet (first run).
+      if (!regimeFresh || !state.lastRegime) {
+        await _runPhaseRegime(env, state, deps);
+      }
+    } else {
+      await phaseExitsOnly(env, state, deps);
     }
+    await phaseScan(env, state, 0, 1.0, deps);
   } catch (err) {
-    console.error(`[PHASE ${phase}] Error:`, err.message || err);
-    state.lastPhase = (phase + 1) % 3;
+    console.error(`[RUN] Error:`, err.message || err);
   }
 
   const drift = checkPerformanceDrift(state);
@@ -257,8 +257,8 @@ export async function runBot(env, deps) {
   const liveHealth = calculateRecentLiveHealth(state, 100);
   state.lastRunSummary = {
     runAt: new Date().toISOString(),
-    phaseStarted: phase,
-    nextPhase: state.lastPhase,
+    phaseStarted: 0,
+    nextPhase: 0,
     driftStatus: state.driftStatus?.status || (drift ? drift.status : "healthy"),
     baseline: LIVE_BASELINE,
     liveHealth,
@@ -569,6 +569,7 @@ async function phaseRegimeAndExits(env, state, deps) {
     console.warn("[REGIME] Consensus check failed:", err.message);
   }
 
+  regime.refreshedAt = new Date().toISOString();
   state.lastRegime = regime;
   console.log(`[REGIME] ${regime.label} | HMM:${regime.hmmLabel} | PI:${regime.piCycle} | Markov:${regime.markovProb.toFixed(3)}`);
 

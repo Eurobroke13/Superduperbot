@@ -28,7 +28,7 @@ async function main() {
       await sendWeeklyReview(env);
       break;
     case "premarket":
-      await premarketScan(env);
+      // disabled — sends Telegram daily summaries the user doesn't want
       break;
     case "reevaluate":
       await reevaluatePositions(env);
