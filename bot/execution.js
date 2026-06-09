@@ -138,7 +138,12 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
 
   if (setupType === "breakout") sizeMultiplier *= 1.15;
   else if (setupType === "liquidity-trap") sizeMultiplier *= 1.0;
-  else if (setupType === "mean-reversion") sizeMultiplier *= 0.85;
+  else if (setupType === "mean-reversion") {
+    // positionSizeMultiplier from the MR gate (e.g. 0.50 for unconfirmed entries) takes
+    // precedence over the flat 0.85 default — it's already calibrated per confirmation quality.
+    const mrMult = candidate.positionSizeMultiplier;
+    sizeMultiplier *= (mrMult != null && mrMult > 0) ? mrMult : 0.85;
+  }
 
   if (drawdown > 0.10) sizeMultiplier *= 0.7;
 
