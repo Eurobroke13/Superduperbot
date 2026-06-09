@@ -481,7 +481,7 @@ export function check15mReversal(candles15m, direction) {
     }
   }
 
-  return { confirmed: confidence >= 2.0, confidence, patterns };
+  return { confirmed: confidence >= 1.5, confidence, patterns };
 }
 
 
