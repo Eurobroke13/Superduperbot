@@ -595,8 +595,8 @@ export function confirmMeanReversionEntry(candidate, candles15m) {
     };
   }
 
-  // 15m NOT confirmed but 1h score very strong → enter at half size
-  if (candidate.score >= 7.0) {
+  // 15m NOT confirmed but 1h score strong enough → enter at half size
+  if (candidate.score >= 5.5) {
     return {
       enter: true,
       reason: `mr-15m-unconfirmed-but-strong(${candidate.score})`,

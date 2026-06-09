@@ -40,6 +40,7 @@ async function sendTelegramAlert(text) {
 let lastDailySummaryDate = null;
 
 async function maybeSendDailySummary() {
+  if (process.env.DISABLE_DAILY_SUMMARY === "true") return;
   const today = new Date().toISOString().slice(0, 10);
   if (lastDailySummaryDate === today) return;
   lastDailySummaryDate = today;

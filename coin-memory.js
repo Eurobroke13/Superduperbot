@@ -328,8 +328,8 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
     return (
       `--- CANDIDATE ${i + 1}: ${c.symbol} ---\n` +
       `Direction: ${c.signal.toUpperCase()} | Score: ${c.score} | Setup: ${c.setupType}\n` +
-      `Price: $${c.price.toFixed(4)} | RSI: ${c.rsiVal.toFixed(0)} | ` +
-      `Fisher: ${c.fisherVal.toFixed(2)} | ADX: ${c.adxResult?.adx?.toFixed(0)||"?"} | ` +
+      `Price: $${c.price?.toFixed(4)||"?"} | RSI: ${c.rsiVal?.toFixed(0)||"?"} | ` +
+      `Fisher: ${c.fisherVal?.toFixed(2)||"?"} | ADX: ${c.adxResult?.adx?.toFixed(0)||"?"} | ` +
       `4H: ${c.h4Trend} | OBV: ${c.obvDiv}\n` +
       `Galaxy: ${c.lunarGalaxyScore||"?"} | Funding: ${c.fundingRate!=null?(c.fundingRate*100).toFixed(3)+"%":"?"}\n` +
       `Signals: [${signalPerf}]\n` +
