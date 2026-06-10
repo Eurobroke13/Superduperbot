@@ -326,7 +326,8 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   };
 }
 
-export function checkTranches(pos, price, state) {
+export async function checkTranches(pos, price, state, deps = {}) {
+  const { notifyTrade = async () => {} } = deps;
   if (!pos.tranches) return;
 
   const plan = pos.tranches.plan;
@@ -380,6 +381,16 @@ export function checkTranches(pos, price, state) {
           sl: roundValue(pos.sl),
           cashAfter: roundValue(state.cash, 2)
         });
+        await notifyTrade("TRANCHE", {
+          symbol: pos.symbol,
+          direction: pos.direction,
+          tranche: 2,
+          price,
+          addedMargin: t2Notional,
+          totalMargin: pos.notional,
+          avgEntryPrice: pos.entryPrice,
+          sl: pos.sl
+        }, state, deps.env);
       }
     }
   }
@@ -433,6 +444,16 @@ export function checkTranches(pos, price, state) {
           sl: roundValue(pos.sl),
           cashAfter: roundValue(state.cash, 2)
         });
+        await notifyTrade("TRANCHE", {
+          symbol: pos.symbol,
+          direction: pos.direction,
+          tranche: 3,
+          price,
+          addedMargin: t3Notional,
+          totalMargin: pos.notional,
+          avgEntryPrice: pos.entryPrice,
+          sl: pos.sl
+        }, state, deps.env);
       }
     }
   }

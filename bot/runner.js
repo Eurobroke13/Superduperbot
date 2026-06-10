@@ -417,7 +417,7 @@ async function checkAllExits(env, state, deps) {
         continue;
       }
 
-      checkTranches(pos, price, state);
+      await checkTranches(pos, price, state, { notifyTrade, env });
       await checkDCA(pos, price, atrVal, state, env, { notifyTrade });
 
       // ── Fix 1: mean-reversion custom exit ──
