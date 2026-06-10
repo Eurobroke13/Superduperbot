@@ -22,6 +22,9 @@ async function notifyTrade(action, details, state, env) {
     msg = `${emoji} OPEN ${dir} ${details.symbol}\nEntry:$${details.price.toFixed(4)} SL:$${details.sl.toFixed(4)} TP:$${details.tp.toFixed(4)}\nScore:${details.score}\n[${(details.reasons || []).slice(0, 5).join(",")}]`;
   } else if (action === "PARTIAL") {
     msg = `📊 PARTIAL ${(details.direction || "").toUpperCase()} ${details.symbol}\n${((details.pct || 0) * 100).toFixed(0)}% closed @$${(details.exitPrice || 0).toFixed(4)}\n${details.reason}\nPnL:$${(details.pnl || 0).toFixed(2)}`;
+  } else if (action === "TRANCHE") {
+    const dir = (details.direction || "").toUpperCase();
+    msg = `📈 TRANCHE ${details.tranche} ${dir} ${details.symbol}\n+$${(details.addedMargin || 0).toFixed(2)} @$${(details.price || 0).toFixed(4)} | Total:$${(details.totalMargin || 0).toFixed(2)}\nAvg:$${(details.avgEntryPrice || 0).toFixed(4)} SL→$${(details.sl || 0).toFixed(4)}`;
   } else if (action === "DCA") {
     msg = `📉 DCA ${(details.direction || "").toUpperCase()} ${details.symbol}\n+50% @$${(details.price || 0).toFixed(4)} | Avg:$${(details.entryPrice || 0).toFixed(4)}\nMargin:$${(details.notional || 0).toFixed(2)}`;
   } else {
