@@ -1063,7 +1063,29 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const longs = qualified.filter(c => c.signal === "long").sort((a, b) => b.score - a.score);
   const shorts = qualified.filter(c => c.signal === "short").sort((a, b) => b.score - a.score);
 
-  const toConsider = interleaveLongsShorts(longs, shorts, slotsAvailable);
+  const interleaved = interleaveLongsShorts(longs, shorts, slotsAvailable);
+
+  // ── Mean-reversion concurrency cap ───────────────────────────────────────────
+  // MR entries fade the same extremes and so correlate heavily — several at once
+  // is really one concentrated bet. Cap total concurrent MR at 2 across already-
+  // open positions plus this run's picks (highest-scored MR kept, since interleave
+  // preserves the per-side score ordering).
+  const MAX_CONCURRENT_MR = 2;
+  const openMR = Object.values(state.positions).filter(p => p.setupType === "mean-reversion").length;
+  let mrBudget = Math.max(0, MAX_CONCURRENT_MR - openMR);
+  const toConsider = [];
+  for (const candidate of interleaved) {
+    if (candidate.setupType === "mean-reversion") {
+      if (mrBudget <= 0) {
+        finalizeDecision(candidate, "rejected", "mr-concurrency-cap", {
+          details: { openMR, cap: MAX_CONCURRENT_MR }
+        });
+        continue;
+      }
+      mrBudget--;
+    }
+    toConsider.push(candidate);
+  }
   for (const candidate of toConsider) consideredSet.add(candidate.symbol);
 
   const { autoList, claudeList, decisions: routingDecisions } = routeToApprovalLists(toConsider, {

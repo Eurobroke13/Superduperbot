@@ -1157,6 +1157,27 @@ export function autoApproveSignal(candidate) {
   return h4Aligned && vwapAligned && adxAligned;
 }
 
+// Approximate correlation clusters (no live correlation matrix available).
+// Coins inside one cluster tend to move together, so N same-direction positions
+// in the same cluster is really ~1 concentrated bet, not N diversified ones.
+const CORRELATION_CLUSTERS = {
+  majors:    ["BTC", "ETH"],
+  l1:        ["SOL", "AVAX", "NEAR", "ADA", "DOT", "ATOM", "APT", "SUI", "SEI", "TIA", "INJ"],
+  l2:        ["ARB", "OP", "MATIC", "STRK", "ZK", "MANTA", "METIS"],
+  memes:     ["DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI", "MEW", "POPCAT", "BRETT", "MOG"],
+  ai:        ["FET", "RENDER", "TAO", "WLD", "AGIX", "ARKM", "AI"],
+  defi:      ["UNI", "AAVE", "MKR", "LDO", "CRV", "COMP", "SNX", "DYDX", "PENDLE"],
+};
+const MAX_PER_CLUSTER_SAME_DIR = 2;
+
+function clusterOf(symbol) {
+  const base = (symbol || "").split("-")[0].toUpperCase();
+  for (const [name, members] of Object.entries(CORRELATION_CLUSTERS)) {
+    if (members.includes(base)) return name;
+  }
+  return null; // uncorrelated / unknown — no cluster cap applied
+}
+
 export function checkCorrelationExposure(candidate, state) {
   const positions = Object.values(state.positions);
   if (positions.length === 0) return { allowed: true };
@@ -1173,6 +1194,20 @@ export function checkCorrelationExposure(candidate, state) {
   const pVal = portfolioValue(state);
   if (pVal > 0 && dirExposure / pVal > 0.6) {
     return { allowed: false, reason: `dir exposure ${((dirExposure / pVal) * 100).toFixed(0)}%>60%` };
+  }
+
+  // Cluster concentration: cap same-direction positions within one correlation group.
+  const cluster = clusterOf(candidate.symbol);
+  if (cluster) {
+    const sameClusterSameDir = positions.filter(
+      p => p.direction === candidate.signal && clusterOf(p.symbol) === cluster
+    ).length;
+    if (sameClusterSameDir >= MAX_PER_CLUSTER_SAME_DIR) {
+      return {
+        allowed: false,
+        reason: `cluster ${cluster} already has ${sameClusterSameDir} ${candidate.signal}s (max ${MAX_PER_CLUSTER_SAME_DIR})`
+      };
+    }
   }
 
   return { allowed: true };

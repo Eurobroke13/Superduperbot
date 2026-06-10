@@ -492,8 +492,14 @@ export async function checkDCA(pos, price, currentAtr, state, env, deps = {}) {
     const ichi = ichimoku(highs, lows, closes);
     const macdR = macd(closes);
 
+    // Deeper drawdowns are riskier to average into, so demand more proof the
+    // thesis is still intact: 4 of 5 normally, 5 of 5 once we're >2 ATR underwater.
+    const needed = lossATRs > 2.0 ? 5 : 4;
+
     let confirmations = 0;
-    const needed = 3;
+    const trendAgainst = pos.direction === "long"
+      ? (macdR.histogram < 0 && price < vwapVal)   // momentum AND value both bearish
+      : (macdR.histogram > 0 && price > vwapVal);   // momentum AND value both bullish
 
     if (pos.direction === "long") {
       if (rsiVal < 40) confirmations++;
@@ -509,8 +515,15 @@ export async function checkDCA(pos, price, currentAtr, state, env, deps = {}) {
       if (price < ichi.senkouA) confirmations++;
     }
 
+    // Hard veto: never average into a position when both core trend reads
+    // (MACD momentum + VWAP value) point against it, regardless of oscillators.
+    if (trendAgainst) {
+      console.log(`[DCA ${pos.symbol}] Vetoed: core trend (MACD+VWAP) against position. No DCA.`);
+      return;
+    }
+
     if (confirmations < needed) {
-      console.log(`[DCA ${pos.symbol}] Signal invalidated (${confirmations}/${needed} confirmations). No DCA.`);
+      console.log(`[DCA ${pos.symbol}] Signal invalidated (${confirmations}/${needed} confirmations, loss ${lossATRs.toFixed(1)} ATR). No DCA.`);
       return;
     }
 

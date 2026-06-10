@@ -3,22 +3,41 @@ import { estimateMonthlySpend } from "./stats.js";
 import { portfolioValue } from "./execution.js";
 import { getWeightRegimeAware } from "./risk-gates.js";
 
-function buildSignalStats(trades) {
+// Exponential time-decay so recent trades dominate the adaptive weights while
+// stale ones fade smoothly rather than dropping off a cliff at the window edge.
+// Half-life of 10 days: a trade 10 days old counts half as much as a fresh one.
+const DECAY_HALFLIFE_DAYS = 10;
+
+function tradeDecayWeight(trade, nowMs) {
+  const closedMs = trade.closedAt ? new Date(trade.closedAt).getTime() : NaN;
+  if (!Number.isFinite(closedMs)) return 1; // undated legacy trades: full weight
+  const ageDays = Math.max(0, (nowMs - closedMs) / 86400000);
+  return Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
+}
+
+// Accumulates two parallel tallies per signal:
+//   • weighted wins/losses/pnl  → used for WR / EV multiplier decisions (recency-biased)
+//   • raw count                 → used ONLY for min-sample gates, so thin recent
+//                                 data can never disable or boost a signal on its own
+function buildSignalStats(trades, nowMs = Date.now()) {
   const stats = {};
+  const bump = (key, won, pnl, w) => {
+    if (!stats[key]) stats[key] = { wins: 0, losses: 0, pnl: 0, count: 0, rawWins: 0, rawLosses: 0 };
+    const s = stats[key];
+    s.wins += won ? w : 0;
+    s.losses += won ? 0 : w;
+    s.pnl += pnl * w;
+    s.count += 1;
+    s.rawWins += won ? 1 : 0;
+    s.rawLosses += won ? 0 : 1;
+  };
   for (const trade of trades) {
     const won = trade.pnl > 0;
+    const w = tradeDecayWeight(trade, nowMs);
     const regime = trade.regime || "unknown";
     for (const reason of (trade.reasons || [])) {
-      if (!stats[reason]) stats[reason] = { wins: 0, losses: 0, pnl: 0 };
-      stats[reason].wins += won ? 1 : 0;
-      stats[reason].losses += won ? 0 : 1;
-      stats[reason].pnl += trade.pnl;
-
-      const regimeKey = `${reason}:${regime}`;
-      if (!stats[regimeKey]) stats[regimeKey] = { wins: 0, losses: 0, pnl: 0 };
-      stats[regimeKey].wins += won ? 1 : 0;
-      stats[regimeKey].losses += won ? 0 : 1;
-      stats[regimeKey].pnl += trade.pnl;
+      bump(reason, won, trade.pnl, w);
+      bump(`${reason}:${regime}`, won, trade.pnl, w);
     }
   }
   return stats;
@@ -28,15 +47,15 @@ function updateDynamicWeights(state) {
   const recent = state.trades.slice(-80);
   if (recent.length < 10) return;
 
-  const stats = buildSignalStats(recent);
+  const now = Date.now();
+  const stats = buildSignalStats(recent, now);
 
   if (!state.signalStats) state.signalStats = {};
   for (const [key, s] of Object.entries(stats)) {
-    const count = s.wins + s.losses;
     state.signalStats[key] = {
-      wins: s.wins,
-      losses: s.losses,
-      count,
+      wins: s.rawWins,
+      losses: s.rawLosses,
+      count: s.rawWins + s.rawLosses,
       totalPnl: parseFloat(s.pnl.toFixed(2))
     };
   }
@@ -44,11 +63,13 @@ function updateDynamicWeights(state) {
   const newWeights = { ...(state.dynamicWeights || {}) };
   for (const [signal, s] of Object.entries(stats)) {
     if (signal.includes(":")) continue;
-    const count = s.wins + s.losses;
-    if (count < 20) continue;
+    const rawCount = s.rawWins + s.rawLosses;     // gate on real sample size
+    if (rawCount < 20) continue;
 
-    const wr = s.wins / count;
-    const ev = s.pnl / count;
+    const wMass = s.wins + s.losses;              // decayed mass for WR/EV
+    if (wMass <= 0) continue;
+    const wr = s.wins / wMass;
+    const ev = s.pnl / wMass;
     let mult = 1.0;
     if      (wr >= 0.65 && ev > 0) mult = 1.20;
     else if (wr >= 0.55 && ev > 0) mult = 1.08;
@@ -60,7 +81,7 @@ function updateDynamicWeights(state) {
 
     newWeights[signal] = parseFloat(mult.toFixed(3));
     if (Math.abs(newWeights[signal] - 1.0) > 0.2) {
-      console.log(`[WEIGHTS] ${signal}: 1.0 -> ${newWeights[signal]} (WR:${(wr * 100).toFixed(0)}% n=${count} ev:$${ev.toFixed(2)})`);
+      console.log(`[WEIGHTS] ${signal}: 1.0 -> ${newWeights[signal]} (WR:${(wr * 100).toFixed(0)}% n=${rawCount} ev:$${ev.toFixed(2)})`);
     }
   }
 
@@ -68,18 +89,22 @@ function updateDynamicWeights(state) {
   // Reacts to market structure changes in 3-5 days vs 2-3 weeks for 80-trade window.
   const fast = state.trades.slice(-20);
   if (fast.length >= 10) {
-    const fastStats = buildSignalStats(fast);
+    const fastStats = buildSignalStats(fast, now);
     let fastDivergences = 0;
     for (const [signal, fs] of Object.entries(fastStats)) {
       if (signal.includes(":")) continue;
-      const count = fs.wins + fs.losses;
-      if (count < 5) continue;
-      const fastWr = fs.wins / count;
+      const rawCount = fs.rawWins + fs.rawLosses;
+      if (rawCount < 5) continue;
+      const fastMass = fs.wins + fs.losses;
+      if (fastMass <= 0) continue;
+      const fastWr = fs.wins / fastMass;
       const slowEntry = stats[signal];
       if (!slowEntry) continue;
-      const slowCount = slowEntry.wins + slowEntry.losses;
-      if (slowCount < 10) continue;
-      const slowWr = slowEntry.wins / slowCount;
+      const slowRaw = slowEntry.rawWins + slowEntry.rawLosses;
+      if (slowRaw < 10) continue;
+      const slowMass = slowEntry.wins + slowEntry.losses;
+      if (slowMass <= 0) continue;
+      const slowWr = slowEntry.wins / slowMass;
       const divergence = fastWr - slowWr;
       if (Math.abs(divergence) > 0.15) {
         const fastMult = divergence > 0 ? 1.15 : 0.85;
@@ -109,10 +134,11 @@ function updateDynamicWeights(state) {
   const disabled = [];
   for (const [signal, s] of Object.entries(stats)) {
     if (signal.includes(":")) continue;
-    const count = s.wins + s.losses;
-    if (count >= 25 && s.wins / count < 0.30 && s.pnl / count < 0) {
+    const rawCount = s.rawWins + s.rawLosses;
+    const wMass = s.wins + s.losses;
+    if (rawCount >= 25 && wMass > 0 && s.wins / wMass < 0.30 && s.pnl / wMass < 0) {
       disabled.push(signal);
-      console.warn(`[WEIGHTS] DISABLED "${signal}": WR=${((s.wins / count) * 100).toFixed(0)}% over ${count} trades`);
+      console.warn(`[WEIGHTS] DISABLED "${signal}": WR=${((s.wins / wMass) * 100).toFixed(0)}% over ${rawCount} trades`);
     }
   }
   state.disabledSignals = Array.from(new Set([...disabled, "trap-vol-bear"]));
