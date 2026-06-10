@@ -13,8 +13,12 @@
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
-import dotenv from "dotenv";
-dotenv.config();
+// dotenv is optional — a dry run (--no-db) needs no env vars, and the OKX
+// public API requires no key. Load it if present, otherwise carry on.
+try {
+  const dotenv = (await import("dotenv")).default;
+  dotenv.config();
+} catch { /* dotenv not installed — env vars (if any) already in process.env */ }
 
 import {
   calculateStructuredSLTP,
@@ -344,6 +348,7 @@ function simulatePosition(pos, futureCandles) {
 
   const tp1Price = direction === "long" ? entryPrice + atrVal * 2.0 : entryPrice - atrVal * 2.0;
   const tp2Price = direction === "long" ? entryPrice + atrVal * 3.5 : entryPrice - atrVal * 3.5;
+  const tp3Price = direction === "long" ? entryPrice + atrVal * 5.5 : entryPrice - atrVal * 5.5;
   const t2Trig   = direction === "long" ? entryPrice + atrVal * 0.5 : entryPrice - atrVal * 0.5;
   const t3Trig   = direction === "long" ? entryPrice + atrVal * 1.5 : entryPrice - atrVal * 1.5;
 
@@ -450,13 +455,23 @@ function simulatePosition(pos, futureCandles) {
       return { exit: sl, exitReason: "sl", pnl, barsHeld: i + 1, events };
     }
 
-    // ── Full take-profit ──────────────────────────────────────────────────
+    // ── Full take-profit (structured target takes precedence) ─────────────
     if (direction === "long" ? high >= tp : low <= tp) {
       const remainPct = tp1Hit && tp2Hit ? 0.40 : tp1Hit ? 0.70 : 1.0;
       const pnl = (direction === "long"
         ? (tp - entryPrice)
         : (entryPrice - tp)) * size * remainPct + partialPnl;
       return { exit: tp, exitReason: "tp", pnl, barsHeld: i + 1, events };
+    }
+
+    // ── TP3 runner target: book final 40% at 5.5 ATR once TP1+TP2 are in ──
+    // Mirrors bot/exits.js — gives the runner an explicit target instead of
+    // riding to SL/max-age. Only fires after both partials are booked.
+    if (tp1Hit && tp2Hit && (direction === "long" ? high >= tp3Price : low <= tp3Price)) {
+      const pnl = (direction === "long"
+        ? (tp3Price - entryPrice)
+        : (entryPrice - tp3Price)) * size * 0.40 + partialPnl;
+      return { exit: tp3Price, exitReason: "tp3", pnl, barsHeld: i + 1, events };
     }
   }
 
@@ -738,6 +753,7 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
                 direction: cand.signal,
                 h4Trend: cand.h4Trend,
                 setupType: cand.setupType,
+                approvalType: cand.approvalType || "auto",
                 score: cand.score,
                 reasons: [...(cand.reasons || []), "decaying-limit-fill"],
                 riskReward: cand.riskReward,
@@ -825,11 +841,17 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
         if (!bf.allowed) continue;
       }
 
-      const approved = autoApproveSignal(candidate) || candidate.score >= CLAUDE_THRESHOLD;
+      // Approval routing mirrors live: auto-approvable candidates take the
+      // "auto" path (no Claude call); otherwise a score >= CLAUDE_THRESHOLD
+      // is what would be sent to Claude. Tag the trade so we can break down
+      // Claude-call vs auto performance in the report.
+      const autoOk = autoApproveSignal(candidate);
+      const approved = autoOk || candidate.score >= CLAUDE_THRESHOLD;
       if (!approved) {
         bySymbol[sym].skipped.push({ bar: idx1h, ts, score: candidate.score });
         continue;
       }
+      candidate.approvalType = autoOk ? "auto" : "claude";
 
       // Fix 3: min R:R gate (0.8, matching live bot — replaces the old hardcoded 1.2)
       if (!checkMinRR(candidate).allowed) continue;
@@ -887,6 +909,7 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
         direction: candidate.signal,
         h4Trend: candidate.h4Trend,
         setupType: candidate.setupType,
+        approvalType: candidate.approvalType || "auto",
         score: candidate.score,
         reasons: candidate.reasons,
         riskReward: candidate.riskReward,
@@ -1089,6 +1112,7 @@ function computeMetrics(allTrades) {
     bySetup:      dimensionStats(groupBy("setupType")),
     byRegime:     dimensionStats(groupBy("regime")),
     byCap:        dimensionStats(groupBy("cap")),
+    byApproval:   dimensionStats(groupBy("approvalType")),
     bySignal:     signalStats,
     bySymbol:     dimensionStats(groupBy("symbol"))
   };
@@ -1299,6 +1323,12 @@ function printReport(metrics, bySymbol) {
   console.log(line);
   for (const [r, s] of Object.entries(metrics.byRegime))
     console.log(`  ${r.padEnd(10)} n=${String(s.count).padStart(4)}  WR=${String(s.winRate).padStart(5)}%  PnL=$${s.totalPnl}`);
+
+  console.log(`\n${line}`);
+  console.log("  APPROVAL ROUTE  (claude = would be sent to Claude; auto = auto-approved)");
+  console.log(line);
+  for (const [a, s] of Object.entries(metrics.byApproval).sort((x,y) => y[1].totalPnl - x[1].totalPnl))
+    console.log(`  ${a.padEnd(10)} n=${String(s.count).padStart(4)}  WR=${String(s.winRate).padStart(5)}%  EV=$${String(s.expectancy).padStart(7)}  PnL=$${s.totalPnl}`);
 
   console.log(`\n${line}`);
   console.log("  CAP TIER");
