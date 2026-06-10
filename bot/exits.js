@@ -86,8 +86,15 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
           : entryPrice - entryAtr * 3.5
       },
       tp3: {
+        // Explicit runner target for the final 40%, so the last tranche books a
+        // real profit instead of rotting until the trail clips it. pos.tp3AtrMult
+        // may be set at entry per-regime; default 5.5x ATR (≈1.57x the TP2 distance).
+        atrMult: pos.tp3AtrMult || 5.5,
         pct: 0.40,
-        hit: false
+        hit: false,
+        price: direction === "long"
+          ? entryPrice + entryAtr * (pos.tp3AtrMult || 5.5)
+          : entryPrice - entryAtr * (pos.tp3AtrMult || 5.5)
       }
     };
   }
@@ -141,6 +148,15 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
     if (pos.tp && high >= pos.tp) {
       return { exit: true, reason: "take-profit-full", partial: false };
     }
+
+    // Runner's fallback target: once TP1+TP2 are booked, take the final 40% at
+    // an explicit ATR target rather than letting it rot until the trail clips it.
+    // Structured pos.tp above takes precedence when it's the nearer target.
+    if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit &&
+        pos.tpLevels.tp3.price && high >= pos.tpLevels.tp3.price) {
+      pos.tpLevels.tp3.hit = true;
+      return { exit: true, reason: "tp3-target", partial: false };
+    }
   } else {
     pos.maxFavorable = Math.min(pos.maxFavorable, price);
 
@@ -187,6 +203,15 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
 
     if (pos.tp && low <= pos.tp) {
       return { exit: true, reason: "take-profit-full", partial: false };
+    }
+
+    // Runner's fallback target: once TP1+TP2 are booked, take the final 40% at
+    // an explicit ATR target rather than letting it rot until the trail clips it.
+    // Structured pos.tp above takes precedence when it's the nearer target.
+    if (pos.tpLevels.tp1.hit && pos.tpLevels.tp2.hit && !pos.tpLevels.tp3.hit &&
+        pos.tpLevels.tp3.price && low <= pos.tpLevels.tp3.price) {
+      pos.tpLevels.tp3.hit = true;
+      return { exit: true, reason: "tp3-target", partial: false };
     }
   }
 
