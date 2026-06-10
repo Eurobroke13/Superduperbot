@@ -786,6 +786,11 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const blocked = state.newsBlocked || [];
   const boosted = state.newsBoosted || [];
 
+  // Symbols that hit a stop-loss earlier in this same run — block same-run re-entry.
+  const slThisRun = new Set(
+    (state._pendingTrades || []).filter(t => t.reason === "stop-loss").map(t => t.symbol)
+  );
+
   const tradeable = allContracts
     .filter(c => (volumeMap[c] || 0) > 450_000)
     .filter(c => !BLACKLISTED_COINS.has(c))
@@ -793,6 +798,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     .filter(c => !state.pendingLimits[c])
     .filter(c => !state.decayingLimits[c])
     .filter(c => !cooldownDecision(state, c).onCooldown)
+    .filter(c => !slThisRun.has(c))
     .filter(c => !blocked.includes(c.replace("-USDT-SWAP", "")));
 
   const tickerMap = {};
