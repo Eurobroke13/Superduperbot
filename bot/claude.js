@@ -54,9 +54,13 @@ async function callClaudeBudgeted(prompt, env, state, maxTokens = 500) {
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: maxTokens,
+      // NOTE: do NOT use an assistant-message prefill (`{ role: "assistant", content: "{" }`)
+      // to force JSON — newer models reject it ("does not support assistant message prefill;
+      // the conversation must end with a user message"), which silently broke all approvals.
+      // Steer output to clean JSON via the system prompt instead, then extract defensively.
+      system: "Respond with only a single valid JSON object. No markdown, no code fences, no commentary before or after.",
       messages: [
-        { role: "user", content: prompt },
-        { role: "assistant", content: "{" }
+        { role: "user", content: prompt }
       ]
     })
   });
@@ -72,8 +76,20 @@ async function callClaudeBudgeted(prompt, env, state, maxTokens = 500) {
   }
   const data = await res.json();
   trackUsage(state, data);
-  const text = data.content.map(b => b.text || "").join("").trim();
-  return "{" + text;
+  return extractJsonObject(data.content.map(b => b.text || "").join(""));
+}
+
+// Pull the outermost {...} JSON object out of a model response, tolerating
+// stray prose or ```json fences. Returns "{}" if nothing parseable is found.
+function extractJsonObject(raw) {
+  let text = (raw || "").trim();
+  text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    return text.slice(start, end + 1);
+  }
+  return "{}";
 }
 
 async function callClaudePlaintext(prompt, env, state, maxTokens = 500) {
