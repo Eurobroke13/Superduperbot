@@ -43,12 +43,18 @@ async function maybeSendDailySummary() {
   if (process.env.DISABLE_DAILY_SUMMARY === "true") return;
   const today = new Date().toISOString().slice(0, 10);
   if (lastDailySummaryDate === today) return;
-  lastDailySummaryDate = today;
   try {
-    const { loadState } = await import("./state-store.js");
+    const { loadState, saveState } = await import("./state-store.js");
     const { estimateMonthlySpend } = await import("./bot/stats.js");
     const { MONTHLY_BUDGET_USD, PAPER_CASH } = await import("./bot/config.js");
     const state = await loadState();
+
+    // Persist the date so restarts don't re-fire today's summary
+    if (state.lastDailySummaryDate === today) {
+      lastDailySummaryDate = today;
+      return;
+    }
+    lastDailySummaryDate = today;
     const positions = Object.values(state.positions || {});
     const trades = state.trades || [];
     const wins = trades.filter(t => t.pnl > 0).length;
@@ -72,6 +78,9 @@ async function maybeSendDailySummary() {
         `Auto-only mode activates at 90%.`
       );
     }
+
+    state.lastDailySummaryDate = today;
+    await saveState(state);
   } catch (err) {
     console.error("[DAILY-SUMMARY]", err.message);
   }
