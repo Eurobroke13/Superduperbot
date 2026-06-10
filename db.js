@@ -53,4 +53,35 @@ export async function withTransaction(fn) {
   }
 }
 
+// Shared advisory lock key — same value across all Railway services.
+const BOT_LOCK_KEY = 98765432;
+
+/**
+ * Acquire a Postgres session-level advisory lock before running fn().
+ * If another bot instance (main server or fast-scan runner) already holds
+ * the lock, this run is skipped immediately rather than running in parallel.
+ * Lock is released in the finally block on the same client.
+ */
+export async function withBotLock(fn) {
+  await initDb();
+  const client = await pool.connect();
+  try {
+    const { rows } = await client.query(
+      "SELECT pg_try_advisory_lock($1) AS acquired",
+      [BOT_LOCK_KEY]
+    );
+    if (!rows[0].acquired) {
+      console.log("[LOCK] Another bot run is active — skipping this run");
+      return { skipped: true, reason: "lock-held" };
+    }
+    try {
+      return await fn();
+    } finally {
+      await client.query("SELECT pg_advisory_unlock($1)", [BOT_LOCK_KEY]);
+    }
+  } finally {
+    client.release();
+  }
+}
+
 export { pool };

@@ -7,6 +7,7 @@
 import { callClaudeBudgeted, callClaudePlaintext } from "./claude.js";
 import { sendTelegram, notifyTrade } from "./telegram.js";
 import { loadBotState, saveBotState } from "./state.js";
+import { withBotLock } from "../db.js";
 import {
   updateDynamicWeights,
   trackSignalPerformance,
@@ -86,7 +87,7 @@ const reportDeps = {
 };
 
 async function runBot(env) {
-  return runBotCore(env, {
+  return withBotLock(() => runBotCore(env, {
     claudeBatchAnalysis,
     getAdaptiveThreshold,
     getWeight,
@@ -100,7 +101,7 @@ async function runBot(env) {
     updateCoinHistory,
     updateDynamicWeights,
     updateRegimeStats
-  });
+  }));
 }
 
 async function sendDailyReport(env, options = {}) {
