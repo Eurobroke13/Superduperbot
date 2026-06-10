@@ -63,13 +63,11 @@ async function callClaudeBudgeted(prompt, env, state, maxTokens = 500) {
 
   if (!res.ok) {
     const errText = await res.text();
-    if (
-      errText.includes("You have reached your specified API") ||
-      errText.includes("invalid_request_error")
-    ) {
-      console.warn("[CLAUDE] Budget/account limit hit, falling back to non-Claude mode");
+    if (errText.includes("You have reached your specified API")) {
+      console.warn("[CLAUDE] Spend limit hit, falling back to non-Claude mode");
       throw new Error("CLAUDE_LIMIT_FALLBACK");
     }
+    console.error(`[CLAUDE] API error ${res.status}: ${errText}`);
     throw new Error(`Claude ${res.status}: ${errText}`);
   }
   const data = await res.json();
@@ -104,13 +102,11 @@ async function callClaudePlaintext(prompt, env, state, maxTokens = 500) {
 
   if (!res.ok) {
     const errText = await res.text();
-    if (
-      errText.includes("You have reached your specified API") ||
-      errText.includes("invalid_request_error")
-    ) {
-      console.warn("[CLAUDE] Budget/account limit hit, falling back to non-Claude mode");
+    if (errText.includes("You have reached your specified API")) {
+      console.warn("[CLAUDE] Spend limit hit, falling back to non-Claude mode");
       throw new Error("CLAUDE_LIMIT_FALLBACK");
     }
+    console.error(`[CLAUDE] API error ${res.status}: ${errText}`);
     throw new Error(`Claude ${res.status}: ${errText}`);
   }
   const data = await res.json();
