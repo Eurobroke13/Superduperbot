@@ -142,7 +142,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     // positionSizeMultiplier from the MR gate (e.g. 0.50 for unconfirmed entries) takes
     // precedence over the flat 0.85 default — it's already calibrated per confirmation quality.
     const mrMult = candidate.positionSizeMultiplier;
-    sizeMultiplier *= (mrMult != null && mrMult > 0) ? mrMult : 0.85;
+    sizeMultiplier *= (mrMult != null && mrMult > 0) ? mrMult : 0.70;
   }
 
   if (drawdown > 0.10) sizeMultiplier *= 0.7;

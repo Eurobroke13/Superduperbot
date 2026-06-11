@@ -110,6 +110,22 @@ after deploy to confirm they fire at sane rates.
 
 ---
 
+## MR Signal Hardening (June 2026)
+
+Backtest analysis revealed three weak MR signals dragging mean-reversion WR below 30%:
+`mr-at-support` (29% WR, +2.0 score), `mr-below-bb` (27% WR, +0.5), `mr-rsi-extreme-low` (26% WR, +2.0).
+
+**Four improvements applied:**
+
+1. **Bear-regime guard** — already enforced; MR cannot fire outside sideways (`scoring.js` → `applyMRGates` bails with `mr-not-sideways` for any non-sideways regime).
+2. **Confirmation required** — enforced implicitly by the score threshold below: no single weak signal (max 2.0) can reach 5.0 alone. Genuine reversals need RSI extreme + Stoch + OBV divergence or volume exhaustion stacking.
+3. **Minimum score raised 3.5 → 5.0** (`bot/entry-improvements.js` lines 312/349, both long and short branches). A single trigger like `mr-at-support` scores 2.0 — nowhere near 5.0. Real setups need 3+ confirming signals.
+4. **Position size capped at 0.70** — already set by `entry-improvements.js` (`positionSizeMultiplier: 0.70`). The execution.js fallback (used when the MR gate path isn't taken) was 0.85 — lowered to 0.70 to match (`bot/execution.js` line 145).
+
+**Expected effect:** MR entry frequency drops significantly (only genuine multi-confirmation setups pass). Quality over quantity — fewer but higher-conviction entries.
+
+---
+
 ## Seeding Playbook (resetting contaminated learned stats)
 
 The bot's learned state is part windowed/decayed (self-heals) and part **cumulative**
