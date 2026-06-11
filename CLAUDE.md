@@ -110,6 +110,36 @@ after deploy to confirm they fire at sane rates.
 
 ---
 
+## Seeding Playbook (resetting contaminated learned stats)
+
+The bot's learned state is part windowed/decayed (self-heals) and part **cumulative**
+(needs explicit reset). When a bad stretch of trades — e.g. the duplicate-instance +
+broken-Claude period — drags the bot, reseed the cumulative stats from a clean backtest.
+
+**What needs resetting vs what self-heals:**
+- `regimeStats` — CUMULATIVE, never forgets → reseed (though n is large, so a bad month is a small fraction)
+- Setup/approval stats (`stats.js`) — scan last 500 `state.trades` → only clears if you prune the `trades` table
+- `dynamicWeights` / `signalStats` — WINDOWED last-80 + 10-day decay → self-heals in ~30 days
+- `coinHistory` — last-20 per coin → self-heals
+- Drift warning / live health — last-100, display-only → self-heals
+
+**Backtest commands (`backtest.js`):**
+- `node backtest.js --no-db` — dry run, prints metrics (setup/regime/cap/**approval-route**/signals), writes nothing. **Always do this first.**
+- `node backtest.js --seed-safe` — overwrites `regimeStats` + `signalStats` only, leaves `dynamicWeights`. **Preferred.**
+- `node backtest.js --seed` — also overwrites `dynamicWeights` (risk: imports backtest-fitted weights). Avoid unless intentional.
+- `--months N` sets the window; `--seed`/`--seed-safe` default to 12m.
+- The backtest's `simulatePosition` is its OWN copy of exit logic — keep it in sync with `bot/exits.js` (e.g. the 5.5×ATR TP3 target). Weights/scoring/correlation flow in via imports automatically.
+
+**Recommended sequence:**
+1. Merge all strategy fixes to `main` (the seed must reflect deployed code).
+2. `node backtest.js --no-db` → judge realism. Healthy = WR/PF near live baseline (≈43.6% / 1.52), EV modestly higher. **Reject if it looks too good** (WR 60%+/PF 3 = overfit).
+3. Seeding writes to **production Postgres**, so run it where `DATABASE_URL` is set — the **`apply-seed-job`** Railway one-off service runs `node backtest.js --seed-safe`. Do NOT run it from a dev sandbox (no `DATABASE_URL`).
+4. Confirm job logs: `✓ regimeStats: N seeded`, `✓ signalStats: N seeded`, `safe-seed mode: leaving dynamicWeights unchanged`.
+
+**June 2026 dry run (15 coins, 3251 trades, 12m):** WR 44.7%, PF 1.52, EV $6.22, DD 9.43% — believable, matched baseline. Approval route: auto WR 45.9%/EV $7.27 vs claude-routed WR 41.4%/EV $3.40 (confirms Claude-gate candidates are genuinely weaker — running with Claude broken hurt).
+
+---
+
 ## Known Issues & History
 
 ### Fixed
