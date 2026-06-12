@@ -23,9 +23,10 @@ There are 6 services in the `patient-analysis` Railway project (`production` env
 **Railway config-as-code (June 2026):** The root `railway.json` hardcodes `startCommand: "npm start"`, and every service that deploys from this repo inherits it — which silently overrides each service's dashboard start command. This is why the runner kept launching the full server. The fix is a **separate `railway-runner.json`** (runs `npm run task:fast-scan`, no `/health` healthcheck since it's a cron worker, not a web server). The runner service must point its config-file path at `railway-runner.json` in Railway Settings → Config-as-code. The main **Superduperbot** server keeps using `railway.json` (`npm start`). Do NOT change the `startCommand` value in the shared `railway.json` — it would break the main server.
 
 ### How main bot and fast-scan runner coordinate
-- Main bot (15 min): loads state → refreshes regime → fetches news → scores 50 contracts → Claude approval → saves state
+- Main bot (15 min): loads state → refreshes regime → fetches news → scores 60 contracts → Claude approval → saves state
 - Fast-scan runner (2 min): loads state → uses **cached regime** → scores batch → **auto-approves only** (no Claude) → saves state
 - **Postgres advisory lock** (`withBotLock` in `db.js`) prevents them running simultaneously — if the main bot is mid-run when the cron fires, the fast-scan skips that cycle with `[LOCK] Another bot run is active — skipping this run`
+- **Symbol rotation** — both services share `state.scanBatchOffset` (persisted in Postgres). Each run advances the offset by `maxSymbolsPerRun` (60 in sideways, 50 otherwise). They naturally interleave: main bot scans 0-60, runner picks up at 60-120, etc. — full ~250-symbol universe covered in ~10 min combined.
 
 ---
 
@@ -126,6 +127,27 @@ Backtest analysis revealed three weak MR signals dragging mean-reversion WR belo
 
 ---
 
+## Scoring Symmetry Audit (June 2026)
+
+A directional-symmetry pass on `scoring.js` / `applyMRGates` identified four items. Three are **intentional by design** — do not "fix" them:
+
+**A. `mr-funding-longs-crowded` penalty is asymmetric (INTENTIONAL)**
+`if (signal === "long" && fr > 0.0003) { score *= 0.90; }` has no mirror for shorts (`fr < -0.0003`). This was deliberately added (commit `dbeb6c7`) as a bias-correction tool — the bot has a structural long bias, and positive funding with longs crowded is a genuine warning that a mean-reversion long is not yet ready. Negative funding crowding shorts is rarer and shorter-lived in practice. Do not add a symmetric short-side penalty.
+
+**B. `mr-funding-bear-crowded` / `mr-funding-bull-crowded` naming looks backwards (INTENTIONAL)**
+`fr < -0.0001` (shorts crowded/paying) is labeled `"mr-funding-bear-crowded"` but bonuses a long signal. The name describes *which side is crowded*, not *which side gets the bonus*. Logic is correct (contrarian tailwind). Renaming would break signal stats history keyed on these strings — leave it.
+
+**C. `h4-misaligned` hard-blocks trend/breakout setups but only soft-penalises momentum (INTENTIONAL)**
+Trend and breakout setups require H4 alignment (`return null`); momentum gets a 0.80 multiplier. Deliberate by setup type — trend/breakout are directional bets where H4 misalignment is a genuine disqualifier, not just a headwind.
+
+**D. `trap-bear-confirm` has a post-score re-check gate; `trap-bull-confirm` does not (LEAVE AS-IS)**
+After scoring, short liquidity-trap setups with `trap-bear-confirm` are re-validated against H4/VWAP/ADX/RSI and can be nulled. Long setups have no equivalent gate. However, `trap-bull-confirm` weight is 0.35 vs `trap-bear-confirm` at 2.0 — the bull signal barely moves score anyway, so adding a re-check gate would make an already-marginal signal even harder to fire. Low impact, leave alone.
+
+**Sweep confirmation gate (`bot/sweep-confirmation.js`) — hard zero is correct**
+When a `liquidity-trap` setup has no confirmed sweep (`isConfirmedSweep` returns false), `c.score = 0` zeros the entire score. This is intentional — the old liquidity-trap fired on generic trend signals with no sweep verification, causing 6-8 correlated small-loss trades per cycle. The hard zero is the right call.
+
+---
+
 ## Seeding Playbook (resetting contaminated learned stats)
 
 The bot's learned state is part windowed/decayed (self-heals) and part **cumulative**
@@ -163,6 +185,7 @@ broken-Claude period — drags the bot, reseed the cumulative stats from a clean
 - **Stop-loss same-run re-entry churn** — After a stop-loss, the symbol was immediately re-eligible for entry in the same 15-min cycle. Fixed by building `slThisRun` set from `_pendingTrades` and excluding those symbols from `tradeable` filter. `bot/runner.js`.
 - **Claude error detection swallowing real errors** — `invalid_request_error` was being caught as a budget-limit signal, causing silent fallback to auto-mode for ANY 400 error (wrong model, bad request format, etc.). Now only actual spend-limit messages trigger `CLAUDE_LIMIT_FALLBACK`. `bot/claude.js`.
 - **Duplicate bot instances** — `superduperbot-runner` was running `npm start` (full server) instead of `npm run task:fast-scan`, causing two complete bot instances scanning and trading simultaneously. **Root cause:** the shared root `railway.json` hardcodes `startCommand: "npm start"`, which overrode the runner's dashboard setting. **Final fix:** dedicated `railway-runner.json` + point the runner's Railway config-file path at it (see Railway Services Architecture above). Earlier dashboard-only changes kept getting overridden by `railway.json`.
+- **Symbol rotation dead — always scanning same top-60** — After the 3-phase rotation was removed, `phaseScan` was always called with `(startFrac=0, endFrac=1.0)`, making `effectiveStart=0` every run. In sideways regime where all top-60 symbols are in BB compression, this produced zero candidates indefinitely. Fixed by tracking `state.scanBatchOffset` in Postgres and advancing it by `maxSymbolsPerRun` each call. Both services share the offset and interleave coverage. `bot/runner.js`.
 - **Race condition between services** — Main bot and fast-scan runner shared Postgres state with no coordination. Fixed by adding `withBotLock` (Postgres advisory lock) in `db.js`, wrapping every `runBot` call. `db.js`, `bot/deps.js`.
 - **Tranche fills not notified** — T2/T3 scale-ins were only console-logged, never sent to Telegram. Fixed by threading `notifyTrade` into `checkTranches` and adding a `TRANCHE` message type. `bot/execution.js`, `bot/telegram.js`, `bot/runner.js`.
 - **Claude approval outage (assistant-message prefill)** — `callClaudeBudgeted` ended requests with an assistant prefill to force JSON; the current model rejects prefill, so every approval call 400'd and the bot ran on auto-approval only. Fixed by removing the prefill, steering JSON via the system prompt, and parsing with `extractJsonObject`. `bot/claude.js`. (See Claude API Configuration above.)
