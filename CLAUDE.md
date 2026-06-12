@@ -120,7 +120,7 @@ Backtest analysis revealed three weak MR signals dragging mean-reversion WR belo
 
 1. **Bear-regime guard** — already enforced; MR cannot fire outside sideways (`scoring.js` → `applyMRGates` bails with `mr-not-sideways` for any non-sideways regime).
 2. **Confirmation required** — enforced implicitly by the score threshold below: no single weak signal (max 2.0) can reach 5.0 alone. Genuine reversals need RSI extreme + Stoch + OBV divergence or volume exhaustion stacking.
-3. **Minimum score raised 3.5 → 5.0** (`bot/entry-improvements.js` lines 312/349, both long and short branches). A single trigger like `mr-at-support` scores 2.0 — nowhere near 5.0. Real setups need 3+ confirming signals.
+3. **Minimum score raised 3.5 → 4.5** (`bot/entry-improvements.js` lines 312/349, both long and short branches). A single trigger like `mr-at-support` scores 2.0 — nowhere near 4.5. Two weak signals alone (`mr-at-support` + `mr-rsi-extreme-low` = 4.0) still don't qualify. The threshold aligns with the regime-adapted global entry threshold (also 4.5 in sideways), so MR setups are held to the same bar as every other setup type. Originally set to 5.0 but lowered after observing zero MR candidates in sideways — 5.0 was blocking legitimate medium-quality setups (RSI extreme + Stoch + volume exhaustion = 4.5).
 4. **Position size capped at 0.70** — already set by `entry-improvements.js` (`positionSizeMultiplier: 0.70`). The execution.js fallback (used when the MR gate path isn't taken) was 0.85 — lowered to 0.70 to match (`bot/execution.js` line 145).
 
 **Expected effect:** MR entry frequency drops significantly (only genuine multi-confirmation setups pass). Quality over quantity — fewer but higher-conviction entries.
