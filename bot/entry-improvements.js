@@ -309,7 +309,7 @@ export function scoreSidewaysMeanReversion({
     if (obvDiv === "bullish")                           { score += 1.5; reasons.push("mr-obv-div-bull"); }
     if (pctB < 0.0)                                     { score += 0.5; reasons.push("mr-below-bb"); }
 
-    if (score < 5.0) return null;
+    if (score < 4.5) return null;
 
     const sl = price - atrVal * 1.2;
     const meanTarget = Math.min(currentEMA20 || bbMiddle, vwapVal || bbMiddle);
@@ -346,7 +346,7 @@ export function scoreSidewaysMeanReversion({
     if (obvDiv === "bearish")                           { score += 1.5; reasons.push("mr-obv-div-bear"); }
     if (pctB > 1.0)                                     { score += 0.5; reasons.push("mr-above-bb"); }
 
-    if (score < 5.0) return null;
+    if (score < 4.5) return null;
 
     const sl = price + atrVal * 1.2;
     const meanTarget = Math.max(currentEMA20 || bbMiddle, vwapVal || bbMiddle);
