@@ -815,15 +815,23 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   });
 
   const isSidewaysRegime = regime?.label === "sideways";
-  // In sideways: always scan from the top of the ranked list (no phase rotation),
-  // and use a larger batch to find the rare coins not in BB compression.
   const maxSymbolsPerRun = isSidewaysRegime ? 60 : 50;
-  const effectiveStart = isSidewaysRegime ? 0 : Math.floor(rankedTradeable.length * startFrac);
-  const effectiveEnd   = isSidewaysRegime ? rankedTradeable.length : Math.floor(rankedTradeable.length * endFrac);
-  const rawBatch = rankedTradeable.slice(
-    effectiveStart,
-    Math.min(effectiveEnd, effectiveStart + maxSymbolsPerRun)
-  );
+
+  // Rotate through the ranked list across runs so every symbol eventually gets scanned.
+  // phaseScan is always called with startFrac=0/endFrac=1 now (phase rotation removed),
+  // so we track the offset in state instead.
+  const totalTradeable = rankedTradeable.length;
+  const offset = (state.scanBatchOffset || 0) % totalTradeable;
+  state.scanBatchOffset = (offset + maxSymbolsPerRun) % totalTradeable;
+
+  // Wrap-around: if the window would go past the end, start a second slice from 0
+  const sliceA = rankedTradeable.slice(offset, offset + maxSymbolsPerRun);
+  const rawBatch = sliceA.length >= maxSymbolsPerRun
+    ? sliceA
+    : [...sliceA, ...rankedTradeable.slice(0, maxSymbolsPerRun - sliceA.length)];
+
+  const effectiveStart = offset;
+  const effectiveEnd   = offset + maxSymbolsPerRun;
   const flagged = Object.keys(state.volatilityFlags || {});
   const batch = !FAST_SCAN
     ? [
