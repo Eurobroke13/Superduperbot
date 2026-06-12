@@ -148,6 +148,20 @@ When a `liquidity-trap` setup has no confirmed sweep (`isConfirmedSweep` returns
 
 ---
 
+## 15m MR Confirmation Improvements (June 2026)
+
+`confirmMeanReversionEntry` gates MR entries with a 15m timeframe check after the 1h score passes. Original patterns (hammer, engulfing, 3-bar reversal) require visible candle structure — they don't fire in low-volatility flat sideways markets, blocking all MR entries even when the 1h signal is valid.
+
+**Two additions to `check15mReversal` (`bot/entry-improvements.js`):**
+
+1. **RSI divergence** — price makes lower low but 15m RSI makes higher low (bullish), or price makes higher high but RSI makes lower high (bearish). Confidence +2.0. Works in flat markets where price moves are small but momentum is shifting. Alone sufficient to set `confirmed = true` (threshold 1.5).
+
+2. **StochRSI crossover as independent confirmation path** (`confirmMeanReversionEntry`) — the StochRSI was already computed and used as a score bonus (+0.5-1.0) but did not affect `confirmed`. Now a K-crosses-D in the right direction (crossUp for longs, crossDown for shorts) acts as an independent confirmation path alongside candle patterns. Enters at 0.65-0.80 size same as pattern-confirmed entries.
+
+**What's still blocked:** entries where neither RSI divergence, candle patterns, nor StochRSI crossover confirms. The 5.5 score fallback (enter at half size with no 15m confirmation) is unchanged.
+
+---
+
 ## Seeding Playbook (resetting contaminated learned stats)
 
 The bot's learned state is part windowed/decayed (self-heals) and part **cumulative**

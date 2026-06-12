@@ -396,6 +396,29 @@ export function check15mReversal(candles15m, direction) {
 
   const avgVol = candles15m.slice(-8, -1).reduce((s, c) => s + c.volume, 0) / 7;
 
+  // RSI divergence helper — works in low-vol flat markets where candle patterns don't form
+  const allCloses = candles15m.map(c => c.close);
+  const rsiVals = (() => {
+    const period = 14;
+    if (allCloses.length < period + 5) return null;
+    let avgGain = 0, avgLoss = 0;
+    for (let i = 1; i <= period; i++) {
+      const d = allCloses[i] - allCloses[i - 1];
+      if (d > 0) avgGain += d; else avgLoss -= d;
+    }
+    avgGain /= period; avgLoss /= period;
+    const vals = [];
+    for (let i = period; i < allCloses.length; i++) {
+      if (i > period) {
+        const d = allCloses[i] - allCloses[i - 1];
+        avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
+        avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
+      }
+      vals.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+    }
+    return vals;
+  })();
+
   if (direction === "long") {
     // 1. Hammer / pin bar: long lower wick, small body at top
     const lowerWick = Math.min(last.close, last.open) - last.low;
@@ -438,6 +461,17 @@ export function check15mReversal(candles15m, direction) {
       confidence += 1; patterns.push(`15m-red-exhaustion(${redCount})`);
     }
 
+    // 7. RSI bullish divergence: price lower low, RSI higher low (flat-market friendly)
+    if (rsiVals && rsiVals.length >= 10) {
+      const recentLow  = Math.min(...allCloses.slice(-5));
+      const priorLow   = Math.min(...allCloses.slice(-10, -5));
+      const recentRsiL = Math.min(...rsiVals.slice(-5));
+      const priorRsiL  = Math.min(...rsiVals.slice(-10, -5));
+      if (recentLow < priorLow && recentRsiL > priorRsiL) {
+        confidence += 2; patterns.push("15m-rsi-bull-div");
+      }
+    }
+
   } else {
     // 1. Shooting star: long upper wick, small body at bottom
     const upperWick = last.high - Math.max(last.close, last.open);
@@ -478,6 +512,17 @@ export function check15mReversal(candles15m, direction) {
     }
     if (greenCount >= 3 && last.close < last.open) {
       confidence += 1; patterns.push(`15m-green-exhaustion(${greenCount})`);
+    }
+
+    // 7. RSI bearish divergence: price higher high, RSI lower high (flat-market friendly)
+    if (rsiVals && rsiVals.length >= 10) {
+      const recentHigh  = Math.max(...allCloses.slice(-5));
+      const priorHigh   = Math.max(...allCloses.slice(-10, -5));
+      const recentRsiH  = Math.max(...rsiVals.slice(-5));
+      const priorRsiH   = Math.max(...rsiVals.slice(-10, -5));
+      if (recentHigh > priorHigh && recentRsiH < priorRsiH) {
+        confidence += 2; patterns.push("15m-rsi-bear-div");
+      }
     }
   }
 
@@ -584,13 +629,25 @@ export function confirmMeanReversionEntry(candidate, candles15m) {
 
   const adjustedScore = candidate.score + (reversal.confidence * 0.5) + stochBonus;
 
-  // 15m confirmed → enter with appropriate sizing
-  if (reversal.confirmed) {
+  // StochRSI crossover in extreme territory = independent confirmation path
+  const stochConfirmed = stoch && (
+    (candidate.signal === "long"  && stoch.crossUp)   ||
+    (candidate.signal === "short" && stoch.crossDown)
+  );
+
+  // 15m confirmed (candle patterns or RSI divergence) OR StochRSI crossover → enter
+  if (reversal.confirmed || stochConfirmed) {
+    const source = reversal.confirmed
+      ? reversal.patterns.join(",")
+      : "stochrsi-crossover";
+    const allPatterns = reversal.confirmed
+      ? reversal.patterns
+      : [...reversal.patterns, "stochrsi-crossover"];
     return {
       enter: true,
-      reason: `mr-15m-confirmed(${reversal.patterns.join(",")})`,
+      reason: `mr-15m-confirmed(${source})`,
       adjustedScore,
-      patterns: reversal.patterns,
+      patterns: allPatterns,
       positionSizeMultiplier: adjustedScore >= 6 ? 0.80 : 0.65
     };
   }
