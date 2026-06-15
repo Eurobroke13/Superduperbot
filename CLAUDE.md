@@ -16,7 +16,7 @@ There are 6 services in the `patient-analysis` Railway project (`production` env
 | **superduperbot-weekly** | Cron | Sundays 08:00 UTC | `npm run task:weekly-review` | Weekly performance report to Telegram |
 | **superduperbot-trade-a...** | Cron | Sundays 08:00 UTC | `npm run task:trade-analysis` | Trade breakdown report (setup/approval/signal stats) |
 | **superduperbot-premarket** | Cron | Daily | `npm run task:premarket` | **DISABLED in code** — premarket case is a no-op in task-runner.js |
-| **apply-seed-job** | One-off | Manual | `node backtest.js --seed-safe` | Seeds regime/signal stats from backtest data |
+| ~~**apply-seed-job**~~ | One-off | Manual | `node backtest.js --seed-safe` | **DELETED** — was seeding regime/signal stats from backtest. Recreate a one-off (point config at a dedicated `railway-*.json`) if seeding/pruning/analysis is needed. |
 
 **Important:** `superduperbot-premarket` still fires on schedule but does nothing — the `premarket` case in `task-runner.js` is commented out. Consider removing this service.
 
@@ -47,14 +47,26 @@ bot/
   adaptation.js        — Dynamic signal weight updates (time-decayed), regime stats tracking
   execution.js         — Position sizing, tranche scale-ins (checkTranches), DCA (checkDCA)
   telegram.js          — sendTelegram, notifyTrade (OPEN/CLOSE/PARTIAL/TRANCHE/DCA)
-  risk-gates.js        — Daily loss limit, min R:R gate, mid-run drawdown halt
-  runner-utils.js      — Pure helpers: buildRegimeConsensus, checkMidRunDrawdown, applySyncFilters, etc.
+  risk-gates.js        — Daily loss limit (4%), min R:R gate, mid-run drawdown halt (4%)
+  runner-utils.js      — Pure helpers: buildRegimeConsensus, checkMidRunDrawdown, routeToApprovalLists, applySyncFilters, etc.
 db.js                  — Postgres pool, withTransaction, withBotLock (advisory lock)
 state-store.js         — loadState / saveState; atomic trade + blob writes
 trade-store.js         — Separate trades table (loadRecentTrades, insertTrade)
+prune-trades.js        — Diagnostic/maintenance: per-day breakdown + scoped transactional delete of contaminated trades (dry-run by default)
+analyze-trades.js      — Diagnostic: post-fix breakdown by setup/regime/approval/direction/exit-reason/score, per-signal out-of-sample lift, daily equity curve
 railway.json           — Shared Railway config (npm start) — used by main server
 railway-runner.json    — Runner-only Railway config (npm run task:fast-scan)
+railway-prune.json     — One-off config for prune-trades.js (node prune-trades.js, no healthcheck)
+railway-analyze.json   — One-off config for analyze-trades.js (node analyze-trades.js, no healthcheck)
 ```
+
+**Diagnostic one-offs (`prune-trades.js`, `analyze-trades.js`):** run via a Railway one-off
+service that **must** point its config-as-code path at `railway-prune.json` / `railway-analyze.json`
+— otherwise the root `railway.json` `npm start` override launches a full bot instance instead of
+the script (this actually happened — a third bot ran on shared state). Give the service
+`DATABASE_URL` (reference `${{Postgres.DATABASE_URL}}`). Both accept env-var args so the window
+can be set without editing the start command: `PRUNE_FROM`/`PRUNE_TO`/`PRUNE_APPLY` and
+`ANALYZE_FROM`(`=all`)/`ANALYZE_TO`/`ANALYZE_MIN_SIGNAL`. (The old `apply-seed-job` service was deleted.)
 
 ---
 
@@ -185,8 +197,10 @@ broken-Claude period — drags the bot, reseed the cumulative stats from a clean
 **Recommended sequence:**
 1. Merge all strategy fixes to `main` (the seed must reflect deployed code).
 2. `node backtest.js --no-db` → judge realism. Healthy = WR/PF near live baseline (≈43.6% / 1.52), EV modestly higher. **Reject if it looks too good** (WR 60%+/PF 3 = overfit).
-3. Seeding writes to **production Postgres**, so run it where `DATABASE_URL` is set — the **`apply-seed-job`** Railway one-off service runs `node backtest.js --seed-safe`. Do NOT run it from a dev sandbox (no `DATABASE_URL`).
+3. Seeding writes to **production Postgres**, so run it where `DATABASE_URL` is set. The `apply-seed-job` one-off was **deleted** — recreate a Railway one-off (config-as-code → a dedicated `railway-*.json` running `node backtest.js --seed-safe`, `DATABASE_URL` referenced from `${{Postgres.DATABASE_URL}}`). Do NOT run it from a dev sandbox (no `DATABASE_URL`).
 4. Confirm job logs: `✓ regimeStats: N seeded`, `✓ signalStats: N seeded`, `safe-seed mode: leaving dynamicWeights unchanged`.
+
+**Seeding caveat (learned this session):** `--seed-safe` only meaningfully sticks for `regimeStats` (cumulative). `signalStats`/`dynamicWeights` are **recomputed from `state.trades.slice(-80)` every run** (`adaptation.js` → `updateDynamicWeights`), so a seed of those is overwritten on the next cycle. To actually change windowed stats you must change the underlying `trades` table (e.g. `prune-trades.js`), not seed. A full `--seed` is near-useless for fixing live performance for the same reason.
 
 **June 2026 dry run (15 coins, 3251 trades, 12m):** WR 44.7%, PF 1.52, EV $6.22, DD 9.43% — believable, matched baseline. Approval route: auto WR 45.9%/EV $7.27 vs claude-routed WR 41.4%/EV $3.40 (confirms Claude-gate candidates are genuinely weaker — running with Claude broken hurt).
 
@@ -227,7 +241,7 @@ Every mean-reversion/fade signal showed positive lift, every trend/momentum sign
 - `prune-trades.js` + `railway-prune.json` — per-day WR/PF/EV breakdown; scoped transactional delete (dry-run by default; `PRUNE_FROM`/`PRUNE_TO`/`PRUNE_APPLY` env vars). **Note:** pruning was investigated and rejected — the cleanest post-fix data is still net-negative, so contamination was not the cause.
 - `analyze-trades.js` + `railway-analyze.json` — post-fix breakdown by setup/regime/approval/direction/exit-reason/score (`ANALYZE_FROM`/`ANALYZE_TO`).
 
-**Open strategic question (raised, not yet resolved):** is the design overfit at the root (too many indicators, fragile weight-fitting)? Candidate direction: per-regime signal pruning — keep only signals with robust *out-of-sample* edge, validated walk-forward rather than on the in-sample backtest. Treat the backtest profit figure as unreliable going forward.
+**Root-cause read (overfitting):** the design *is* overfit — too many indicators + adaptive weights (`dynamicWeights`/`signalStats`) that continuously re-fit the last-80 trades, so the model perpetually chases recent noise. The backtest fits and tests on the same data (weights flow in via imports; `simulatePosition` is an optimistic separate exit sim), which is why it projected +$6.22 EV/trade while live delivered −$6.81. **The MR pivot above is the first response.** Still pending: (1) **walk-forward validation** — judge any future change out-of-sample, never on the in-sample backtest; (2) larger-sample re-run of the signal-lift analysis once ~100-150 clean MR-era trades accumulate; (3) possible regime-conditional re-enabling of trend signals if the early $10k→$12k run turns out to be trend-in-a-trending-market (trace with `analyze-trades.js --from all`). Treat the backtest profit figure as unreliable going forward.
 
 ---
 
@@ -244,10 +258,15 @@ Every mean-reversion/fade signal showed positive lift, every trend/momentum sign
 - **Claude approval outage (assistant-message prefill)** — `callClaudeBudgeted` ended requests with an assistant prefill to force JSON; the current model rejects prefill, so every approval call 400'd and the bot ran on auto-approval only. Fixed by removing the prefill, steering JSON via the system prompt, and parsing with `extractJsonObject`. `bot/claude.js`. (See Claude API Configuration above.)
 
 ### Active / Ongoing
-- **DRIFT WARNING** — Last 100 trades: WR 42%, EV $1.64, PF 1.09, DD 8.6% — all below baseline (WR 43.6%, EV $4.03, PF 1.52, DD 3.5%). Likely contaminated by the duplicate-instance period (two bots racing on shared state). Expected to recover as clean single-instance trades roll the bad ones out of the 100-trade window. The June 2026 strategy-hardening pass (see above) also targets the underlying edge. Re-evaluate after ~150 clean trades; if still drifting, it's a real bear-regime strategy issue.
-- **Claude API errors** — See above. Deploy error logging fix and check Railway logs.
+- **Edge collapse is real, not contamination (RESOLVED diagnosis → MR pivot).** The drift warning turned out to be genuine overfitting, not just the duplicate-instance period. The first clean post-fix sample (50 trades, healthy since 2026-06-10) was **WR 34% / PF 0.59 / −$340**, with the score showing no separating power (winners 5.33 vs losers 5.27). Pruning old contaminated trades was investigated and **rejected** — the cleanest data is still net-negative. Response: the four Edge-Recovery gates + MR pivot (see "Edge-Recovery Gates" above). **Watch:** trade frequency drops hard (MR is rare); re-run `analyze-trades.js` after ~100-150 clean MR-era trades to confirm the MR edge holds and re-do the signal-lift kill-list on firmer ground.
+- **Monitoring after MR-pivot deploy** — confirm scan logs show `mr-primary-mode` rejections (non-MR setups held back), `momentum-disabled`, `shorts-bear-only`, and that surviving entries are MR or Claude-approved. Note: with `REQUIRE_CLAUDE_APPROVAL`, the **fast-scan runner only opens `claude-cached` entries** and the bot stops opening new entries when Claude budget ≥90% (fail-safe).
 - **SLX-USDT-SWAP / IRYS-USDT-SWAP partial candles** — These symbols consistently return fewer candles than requested (SLX: 56/200 on 4H, IRYS: 85/200 on 4H). New listings with limited history. Bot skips them correctly but they appear as noise in logs.
 - **`superduperbot-premarket` service** — Still running on schedule but does nothing (disabled in code). Wastes a Railway service slot — consider deleting it.
+
+### Recently Fixed (June 2026 session)
+- **Mid-run drawdown halt froze the bot** — the −1.5% net-PnL threshold halted all entries after one or two stop-losses (~$165 on $11k), firing 78+ consecutive runs. Raised to −4.0% and aligned the daily gross-loss gate (`risk-gates.js`) from 3% → 4%. Added a **high-conviction override** (`HIGH_CONVICTION_OVERRIDE = 6`): on a halt day, score ≥ 6 setups still get through. Both halts reset at 00:00 UTC. `runner-utils.js`, `runner.js`, `risk-gates.js`.
+- **Claude API errors / prefill outage** — resolved (see Claude API Configuration). Post-fix Claude spend ticks up and `[CLAUDE BATCH]` succeeds.
+- **Rotation wrap-around double-scan** — when the symbol universe was smaller than one scan window the wrap-around double-scored symbols (test-only impact at ~245 live symbols). Fixed to scan the whole universe once when `total <= maxSymbolsPerRun`. `runner.js`.
 
 ---
 
