@@ -73,7 +73,7 @@ async function main() {
 
   const { rows } = await pool.query(
     `SELECT pnl, setup_type, regime, approval_type, direction, reason,
-            score, hold_hours, is_partial, closed_at
+            score, hold_hours, is_partial, closed_at, reasons, signal_set
      FROM trades
      WHERE ${dateClause}
      ORDER BY closed_at ASC`,
@@ -128,6 +128,45 @@ async function main() {
     console.log(`  Avg score (winners):${avgWinScore.toFixed(2)}`);
     console.log(`  Avg score (losers): ${avgLossScore.toFixed(2)}`);
   }
+
+  // ── By Signal (out-of-sample lift) ───────────────────────────────────────────
+  // For each signal that fired, compare trades WHERE it was present vs absent.
+  // lift = EV(present) − EV(absent): the signal's marginal contribution. Positive
+  // lift = the signal earns its place; negative = it's noise (or worse) and a
+  // candidate for deletion. These are live post-fix trades, so this is genuinely
+  // out-of-sample evidence — unlike the in-sample backtest.
+  const MIN_SAMPLE = Number(getArg("min") || process.env.ANALYZE_MIN_SIGNAL || 4);
+
+  const sigsOf = (r) => {
+    const a = Array.isArray(r.reasons) ? r.reasons : [];
+    const b = Array.isArray(r.signal_set) ? r.signal_set : [];
+    return [...new Set([...a, ...b])];
+  };
+  const evOf = (rs) => rs.length ? rs.reduce((s, r) => s + (parseFloat(r.pnl) || 0), 0) / rs.length : 0;
+
+  const allSignals = new Set();
+  for (const r of rows) for (const s of sigsOf(r)) allSignals.add(s);
+
+  const signalRows = [];
+  for (const sig of allSignals) {
+    const withSig    = rows.filter(r => sigsOf(r).includes(sig));
+    const withoutSig = rows.filter(r => !sigsOf(r).includes(sig));
+    if (withSig.length < MIN_SAMPLE) continue;
+    const s = summarize(withSig);
+    const lift = evOf(withSig) - evOf(withoutSig);
+    signalRows.push({ sig, s, lift });
+  }
+  // Best lift first → worst lift (kill-list) last.
+  signalRows.sort((a, b) => b.lift - a.lift);
+
+  console.log(`\n── By Signal — out-of-sample lift (n>=${MIN_SAMPLE}) ${"─".repeat(28)}`);
+  console.log(`  ${"signal".padEnd(26)} n    WR      PF      EV         lift`);
+  for (const { sig, s, lift } of signalRows) {
+    const liftStr = (lift >= 0 ? "+" : "") + "$" + lift.toFixed(2);
+    const flag = lift < 0 ? "  ⚠ delete?" : "";
+    console.log(`  ${sig.padEnd(26)} ${String(s.n).padStart(3)}  ${s.wr.padStart(6)}  ${s.pf.padStart(5)}  ${s.ev.padStart(8)}  ${liftStr.padStart(9)}${flag}`);
+  }
+  console.log(`\n  ⚠ = negative lift (trades with this signal did WORSE than trades without it) — prune candidate.`);
 
   console.log(`\n${"=".repeat(70)}\n`);
 
