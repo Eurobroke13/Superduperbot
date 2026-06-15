@@ -217,10 +217,10 @@ test("phaseScan golden - below-threshold candidate appears in skippedByReason or
   assert.ok(totalRejected + totalSkipped >= 1, "low-score candidate must be tracked");
 });
 
-test("phaseScan golden - mid-run drawdown halt fires when PnL is -2%", async () => {
+test("phaseScan golden - mid-run drawdown halt fires when PnL is -3.1%", async () => {
   // checkMidRunDrawdown reads state.trades (already-committed) not _pendingTrades.
   const state = makeState({
-    trades: [{ pnl: -300, closedAt: new Date().toISOString() }],
+    trades: [{ pnl: -310, closedAt: new Date().toISOString() }],
     cash: 10000,
     positions: {}
   });
