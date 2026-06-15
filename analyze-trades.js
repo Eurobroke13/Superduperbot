@@ -17,7 +17,11 @@ function getArg(name) {
   const i = process.argv.indexOf(`--${name}`);
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : null;
 }
-const FROM = getArg("from") || process.env.ANALYZE_FROM || "2026-06-10";
+// FROM defaults to the post-fix era. Pass "all" (--from all / ANALYZE_FROM=all)
+// to scan the entire trade history — used to trace the early profitable run.
+const FROM_RAW = getArg("from") || process.env.ANALYZE_FROM || "2026-06-10";
+const ALL  = FROM_RAW === "all";
+const FROM = ALL ? null : FROM_RAW;
 const TO   = getArg("to")   || process.env.ANALYZE_TO   || null;
 
 function summarize(rows) {
@@ -64,25 +68,31 @@ function section(title, groups) {
 async function main() {
   await initDb();
 
-  const params = [FROM];
-  let dateClause = `closed_at >= $1::date`;
-  if (TO) {
-    params.push(TO);
-    dateClause += ` AND closed_at < ($2::date + INTERVAL '1 day')`;
-  }
+  const params = [];
+  const clauses = [];
+  if (FROM) { params.push(FROM); clauses.push(`closed_at >= $${params.length}::date`); }
+  if (TO)   { params.push(TO);   clauses.push(`closed_at < ($${params.length}::date + INTERVAL '1 day')`); }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
 
   const { rows } = await pool.query(
     `SELECT pnl, setup_type, regime, approval_type, direction, reason,
             score, hold_hours, is_partial, closed_at, reasons, signal_set
      FROM trades
-     WHERE ${dateClause}
+     ${where}
      ORDER BY closed_at ASC`,
     params
   );
 
-  const window = TO ? `${FROM} → ${TO}` : `${FROM} → now`;
+  // Data coverage — so we know how far back the table actually reaches.
+  const cov = await pool.query(
+    `SELECT COUNT(*)::int AS n, MIN(closed_at) AS first, MAX(closed_at) AS last FROM trades`
+  );
+  const c = cov.rows[0];
+
+  const window = ALL ? "ALL HISTORY" : (TO ? `${FROM} → ${TO}` : `${FROM} → now`);
   console.log(`\n${"=".repeat(70)}`);
   console.log(`TRADE ANALYSIS  ${window}  (${rows.length} trades)`);
+  console.log(`Table holds ${c.n} trades total, ${c.first ? new Date(c.first).toISOString().slice(0,10) : "?"} → ${c.last ? new Date(c.last).toISOString().slice(0,10) : "?"}`);
   console.log(`${"=".repeat(70)}`);
 
   if (rows.length === 0) {
@@ -99,6 +109,27 @@ async function main() {
   const fullCloses = rows.filter(r => !r.is_partial);
   const full = summarize(fullCloses);
   console.log(`FULL CLOSES: n=${full?.n}  WR=${full?.wr}  PF=${full?.pf}  EV=${full?.ev}  sum=${full?.sum}`);
+
+  // ── Daily equity curve — trace the rise, peak, and rollover ──────────────────
+  // Cumulative PnL from the window start (relative to 0). The peak row is marked
+  // so the $10k→$12k run and the point it turned over are easy to spot.
+  const dayMap = {};
+  for (const r of rows) {
+    const d = new Date(r.closed_at).toISOString().slice(0, 10);
+    dayMap[d] = (dayMap[d] || 0) + (parseFloat(r.pnl) || 0);
+  }
+  const days = Object.keys(dayMap).sort();
+  let cum = 0, peak = -Infinity, peakDay = "";
+  for (const d of days) { cum += dayMap[d]; if (cum > peak) { peak = cum; peakDay = d; } }
+  console.log(`\n── Daily Equity Curve (cumulative PnL from window start) ${"─".repeat(13)}`);
+  console.log(`  ${"date".padEnd(12)} ${"dayPnL".padStart(11)} ${"cumulative".padStart(12)}`);
+  cum = 0;
+  for (const d of days) {
+    cum += dayMap[d];
+    const mark = d === peakDay ? "  ← PEAK" : "";
+    console.log(`  ${d}  ${("$" + dayMap[d].toFixed(2)).padStart(11)} ${("$" + cum.toFixed(2)).padStart(12)}${mark}`);
+  }
+  console.log(`  Peak cumulative PnL: $${peak.toFixed(2)} on ${peakDay}; ended at $${cum.toFixed(2)}.`);
 
   section("By Setup Type",    groupBy(rows, "setup_type"));
   section("By Regime",        groupBy(rows, "regime"));
