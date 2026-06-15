@@ -41,6 +41,13 @@ export const REQUIRE_CLAUDE_APPROVAL = true;  // no blind auto-approval; route e
 export const DISABLE_MOMENTUM_SETUPS = true;  // block "momentum" setupType entries
 export const SHORTS_BEAR_ONLY        = true;  // block trend/momentum shorts outside bear (MR shorts exempt)
 
+// Mean-reversion pivot (June 2026): the signal-lift analysis showed every
+// MR/fade signal has positive out-of-sample edge while every trend/momentum
+// signal is negative. This makes MR the primary strategy — non-MR setups are
+// blocked unless they reach the (high-conviction) Claude threshold, so only
+// mean-reversion and genuinely strong, Claude-vetted trend setups can enter.
+export const MEAN_REVERSION_PRIMARY  = true;
+
 export const CANDLE_LIMIT       = 500;
 export const DRAWDOWN_LIMIT     = 0.15;
 
