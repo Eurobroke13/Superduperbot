@@ -9,12 +9,14 @@
 // SAFETY: dry-run by default. Nothing is deleted unless you pass BOTH a date
 // range (--from / --to) AND --apply. A delete runs inside a transaction.
 //
-// USAGE (run where DATABASE_URL is set — e.g. a Railway one-off service):
-//   node prune-trades.js
+// USAGE — CLI args OR environment variables (Railway-friendly, because a
+// config-file start command can't easily pass per-run args):
+//   node prune-trades.js                         (or no PRUNE_* vars set)
 //       → per-day breakdown of the last 60 days so you can spot the bad window
 //   node prune-trades.js --from 2026-05-10 --to 2026-05-31
+//   PRUNE_FROM=2026-05-10 PRUNE_TO=2026-05-31 node prune-trades.js
 //       → dry run: aggregate stats for exactly the rows that WOULD be deleted
-//   node prune-trades.js --from 2026-05-10 --to 2026-05-31 --apply
+//   ... --apply   (or PRUNE_APPLY=true)
 //       → actually delete that window (transactional)
 //
 // Dates are inclusive and interpreted as UTC days. --to 2026-05-31 covers all
@@ -23,14 +25,14 @@
 
 import { pool, initDb } from "./db.js";
 
-// ── arg parsing ──────────────────────────────────────────────────────────────
+// ── arg parsing (CLI flag falls back to env var) ─────────────────────────────
 function getArg(name) {
   const i = process.argv.indexOf(`--${name}`);
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : null;
 }
-const FROM = getArg("from");
-const TO = getArg("to");
-const APPLY = process.argv.includes("--apply");
+const FROM = getArg("from") || process.env.PRUNE_FROM || null;
+const TO = getArg("to") || process.env.PRUNE_TO || null;
+const APPLY = process.argv.includes("--apply") || process.env.PRUNE_APPLY === "true";
 
 // ── stats helpers ────────────────────────────────────────────────────────────
 function summarize(rows) {
