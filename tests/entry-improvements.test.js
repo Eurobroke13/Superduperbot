@@ -275,7 +275,9 @@ test("confirmMeanReversionEntry - 15m unconfirmed but strong 1h still enters", (
 });
 
 test("confirmMeanReversionEntry - 15m rejected when unconfirmed and score modest", () => {
-  const r = confirmMeanReversionEntry({ setupType: "mean-reversion", signal: "long", score: 6 }, flat(12));
+  // score 5.0 is below the 5.5 unconfirmed-but-strong fallback, so a flat 15m
+  // (no candle pattern, no RSI divergence, no StochRSI crossover) → rejected.
+  const r = confirmMeanReversionEntry({ setupType: "mean-reversion", signal: "long", score: 5.0 }, flat(12));
   assert.equal(r.enter, false);
   assert.match(r.reason, /^mr-15m-rejected/);
 });

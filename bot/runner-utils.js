@@ -127,9 +127,10 @@ export function trimToClosedCandles(candles, timeframeMs, confirmMs = 15 * 60 * 
 }
 
 /**
- * Returns true when today's realized PnL breaches the -3.0% mid-run halt.
- * Raised from -1.5% to match the daily loss gate (risk-gates.js: 3% gross losses).
- * -1.5% net was freezing the bot after just one or two stop-losses on an $11k account.
+ * Returns true when today's realized PnL breaches the -4.0% mid-run halt.
+ * Raised from -1.5%: that threshold was freezing the bot after just one or two
+ * stop-losses on an $11k account. -4% gives room to let positions play out and
+ * matches the 4% gross daily loss gate in risk-gates.js (consistent daily tolerance).
  */
 export function checkMidRunDrawdown(state, todayStr) {
   const today = todayStr ?? new Date().toISOString().slice(0, 10);
@@ -139,7 +140,7 @@ export function checkMidRunDrawdown(state, todayStr) {
   const approxPortfolioVal = (state.cash || 0) +
     Object.values(state.positions || {}).reduce((s, p) => s + (p.notional || 0), 0);
   if (approxPortfolioVal <= 0) return false;
-  return todayRealizedPnl / approxPortfolioVal < -0.03;
+  return todayRealizedPnl / approxPortfolioVal < -0.04;
 }
 
 /**

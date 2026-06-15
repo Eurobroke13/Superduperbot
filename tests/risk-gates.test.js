@@ -19,16 +19,16 @@ test("checkMinRR blocks only below the minimum", () => {
   assert.equal(checkMinRR({ riskReward: 2.0 }).allowed, true);
 });
 
-test("checkDailyLossLimit halts when today's realized losses exceed 3 percent", () => {
+test("checkDailyLossLimit halts when today's realized losses exceed 4 percent", () => {
   const state = { cash: 10000, positions: {}, trades: [] };
   const todayTrades = [
-    { pnl: -150, closedAt: new Date().toISOString() },
-    { pnl: -160, closedAt: new Date().toISOString() },
+    { pnl: -210, closedAt: new Date().toISOString() },
+    { pnl: -220, closedAt: new Date().toISOString() },
     { pnl: 200, closedAt: new Date().toISOString() }
   ];
   const result = checkDailyLossLimit(state, todayTrades);
   assert.equal(result.allowed, false);
-  assert.ok(result.dailyLoss >= 300);
+  assert.ok(result.dailyLoss >= 400);
 });
 
 test("getWeightRegimeAware equalizes paired sideways weights", () => {

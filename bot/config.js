@@ -23,6 +23,9 @@ export const ATR_TP_MULT        = 4.0;
 export const MAX_POSITIONS      = 10;
 export const ENTRY_THRESHOLD    = 4;
 export const CLAUDE_THRESHOLD   = 6;
+// Minimum score for an entry to bypass a daily-loss / mid-run drawdown halt.
+// On a halt day only A+ setups at or above this score are allowed through.
+export const HIGH_CONVICTION_OVERRIDE = 6;
 export const CANDLE_LIMIT       = 500;
 export const DRAWDOWN_LIMIT     = 0.15;
 

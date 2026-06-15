@@ -1,6 +1,7 @@
 import {
   ENTRY_THRESHOLD,
   FUNDING_SETTLEMENT_HOURS,
+  HIGH_CONVICTION_OVERRIDE,
   HOUR_PERFORMANCE,
   MAX_POSITIONS,
   SETTLEMENT_AVOID_MINUTES
@@ -737,24 +738,26 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   if (todayTrades && Array.isArray(state._pendingTrades) && state._pendingTrades.length) {
     todayTrades = [...todayTrades, ...state._pendingTrades];
   }
+  // ── Daily loss / mid-run drawdown halts ──────────────────────────────────────
+  // When either daily circuit-breaker trips we no longer skip the run entirely —
+  // instead we restrict entries to high-conviction setups (score >= 6). A genuine
+  // A+ signal is allowed through even on a bad day; everything marginal is blocked.
+  let highConvictionOnly = false;
+
   const dailyCheck = checkDailyLossLimit(state, todayTrades);
   if (!dailyCheck.allowed) {
-    console.log(`[SCAN] ${dailyCheck.reason} - halting new entries for today`);
-    incrementCount(scanSummary.skippedByReason, "daily-loss-limit");
+    console.log(`[SCAN] ${dailyCheck.reason} - restricting to high-conviction entries (score >= ${HIGH_CONVICTION_OVERRIDE})`);
     incrementCount(scanSummary.blockedByReason, "daily-loss-limit");
-    state.lastScanSummary = scanSummary;
-    return;
+    highConvictionOnly = true;
   }
 
-  // ── Mid-run drawdown halt ────────────────────────────────────────────────────
-  // If positions hit SL earlier in this same run, block new entries immediately
-  // rather than waiting for the daily cap to trigger retroactively next run.
+  // Mid-run drawdown halt: if positions hit SL earlier in this same run, react
+  // immediately rather than waiting for the daily cap to trigger next run.
   // Logic lives in the unit-tested checkMidRunDrawdown helper (runner-utils.js).
   if (checkMidRunDrawdown(state)) {
-    console.warn("[SCAN] Mid-run drawdown halt: today's realized PnL exceeds -3.0% — skipping new entries");
-    incrementCount(scanSummary.skippedByReason, "mid-run-drawdown-halt");
-    state.lastScanSummary = scanSummary;
-    return;
+    console.warn(`[SCAN] Mid-run drawdown halt: today's realized PnL exceeds -4.0% - restricting to high-conviction entries (score >= ${HIGH_CONVICTION_OVERRIDE})`);
+    incrementCount(scanSummary.blockedByReason, "mid-run-drawdown-halt");
+    highConvictionOnly = true;
   }
 
   const entryThreshold = getAdaptiveThreshold(state, regime.label);
@@ -824,11 +827,18 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const offset = (state.scanBatchOffset || 0) % totalTradeable;
   state.scanBatchOffset = (offset + maxSymbolsPerRun) % totalTradeable;
 
-  // Wrap-around: if the window would go past the end, start a second slice from 0
-  const sliceA = rankedTradeable.slice(offset, offset + maxSymbolsPerRun);
-  const rawBatch = sliceA.length >= maxSymbolsPerRun
-    ? sliceA
-    : [...sliceA, ...rankedTradeable.slice(0, maxSymbolsPerRun - sliceA.length)];
+  // When the whole universe fits inside one window, scan it once (no rotation,
+  // no wrap-around) — guards against double-scanning the same symbol.
+  let rawBatch;
+  if (totalTradeable <= maxSymbolsPerRun) {
+    rawBatch = rankedTradeable;
+  } else {
+    // Wrap-around: if the window would go past the end, start a second slice from 0
+    const sliceA = rankedTradeable.slice(offset, offset + maxSymbolsPerRun);
+    rawBatch = sliceA.length >= maxSymbolsPerRun
+      ? sliceA
+      : [...sliceA, ...rankedTradeable.slice(0, maxSymbolsPerRun - sliceA.length)];
+  }
 
   const effectiveStart = offset;
   const effectiveEnd   = offset + maxSymbolsPerRun;
@@ -1065,7 +1075,12 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     }
   }
 
-  const qualified = topSignals.filter(c => c.score >= entryThreshold);
+  // On a halt day, raise the bar to the high-conviction override so only A+
+  // setups pass; otherwise use the regime-adaptive threshold.
+  const effectiveThreshold = highConvictionOnly
+    ? Math.max(entryThreshold, HIGH_CONVICTION_OVERRIDE)
+    : entryThreshold;
+  const qualified = topSignals.filter(c => c.score >= effectiveThreshold);
   scanSummary.candidatesQualified = qualified.length;
   for (const candidate of qualified) qualifiedSet.add(candidate.symbol);
   const longs = qualified.filter(c => c.signal === "long").sort((a, b) => b.score - a.score);
