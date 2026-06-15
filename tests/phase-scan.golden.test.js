@@ -217,8 +217,10 @@ test("phaseScan golden - below-threshold candidate appears in skippedByReason or
   assert.ok(totalRejected + totalSkipped >= 1, "low-score candidate must be tracked");
 });
 
-test("phaseScan golden - mid-run drawdown halt fires when PnL is -4.1%", async () => {
+test("phaseScan golden - mid-run drawdown halt restricts to high-conviction when PnL is -4.1%", async () => {
   // checkMidRunDrawdown reads state.trades (already-committed) not _pendingTrades.
+  // The default candidate scores 5.5 (< 6 override), so nothing opens — but the
+  // halt now records in blockedByReason and continues scanning rather than bailing.
   const state = makeState({
     trades: [{ pnl: -410, closedAt: new Date().toISOString() }],
     cash: 10000,
@@ -228,7 +230,25 @@ test("phaseScan golden - mid-run drawdown halt fires when PnL is -4.1%", async (
   await runBot(ENV, deps);
 
   const s = state.lastScanSummary;
-  assert.ok(s?.skippedByReason?.["mid-run-drawdown-halt"] >= 1, "halt must fire");
+  assert.ok(s?.blockedByReason?.["mid-run-drawdown-halt"] >= 1, "halt must be recorded");
+  assert.equal(s?.openedCount || 0, 0, "marginal (score<6) candidate must not open on a halt day");
+});
+
+test("phaseScan golden - high-conviction candidate (score 6.5) bypasses the halt", async () => {
+  const state = makeState({
+    trades: [{ pnl: -410, closedAt: new Date().toISOString() }],
+    cash: 10000,
+    positions: {}
+  });
+  const deps = makeDeps({
+    scored: [makeCandidate("BTC-USDT-SWAP", "long", 6.5)],
+    depOverrides: { loadState: async () => state }
+  });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  assert.ok(s?.blockedByReason?.["mid-run-drawdown-halt"] >= 1, "halt must still be recorded");
+  assert.ok((s?.candidatesQualified || 0) >= 1, "score>=6 candidate must qualify even on a halt day");
 });
 
 test("phaseScan golden - all-slots-full guard skips scan", async () => {
