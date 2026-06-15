@@ -751,7 +751,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   // rather than waiting for the daily cap to trigger retroactively next run.
   // Logic lives in the unit-tested checkMidRunDrawdown helper (runner-utils.js).
   if (checkMidRunDrawdown(state)) {
-    console.warn("[SCAN] Mid-run drawdown halt: today's realized PnL exceeds -3.0% — skipping new entries");
+    console.warn("[SCAN] Mid-run drawdown halt: today's realized PnL exceeds -4.0% — skipping new entries");
     incrementCount(scanSummary.skippedByReason, "mid-run-drawdown-halt");
     state.lastScanSummary = scanSummary;
     return;
