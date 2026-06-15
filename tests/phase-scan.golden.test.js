@@ -251,6 +251,37 @@ test("phaseScan golden - high-conviction candidate (score 6.5) bypasses the halt
   assert.ok((s?.candidatesQualified || 0) >= 1, "score>=6 candidate must qualify even on a halt day");
 });
 
+test("phaseScan golden - momentum setups are blocked (edge-recovery)", async () => {
+  const state = makeState();
+  const mom = { ...makeCandidate("MOM-USDT-SWAP"), setupType: "momentum", score: 7 };
+  const deps = makeDeps({
+    tickers: [makeTicker("MOM-USDT-SWAP")],
+    contracts: ["MOM-USDT-SWAP"],
+    scored: [mom],
+    depOverrides: { loadState: async () => state }
+  });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  assert.ok(s?.blockedByReason?.["momentum-disabled"] >= 1, "momentum must be blocked");
+  assert.equal(s?.candidatesQualified || 0, 0, "momentum must not qualify");
+});
+
+test("phaseScan golden - non-bear trend shorts are blocked (edge-recovery)", async () => {
+  const state = makeState(); // default regime is bull
+  const sht = { ...makeCandidate("SHT-USDT-SWAP", "short"), setupType: "trend", h4Trend: "bearish", score: 7 };
+  const deps = makeDeps({
+    tickers: [makeTicker("SHT-USDT-SWAP")],
+    contracts: ["SHT-USDT-SWAP"],
+    scored: [sht],
+    depOverrides: { loadState: async () => state }
+  });
+  await runBot(ENV, deps);
+
+  const s = state.lastScanSummary;
+  assert.ok(s?.blockedByReason?.["shorts-bear-only"] >= 1, "trend short outside bear must be blocked");
+});
+
 test("phaseScan golden - all-slots-full guard skips scan", async () => {
   const positions = {};
   for (let i = 0; i < 10; i++) positions[`COIN${i}-USDT-SWAP`] = { size: 1, notional: 1000 };
