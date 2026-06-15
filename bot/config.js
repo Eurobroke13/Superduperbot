@@ -26,6 +26,21 @@ export const CLAUDE_THRESHOLD   = 6;
 // Minimum score for an entry to bypass a daily-loss / mid-run drawdown halt.
 // On a halt day only A+ setups at or above this score are allowed through.
 export const HIGH_CONVICTION_OVERRIDE = 6;
+
+// ── Edge-recovery gates (June 2026) ──────────────────────────────────────────
+// Post-fix live analysis (50 trades, system clean since 2026-06-10) showed the
+// bot only earns in three pockets — mean-reversion, sideways regime, and
+// Claude-gated entries — and bleeds everywhere else:
+//   • blind auto-approval  -$383 (43 trades, 33% WR)
+//   • momentum setups      -$294 (22% WR — the single worst bucket)
+//   • trend/momentum shorts -$184 (25% WR)
+// The score itself lost predictive power live (winners avg 5.33 vs losers 5.27),
+// so these gates shrink the bot to its demonstrated edge rather than re-tuning
+// thresholds. Flip any flag to false to restore the prior behavior.
+export const REQUIRE_CLAUDE_APPROVAL = true;  // no blind auto-approval; route entries through Claude
+export const DISABLE_MOMENTUM_SETUPS = true;  // block "momentum" setupType entries
+export const SHORTS_BEAR_ONLY        = true;  // block trend/momentum shorts outside bear (MR shorts exempt)
+
 export const CANDLE_LIMIT       = 500;
 export const DRAWDOWN_LIMIT     = 0.15;
 

@@ -192,6 +192,37 @@ broken-Claude period — drags the bot, reseed the cumulative stats from a clean
 
 ---
 
+## Edge-Recovery Gates (June 2026 — backtest-vs-live reckoning)
+
+**The reckoning:** the 12m backtest projected **+$6.22 EV/trade** (~+€20k). The first
+clean post-fix live sample (50 trades, system healthy since 2026-06-10, after the
+duplicate-instance + broken-Claude fixes) delivered **−$6.81 EV/trade**. A ~$13/trade
+in-sample→out-of-sample collapse = textbook **overfitting**. The tell: live, the score
+no longer separates winners from losers (**winners avg 5.33, losers 5.27**). The weights
+were fit to the backtest window and memorized it; they don't generalize.
+
+**Why the backtest overstates (don't trust its profit number as a forward expectation):**
+1. Weights (`dynamicWeights`/`signalStats`) are fit on the same history the backtest replays — in-sample score separation is circular.
+2. `backtest.js` `simulatePosition` is an optimistic, separate exit sim — no slippage, funding, partial-candle gaps, or missed fills.
+3. 12m averaging blends favorable trending months (April carried it — strip the one +$2,092 day and the other 59 days are −$1,400) with the current chop. A long-biased trend system bleeds in non-trending/bear regimes.
+
+**The post-fix breakdown (where edge actually lives — use `analyze-trades.js`):**
+- Profitable pockets only: **mean-reversion** (+$99, n=5), **sideways regime** (PF 4.32, +$75, n=5), **Claude-gated** (PF 1.70, +$42, n=7).
+- Bleeders: **blind auto-approval** (−$383, 43 trades, 33% WR), **momentum** (−$294, 22% WR — worst setup), **trend/momentum shorts** (−$184, 25% WR). Almost everything dies by stop-loss.
+
+**Three gates added to shrink the bot to its demonstrated live edge (`bot/config.js`):**
+1. **`REQUIRE_CLAUDE_APPROVAL = true`** — no blind auto-approval; every survivor routes through Claude (or a cached Claude verdict). Wired via `autoApproveFn` in `runner.js` (`REQUIRE_CLAUDE_APPROVAL ? () => false : autoApproveSignal`), so `autoApproveSignal`/`routeToApprovalLists` stay pure. **Side effect:** the fast-scan runner now only opens `claude-cached` entries (it makes no Claude calls), and when Claude budget hits ≥90% the bot stops opening new entries (fail-safe — `applyClaudeSpendGuardrail` dumps to autoList which `autoApproveFn` then rejects).
+2. **`DISABLE_MOMENTUM_SETUPS = true`** — blocks `setupType === "momentum"` at qualification (`runner.js` phaseScan, reason `momentum-disabled`). Note: momentum in bull regime is remapped to `bull-continuation` upstream (`scoring.js:826`) and is NOT blocked — only raw non-bull momentum.
+3. **`SHORTS_BEAR_ONLY = true`** — blocks shorts when `regime !== "bear"` AND `setupType !== "mean-reversion"` (reason `shorts-bear-only`). **MR shorts are deliberately exempt** — they're contrarian fades that only fire in sideways and were net-profitable.
+
+**Diagnostic tools (run via a Railway one-off with a dedicated config file so `railway.json`'s `npm start` doesn't override the start command):**
+- `prune-trades.js` + `railway-prune.json` — per-day WR/PF/EV breakdown; scoped transactional delete (dry-run by default; `PRUNE_FROM`/`PRUNE_TO`/`PRUNE_APPLY` env vars). **Note:** pruning was investigated and rejected — the cleanest post-fix data is still net-negative, so contamination was not the cause.
+- `analyze-trades.js` + `railway-analyze.json` — post-fix breakdown by setup/regime/approval/direction/exit-reason/score (`ANALYZE_FROM`/`ANALYZE_TO`).
+
+**Open strategic question (raised, not yet resolved):** is the design overfit at the root (too many indicators, fragile weight-fitting)? Candidate direction: per-regime signal pruning — keep only signals with robust *out-of-sample* edge, validated walk-forward rather than on the in-sample backtest. Treat the backtest profit figure as unreliable going forward.
+
+---
+
 ## Known Issues & History
 
 ### Fixed

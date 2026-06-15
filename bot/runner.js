@@ -1,10 +1,13 @@
 import {
+  DISABLE_MOMENTUM_SETUPS,
   ENTRY_THRESHOLD,
   FUNDING_SETTLEMENT_HOURS,
   HIGH_CONVICTION_OVERRIDE,
   HOUR_PERFORMANCE,
   MAX_POSITIONS,
-  SETTLEMENT_AVOID_MINUTES
+  REQUIRE_CLAUDE_APPROVAL,
+  SETTLEMENT_AVOID_MINUTES,
+  SHORTS_BEAR_ONLY
 } from "./config.js";
 import {
   calculateRecentLiveHealth,
@@ -763,6 +766,11 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const entryThreshold = getAdaptiveThreshold(state, regime.label);
   const claudeThreshold = getAdaptiveClaudeThreshold(state, regime.label);
 
+  // Edge-recovery: when REQUIRE_CLAUDE_APPROVAL is on, no entry auto-approves —
+  // every survivor routes through Claude (or a cached Claude verdict). Blind
+  // auto-approval was the single biggest live money-loser (-$383 / 43 trades).
+  const autoApproveFn = REQUIRE_CLAUDE_APPROVAL ? () => false : autoApproveSignal;
+
   console.log(`[SCAN] Regime:${regime.label} Entry:${entryThreshold} Claude:${claudeThreshold} TimeAdj:${timeFilter.scoreAdjustment.toFixed(1)}`);
   const slotsAvailable = MAX_POSITIONS
     - Object.keys(state.positions).length
@@ -1080,7 +1088,26 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   const effectiveThreshold = highConvictionOnly
     ? Math.max(entryThreshold, HIGH_CONVICTION_OVERRIDE)
     : entryThreshold;
-  const qualified = topSignals.filter(c => c.score >= effectiveThreshold);
+  const qualifiedRaw = topSignals.filter(c => c.score >= effectiveThreshold);
+
+  // ── Edge-recovery gates — shrink to demonstrated live edge (June 2026) ───────
+  // Momentum setups (-$294 @ 22% WR) and trend/momentum shorts outside bear
+  // (-$184 @ 25% WR) were the biggest live bleeders. Block them here, before the
+  // long/short split. Mean-reversion shorts are exempt from the bear-only gate —
+  // MR is a contrarian fade that only fires in sideways and was net-profitable.
+  const qualified = [];
+  for (const c of qualifiedRaw) {
+    if (DISABLE_MOMENTUM_SETUPS && c.setupType === "momentum") {
+      finalizeDecision(c, "rejected", "momentum-disabled", {});
+      continue;
+    }
+    if (SHORTS_BEAR_ONLY && c.signal === "short"
+        && regime.label !== "bear" && c.setupType !== "mean-reversion") {
+      finalizeDecision(c, "rejected", "shorts-bear-only", { details: { regime: regime.label } });
+      continue;
+    }
+    qualified.push(c);
+  }
   scanSummary.candidatesQualified = qualified.length;
   for (const candidate of qualified) qualifiedSet.add(candidate.symbol);
   const longs = qualified.filter(c => c.signal === "long").sort((a, b) => b.score - a.score);
@@ -1113,7 +1140,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   const { autoList, claudeList, decisions: routingDecisions } = routeToApprovalLists(toConsider, {
     regime, state,
-    autoApproveSignalFn: autoApproveSignal,
+    autoApproveSignalFn: autoApproveFn,
     checkCorrelationExposureFn: checkCorrelationExposure,
     checkMinRRFn: checkMinRR,
     shouldSkipClaudeFn: shouldSkipClaude
@@ -1140,7 +1167,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
   if (FAST_SCAN) {
     for (const c of [...autoList, ...claudeList]) {
       const cachedApproved = c.approvalType === "claude-cached";
-      const canOpen = cachedApproved || autoApproveSignal(c, regime);
+      const canOpen = cachedApproved || autoApproveFn(c, regime);
       const approvalType = cachedApproved ? "claude-cached" : "auto-fast";
       if (canOpen) {
         const staged = await _stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
@@ -1175,7 +1202,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   for (const c of autoList) {
     const approvalType = c.approvalType || "auto";
-    if (approvalType === "claude-cached" || autoApproveSignal(c, regime)) {
+    if (approvalType === "claude-cached" || autoApproveFn(c, regime)) {
       const staged = await _stageCandidateEntry(c, approvalType, state, livePrices, env, { notifyTrade, sendTelegram, scanSummary });
       if (!staged) {
         finalizeDecision(c, "skipped", "entry-not-staged", { approvalType });
