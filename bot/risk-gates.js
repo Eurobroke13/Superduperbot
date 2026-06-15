@@ -44,7 +44,7 @@ export function checkMinRR(candidate) {
 // Prevents the spiral seen on May 3 with BABY (8 trades, net +$180 after
 // swinging through +$740 wins and -$766 losses in 11 hours).
 
-const DAILY_LOSS_LIMIT_PCT = 0.03; // 3% of portfolio value
+const DAILY_LOSS_LIMIT_PCT = 0.04; // 4% of portfolio value (matches mid-run net halt)
 
 /**
  * Check if daily realized losses have exceeded the limit.

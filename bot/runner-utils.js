@@ -129,8 +129,8 @@ export function trimToClosedCandles(candles, timeframeMs, confirmMs = 15 * 60 * 
 /**
  * Returns true when today's realized PnL breaches the -4.0% mid-run halt.
  * Raised from -1.5%: that threshold was freezing the bot after just one or two
- * stop-losses on an $11k account. -4% gives room to let positions play out while
- * still acting as a daily circuit-breaker above the 3% gross daily loss gate.
+ * stop-losses on an $11k account. -4% gives room to let positions play out and
+ * matches the 4% gross daily loss gate in risk-gates.js (consistent daily tolerance).
  */
 export function checkMidRunDrawdown(state, todayStr) {
   const today = todayStr ?? new Date().toISOString().slice(0, 10);
