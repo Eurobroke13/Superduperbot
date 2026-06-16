@@ -691,7 +691,7 @@ export function weeklyPivots(candles1h) {
 
   const dayMap = {};
   for (const c of candles1h) {
-    const day = new Date(c.ts).toISOString().slice(0, 10);
+    const day = new Date(c.time).toISOString().slice(0, 10);
     if (!dayMap[day]) dayMap[day] = { high: c.high, low: c.low, close: c.close };
     else {
       if (c.high  > dayMap[day].high)  dayMap[day].high  = c.high;
