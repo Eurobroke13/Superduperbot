@@ -30,12 +30,13 @@ function makeCandle(close, high, low, open, volume) {
 }
 
 // Minimal candle set: 50 candles with a gentle uptrend so regime → bull.
+// close > open (green candles) so the 15m bull trend gate reaches confidence >= 2.0.
 function makeBullCandles(n = 60) {
   return Array.from({ length: n }, (_, i) => ({
-    close: 100 + i * 0.1,
-    high:  101 + i * 0.1,
-    low:   99  + i * 0.1,
-    open:  100 + i * 0.1,
+    close:  100 + i * 0.1,
+    high:   101 + i * 0.1,
+    low:    99  + i * 0.1,
+    open:   99.9 + i * 0.1,
     volume: 1000
   }));
 }
