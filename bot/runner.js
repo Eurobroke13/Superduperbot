@@ -46,7 +46,8 @@ import {
   drainNullReasons,
   fundingRateSignal,
   scoreSymbol,
-  confirm15mBearShort
+  confirm15mBearShort,
+  confirm15mBullTrend,
 } from "./scoring.js";
 import {
   applyEntryFilters,
@@ -73,6 +74,7 @@ import {
 
 import {
   applyBearShort15m,
+  applyBullTrend15m,
   applyClaudeSpendGuardrail,
   applyFundingAdjustments,
   applyLunarAdjustments,
@@ -93,6 +95,7 @@ import {
 } from "./runner-utils.js";
 export {
   applyBearShort15m,
+  applyBullTrend15m,
   applyClaudeSpendGuardrail,
   applyFundingAdjustments,
   applyLunarAdjustments,
@@ -1081,6 +1084,31 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       }
     } catch (err) {
       console.warn(`[${c.symbol}] 15m fetch failed, proceeding with 1h score`);
+    }
+  }
+
+  // ── Bull trend longs: fetch 15m for momentum confirmation ──
+  for (const c of topSignals) {
+    if (c.score === 0 || c.signal !== "long" || regime.label !== "bull") continue;
+    if (c.setupType === "mean-reversion") continue; // MR already has its own gate
+    try {
+      const candles15m = await _fetchCandles(c.symbol, "15m", 50);
+      if (candles15m && candles15m.length >= 12) {
+        const confirmation = confirm15mBullTrend(candles15m, c.price, c.atrVal);
+        c._15mBullConfirmation = confirmation;
+        const m = applyBullTrend15m(c, confirmation);
+        c.score *= m.scoreFactor;
+        if (m.adjustedScore !== undefined) {
+          c.adjustedScore = m.adjustedScore;
+          c.positionSizeMultiplier = m.positionSizeMultiplier;
+          c.reasons.push(...(m.patterns || []));
+          console.log(`[${c.symbol}] Bull trend 15m confirmed: ${(m.patterns || []).join(", ")}`);
+        } else {
+          console.log(`[${c.symbol}] Bull trend 15m unconfirmed, score reduced`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[${c.symbol}] 15m bull fetch failed, proceeding with 1h score`);
     }
   }
 

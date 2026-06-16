@@ -199,6 +199,44 @@ async function main() {
   }
   console.log(`\n  ⚠ = negative lift (trades with this signal did WORSE than trades without it) — prune candidate.`);
 
+  // ── Per-regime signal lift ────────────────────────────────────────────────────
+  // For each regime, compute lift within that regime only.
+  // A signal bad overall but good within its target regime → keep (regime-gated).
+  // A signal bad in EVERY regime → genuine kill candidate.
+  const REGIMES = [...new Set(rows.map(r => r.regime).filter(Boolean))].sort();
+  const MIN_REGIME_SAMPLE = Math.max(2, Math.floor(MIN_SAMPLE / 2));
+
+  for (const reg of REGIMES) {
+    const regRows = rows.filter(r => r.regime === reg);
+    if (regRows.length < 4) continue;
+
+    const regSignalRows = [];
+    const allRegSignals = new Set();
+    for (const r of regRows) for (const s of sigsOf(r)) allRegSignals.add(s);
+
+    for (const sig of allRegSignals) {
+      const withSig    = regRows.filter(r => sigsOf(r).includes(sig));
+      const withoutSig = regRows.filter(r => !sigsOf(r).includes(sig));
+      if (withSig.length < MIN_REGIME_SAMPLE) continue;
+      const s    = summarize(withSig);
+      const lift = evOf(withSig) - evOf(withoutSig);
+      regSignalRows.push({ sig, s, lift });
+    }
+    regSignalRows.sort((a, b) => b.lift - a.lift);
+
+    console.log(`\n── By Signal in [${reg}] regime (n>=${MIN_REGIME_SAMPLE}, ${regRows.length} trades) ${"─".repeat(Math.max(0, 40 - reg.length))}`);
+    console.log(`  ${"signal".padEnd(26)} n    WR      PF      EV         lift`);
+    for (const { sig, s, lift } of regSignalRows) {
+      const liftStr = (lift >= 0 ? "+" : "") + "$" + lift.toFixed(2);
+      const flag = lift < 0 ? "  ⚠" : "";
+      console.log(`  ${sig.padEnd(26)} ${String(s.n).padStart(3)}  ${s.wr.padStart(6)}  ${s.pf.padStart(5)}  ${s.ev.padStart(8)}  ${liftStr.padStart(9)}${flag}`);
+    }
+  }
+
+  console.log(`\n  Signals marked ⚠ in ALL regimes they appear in are true kill candidates.`);
+  console.log(`  Signals marked ⚠ only in some regimes are handled by REGIME_SIGNAL_MULTIPLIERS.`);
+
+
   console.log(`\n${"=".repeat(70)}\n`);
 
   await pool.end();
