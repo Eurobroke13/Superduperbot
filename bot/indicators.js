@@ -660,3 +660,138 @@ export function detectLiquidityTrap(price, closes, srLevels, highs = [], lows = 
   if (brokeBelow && closedAbove && significantBreakBelow) return "bear-trap";
   return "none";
 }
+
+// ── ATR Percentile ────────────────────────────────────────────────────────────
+// Returns where the current ATR sits in its own lookback distribution (0–1).
+// 0.20 = bottom quintile (market extremely compressed), 0.80 = top quintile.
+export function atrPercentile(highs, lows, closes, lookbackPeriods = 120) {
+  const n = closes.length;
+  const period = 14;
+  if (n < period + 5) return 0.5;
+
+  const vals = [];
+  const start = Math.max(period, n - lookbackPeriods);
+  for (let i = start; i < n; i++) {
+    const h = highs.slice(Math.max(0, i - period), i + 1);
+    const l = lows.slice(Math.max(0, i - period), i + 1);
+    const c = closes.slice(Math.max(0, i - period), i + 1);
+    vals.push(atr(h, l, c, period));
+  }
+  if (vals.length < 5) return 0.5;
+  const current = vals[vals.length - 1];
+  const below   = vals.filter(v => v <= current).length;
+  return below / vals.length;
+}
+
+// ── Weekly Pivot Points ───────────────────────────────────────────────────────
+// Classic floor-trader pivots from last week's high/low/close.
+// Requires at least 7 days of 1h candles.  Returns null if insufficient data.
+export function weeklyPivots(candles1h) {
+  if (!candles1h || candles1h.length < 168) return null;
+
+  const dayMap = {};
+  for (const c of candles1h) {
+    const day = new Date(c.ts).toISOString().slice(0, 10);
+    if (!dayMap[day]) dayMap[day] = { high: c.high, low: c.low, close: c.close };
+    else {
+      if (c.high  > dayMap[day].high)  dayMap[day].high  = c.high;
+      if (c.low   < dayMap[day].low)   dayMap[day].low   = c.low;
+      dayMap[day].close = c.close;
+    }
+  }
+
+  const weekMap = {};
+  for (const [day, d] of Object.entries(dayMap)) {
+    const date = new Date(day);
+    const dow  = date.getUTCDay();            // 0=Sun
+    const diff = dow === 0 ? -6 : 1 - dow;   // shift to Monday
+    const mon  = new Date(date);
+    mon.setUTCDate(date.getUTCDate() + diff);
+    const wk = mon.toISOString().slice(0, 10);
+    if (!weekMap[wk]) weekMap[wk] = { high: d.high, low: d.low, close: d.close };
+    else {
+      if (d.high  > weekMap[wk].high)  weekMap[wk].high  = d.high;
+      if (d.low   < weekMap[wk].low)   weekMap[wk].low   = d.low;
+      weekMap[wk].close = d.close;
+    }
+  }
+
+  const weeks = Object.keys(weekMap).sort();
+  if (weeks.length < 2) return null;
+
+  const { high: H, low: L, close: C } = weekMap[weeks[weeks.length - 2]];
+  const PP = (H + L + C) / 3;
+  return {
+    PP,
+    R1: 2 * PP - L,
+    S1: 2 * PP - H,
+    R2: PP + (H - L),
+    S2: PP - (H - L),
+  };
+}
+
+// ── Volume Delta ──────────────────────────────────────────────────────────────
+// Net buy-vs-sell pressure over the last `lookback` candles.
+// delta = (bullVol - bearVol) / total, range -1 to +1.
+export function volumeDelta(candles, lookback = 20) {
+  if (!candles || candles.length < 3) return { delta: 0, recentDelta: 0, bullPressure: false, bearPressure: false };
+  const n     = candles.length;
+  const slice = candles.slice(Math.max(0, n - lookback));
+  let bull = 0, bear = 0;
+  for (const c of slice) {
+    if (c.close >= c.open) bull += c.volume || 0;
+    else                   bear += c.volume || 0;
+  }
+  const total = bull + bear;
+  const delta = total > 0 ? (bull - bear) / total : 0;
+
+  const recent = candles.slice(Math.max(0, n - 5));
+  let rb = 0, rr = 0;
+  for (const c of recent) {
+    if (c.close >= c.open) rb += c.volume || 0;
+    else                   rr += c.volume || 0;
+  }
+  const rt = rb + rr;
+  const recentDelta = rt > 0 ? (rb - rr) / rt : 0;
+
+  return {
+    delta,
+    recentDelta,
+    bullPressure:       delta > 0.20,
+    bearPressure:       delta < -0.20,
+    strongBullPressure: delta > 0.40,
+    strongBearPressure: delta < -0.40,
+  };
+}
+
+// ── Anchored VWAP ─────────────────────────────────────────────────────────────
+// VWAP anchored to the most extreme low (bullAVWAP) and extreme high (bearAVWAP)
+// in the lookback window.  Useful as dynamic S/R in sideways regimes.
+export function anchoredVWAP(candles, lookback = 50) {
+  if (!candles || candles.length < 5) return { bullAVWAP: null, bearAVWAP: null };
+  const n   = candles.length;
+  const win = candles.slice(Math.max(0, n - lookback));
+
+  let lowestVal = Infinity,  lowestIdx  = 0;
+  let highestVal = -Infinity, highestIdx = 0;
+  for (let i = 0; i < win.length; i++) {
+    if (win[i].low  < lowestVal)  { lowestVal  = win[i].low;  lowestIdx  = i; }
+    if (win[i].high > highestVal) { highestVal = win[i].high; highestIdx = i; }
+  }
+
+  function avwapFrom(startIdx) {
+    if (startIdx >= win.length - 2) return null; // anchor too recent
+    let tpv = 0, vol = 0;
+    for (let i = startIdx; i < win.length; i++) {
+      const tp = (win[i].high + win[i].low + win[i].close) / 3;
+      tpv += tp * (win[i].volume || 0);
+      vol += win[i].volume || 0;
+    }
+    return vol > 0 ? tpv / vol : null;
+  }
+
+  return {
+    bullAVWAP: avwapFrom(lowestIdx),
+    bearAVWAP: avwapFrom(highestIdx),
+  };
+}
