@@ -284,8 +284,8 @@ test("phaseScan golden - non-bear trend shorts are blocked (edge-recovery)", asy
 });
 
 test("phaseScan golden - non-MR setups below Claude threshold are blocked (MR-primary)", async () => {
-  const state = makeState(); // bull, no regimeStats → claudeThreshold = 6
-  const trd = { ...makeCandidate("TRD-USDT-SWAP", "long", 5.0), setupType: "trend" };
+  const state = makeState(); // bull, no regimeStats → MR_PRIMARY_THRESHOLD = 5.0
+  const trd = { ...makeCandidate("TRD-USDT-SWAP", "long", 4.5), setupType: "trend" };
   const deps = makeDeps({
     tickers: [makeTicker("TRD-USDT-SWAP")],
     contracts: ["TRD-USDT-SWAP"],
@@ -295,7 +295,7 @@ test("phaseScan golden - non-MR setups below Claude threshold are blocked (MR-pr
   await runBot(ENV, deps);
 
   const s = state.lastScanSummary;
-  assert.ok(s?.blockedByReason?.["mr-primary-mode"] >= 1, "non-MR below claudeThreshold must be blocked");
+  assert.ok(s?.blockedByReason?.["mr-primary-mode"] >= 1, "non-MR below MR_PRIMARY_THRESHOLD must be blocked");
   assert.equal(s?.candidatesQualified || 0, 0, "blocked non-MR must not qualify");
 });
 

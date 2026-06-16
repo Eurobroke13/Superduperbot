@@ -6,6 +6,7 @@ import {
   HOUR_PERFORMANCE,
   MAX_POSITIONS,
   MEAN_REVERSION_PRIMARY,
+  MR_PRIMARY_THRESHOLD,
   REQUIRE_CLAUDE_APPROVAL,
   SETTLEMENT_AVOID_MINUTES,
   SHORTS_BEAR_ONLY
@@ -1135,11 +1136,11 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       finalizeDecision(c, "rejected", "shorts-bear-only", { details: { regime: regime.label } });
       continue;
     }
-    // MR-primary: non-MR setups must clear the high-conviction Claude bar to even
+    // MR-primary: non-MR setups must clear MR_PRIMARY_THRESHOLD (5.0) to even
     // be considered (then Claude still has to approve). MR setups always pass here.
-    if (MEAN_REVERSION_PRIMARY && c.setupType !== "mean-reversion" && c.score < claudeThreshold) {
+    if (MEAN_REVERSION_PRIMARY && c.setupType !== "mean-reversion" && c.score < MR_PRIMARY_THRESHOLD) {
       finalizeDecision(c, "rejected", "mr-primary-mode", {
-        details: { setupType: c.setupType, score: roundValue(c.score, 2), claudeThreshold }
+        details: { setupType: c.setupType, score: roundValue(c.score, 2), mrThreshold: MR_PRIMARY_THRESHOLD }
       });
       continue;
     }
