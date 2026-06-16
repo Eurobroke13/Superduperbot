@@ -1,13 +1,16 @@
 import {
   ATR_SL_MULT,
   ATR_TP_MULT,
-  CANDLE_LIMIT
+  CANDLE_LIMIT,
+  REGIME_SIGNAL_MULTIPLIERS,
 } from "./config.js";
 import { fetchCandles } from "./market-data.js";
 import { trimToClosedCandles } from "./runner-utils.js";
 import {
   adx,
+  anchoredVWAP,
   atr,
+  atrPercentile,
   bollingerBands,
   detectLiquidityTrap,
   detectOBVDivergence,
@@ -27,8 +30,10 @@ import {
   sma,
   stochRSI,
   volumeConfirmation,
+  volumeDelta,
   volumeProfile,
-  vwap
+  vwap,
+  weeklyPivots,
 } from "./indicators.js";
 import { portfolioValue } from "./execution.js";
 import { scoreSidewaysMeanReversion } from "./entry-improvements.js";
@@ -168,36 +173,95 @@ export function confirm15mBearShort(candles15m, entryPrice, atrVal) {
   };
 }
 
+/**
+ * Confirm bull trend continuation on 15m timeframe.
+ * Gradual entry: 0.80 size if moderate confidence, 1.0 if high.
+ */
+export function confirm15mBullTrend(candles15m, entryPrice, atrVal) {
+  if (!candles15m || candles15m.length < 12) {
+    return { enter: true, confidence: 0, patterns: ["no-15m-data"], positionSizeMultiplier: 0.85 };
+  }
+
+  let confidence = 0;
+  const patterns = [];
+  const n    = candles15m.length;
+  const last = candles15m[n - 1];
+
+  // Inline EMA21 over the 15m slice
+  const c15  = candles15m.map(c => c.close);
+  const mult = 2 / (Math.min(21, c15.length - 1) + 1);
+  let ema21  = c15[0];
+  for (let i = 1; i < c15.length; i++) ema21 = (c15[i] - ema21) * mult + ema21;
+
+  // 1. Price holding above EMA21 (trend intact on 15m)
+  if (last.close > ema21 && last.low > ema21 * 0.996) {
+    confidence += 1.5;
+    patterns.push("15m-above-ema21");
+  }
+
+  // 2. Bullish engulfing: prior red then larger green
+  if (n >= 2) {
+    const prev = candles15m[n - 2];
+    if (prev.close < prev.open && last.close > last.open &&
+        last.close > prev.open && last.open <= prev.close) {
+      confidence += 2.5;
+      patterns.push("15m-bull-engulfing");
+    }
+  }
+
+  // 3. Three or more consecutive green candles
+  let greenCount = 0;
+  for (let i = n - 1; i >= Math.max(0, n - 5); i--) {
+    if (candles15m[i].close > candles15m[i].open) greenCount++;
+    else break;
+  }
+  if (greenCount >= 3) {
+    confidence += 1.5;
+    patterns.push(`15m-green-cascade(${greenCount})`);
+  }
+
+  // 4. Volume expansion on the last green candle
+  const avgVol = candles15m.slice(-8, -1).reduce((s, c) => s + c.volume, 0) / 7;
+  if (last.close > last.open && avgVol > 0 && last.volume > avgVol * 1.8) {
+    confidence += 1.5;
+    patterns.push("15m-volume-expansion");
+  }
+
+  return {
+    enter: confidence >= 2.0,
+    confidence,
+    patterns,
+    positionSizeMultiplier: confidence >= 3.5 ? 1.0 : 0.80,
+  };
+}
+
 function getSignalMultiplier(name, state, regimeLabel) {
-  const weights = state?.dynamicWeights || {};
-  const sigStats = state?.signalStats || {};
+  const weights  = state?.dynamicWeights || {};
+  const sigStats = state?.signalStats    || {};
+
+  // Static per-regime multiplier derived from out-of-sample lift analysis
+  const regimeMult = (REGIME_SIGNAL_MULTIPLIERS[regimeLabel] || {})[name] ?? 1.0;
 
   const regimeKey = regimeLabel ? `${name}:${regimeLabel}` : null;
   if (regimeKey && sigStats[regimeKey] && sigStats[regimeKey].count >= 20) {
     const { wins, count } = sigStats[regimeKey];
-    const wr = wins / count;
-    if (wr >= 0.62) return 1.20;
-    if (wr >= 0.52) return 1.08;
-    if (wr >= 0.47) return 0.92;
-    if (wr < 0.33) return 0.65;
-    if (wr < 0.40) return 0.80;
+    const wr  = wins / count;
+    const dyn = wr >= 0.62 ? 1.20 : wr >= 0.52 ? 1.08 : wr >= 0.47 ? 0.92 : wr < 0.33 ? 0.65 : wr < 0.40 ? 0.80 : 1.0;
+    return Math.min(2.0, dyn * regimeMult);
   }
 
   if (weights[name] !== undefined) {
-    return Math.max(0.2, Math.min(weights[name], 1.6));
+    return Math.max(0.1, Math.min(weights[name] * regimeMult, 2.0));
   }
 
   if (sigStats[name] && sigStats[name].count >= 15) {
     const { wins, count } = sigStats[name];
-    const wr = wins / count;
-    if (wr >= 0.62) return 1.20;
-    if (wr >= 0.52) return 1.08;
-    if (wr >= 0.47) return 0.92;
-    if (wr < 0.33) return 0.65;
-    if (wr < 0.40) return 0.80;
+    const wr  = wins / count;
+    const dyn = wr >= 0.62 ? 1.20 : wr >= 0.52 ? 1.08 : wr >= 0.47 ? 0.92 : wr < 0.33 ? 0.65 : wr < 0.40 ? 0.80 : 1.0;
+    return Math.min(2.0, dyn * regimeMult);
   }
 
-  return 1.0;
+  return regimeMult;
 }
 
 export function score4H(candles4h) {
@@ -409,6 +473,12 @@ function computeIndicatorContext(candles1h, candles4h) {
     ? detectRsiLowerHighs(candles4h, 3, 80)
     : { detected: false, highCount: 0, strength: 0 };
 
+  // ── New indicators ────────────────────────────────────────────────────────
+  const atrPctile  = atrPercentile(highs, lows, closes, 120);
+  const weeklyPvts = weeklyPivots(candles1h);
+  const volDelta   = volumeDelta(candles1h, 20);
+  const anchVwap   = anchoredVWAP(candles1h, 50);
+
   return {
     closes, highs, lows, volumes, n, price,
     atrVal, atrPct, ichi, obvSeries, obvDiv,
@@ -420,7 +490,8 @@ function computeIndicatorContext(candles1h, candles4h) {
     ribbon, ema21Val, volConfirm,
     isStrongTrend, isTrending,
     h4Trend, h4RecentCross, h4PullbackEntry, h4BearStrong,
-    rsiHigherLows, rsiLowerHighs
+    rsiHigherLows, rsiLowerHighs,
+    atrPctile, weeklyPvts, volDelta, anchVwap,
   };
 }
 
@@ -442,7 +513,8 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       ribbon, ema21Val, volConfirm,
       isStrongTrend, isTrending,
       h4Trend, h4RecentCross, h4PullbackEntry, h4BearStrong,
-      rsiHigherLows, rsiLowerHighs
+      rsiHigherLows, rsiLowerHighs,
+      atrPctile, weeklyPvts, volDelta, anchVwap,
     } = ctx;
 
     let longScore  = 0;
@@ -793,6 +865,50 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
     }
     if (ribbon.bullishAligned && rsiVal > 70) { longScore  *= 0.7; reasons.push("trend-vs-overbought"); }
     if (ribbon.bearishAligned && rsiVal < 30) { shortScore *= 0.7; reasons.push("trend-vs-oversold"); }
+
+    // ── New indicators: volume delta, weekly pivots, anchored VWAP, ATR percentile ──
+    function scoreNewIndicators() {
+      // Volume delta — net buy/sell pressure over last 20 candles
+      add(volDelta.strongBullPressure && regime?.label !== "bear",  "vol-delta-bull", true,  TIERS.weak);
+      add(volDelta.strongBearPressure && regime?.label !== "bull",  "vol-delta-bear", false, TIERS.weak);
+
+      // Weekly pivot levels — stable S/R derived from prior week
+      if (weeklyPvts) {
+        const tol = 0.003;
+        const nearWS1 = Math.abs(price - weeklyPvts.S1) / price < tol;
+        const nearWR1 = Math.abs(price - weeklyPvts.R1) / price < tol;
+        const nearWPP = Math.abs(price - weeklyPvts.PP) / price < 0.002;
+        add(nearWS1 && price >= weeklyPvts.S1 && rsiVal < 48, "near-weekly-S1",      true,  TIERS.weak);
+        add(nearWR1 && price <= weeklyPvts.R1 && rsiVal > 52, "near-weekly-R1",      false, TIERS.weak);
+        add(nearWPP && price >= weeklyPvts.PP && rsiVal < 50, "weekly-PP-support",    true,  0.3);
+        add(nearWPP && price <= weeklyPvts.PP && rsiVal > 50, "weekly-PP-resistance", false, 0.3);
+      }
+
+      // Anchored VWAP — dynamic S/R from range extremes (most useful in sideways)
+      if (anchVwap.bullAVWAP) {
+        const nearBA = Math.abs(price - anchVwap.bullAVWAP) / price < 0.003;
+        add(nearBA && price >= anchVwap.bullAVWAP && rsiVal < 50 && rsiTurningUp,
+            "anchored-vwap-support", true, TIERS.weak);
+      }
+      if (anchVwap.bearAVWAP) {
+        const nearBA = Math.abs(price - anchVwap.bearAVWAP) / price < 0.003;
+        add(nearBA && price <= anchVwap.bearAVWAP && rsiVal > 50 && rsiTurningDown,
+            "anchored-vwap-resistance", false, TIERS.weak);
+      }
+
+      // ATR percentile — gate trend entries in compressed markets
+      if (atrPctile < 0.20 && regime?.label !== "sideways") {
+        longScore  *= 0.75;
+        shortScore *= 0.75;
+        reasons.push("atr-compressed");
+      } else if (atrPctile > 0.80 && regime?.label === "sideways") {
+        // ATR spiking while regime says sideways → regime may be transitioning; MR is risky
+        longScore  *= 0.85;
+        shortScore *= 0.85;
+        reasons.push("atr-elevated-in-sideways");
+      }
+    }
+    scoreNewIndicators();
 
     const isTrendChaseLong  = reasons.includes("ema-ribbon-bull") || reasons.includes("h4-bull");
     const isTrendChaseShort = reasons.includes("ema-ribbon-bear") || reasons.includes("h4-bear") || reasons.includes("h4-bear-strong");

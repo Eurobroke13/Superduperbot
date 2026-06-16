@@ -98,6 +98,71 @@ export const SIGNAL_WEIGHTS = {
 // Snapshot of the original weights — used to reset dynamic adjustments
 export const BASE_WEIGHTS = { ...SIGNAL_WEIGHTS };
 
+// ── Per-regime signal weight multipliers ──────────────────────────────────────
+// Applied multiplicatively on top of dynamic weights in getSignalMultiplier().
+// Values > 1 boost, < 1 dampen. Signals not listed here inherit 1.0 (no change).
+// Derived from out-of-sample lift analysis on 509 live trades (June 2026).
+export const REGIME_SIGNAL_MULTIPLIERS = {
+  bull: {
+    "fisher-rising":        1.5,
+    "TK-bull":              1.5,
+    "above-cloud":          1.4,
+    "chikou-bull":          1.4,
+    "adx-strong-bull":      1.5,
+    "h4-bull":              1.4,
+    "above-VWAP":           1.3,
+    "ema-ribbon-bull":      1.3,
+    "gauss-up":             1.2,
+    "ribbon-h4-align-bull": 1.2,
+    "TK-bear":              0.5,
+    "below-cloud":          0.5,
+    "chikou-bear":          0.5,
+    "ema-ribbon-bear":      0.5,
+    "h4-bear":              0.5,
+    "below-VWAP":           0.6,
+    "gauss-down":           0.5,
+  },
+  bear: {
+    "TK-bear":              1.4,
+    "below-cloud":          1.4,
+    "chikou-bear":          1.4,
+    "fisher-falling":       1.4,
+    "h4-bear":              1.3,
+    "below-VWAP":           1.3,
+    "ema-ribbon-bear":      1.3,
+    "gauss-down":           1.2,
+    "TK-bull":              0.5,
+    "above-cloud":          0.5,
+    "chikou-bull":          0.5,
+    "ema-ribbon-bull":      0.5,
+    "h4-bull":              0.5,
+    "above-VWAP":           0.6,
+    "fisher-rising":        0.5,
+  },
+  sideways: {
+    "near-support":          1.5,
+    "near-resistance":       1.5,
+    "rsi-oversold":          1.4,
+    "rsi-overbought":        1.4,
+    "fisher-oversold":       1.3,
+    "fisher-overbought":     1.3,
+    "bb-oversold":           1.3,
+    "bb-overbought":         1.3,
+    "rsi-support-bounce":    1.4,
+    "rsi-resistance-reject": 1.4,
+    "TK-bull":               0.6,
+    "TK-bear":               0.6,
+    "above-cloud":           0.6,
+    "below-cloud":           0.6,
+    "ema-ribbon-bull":       0.6,
+    "ema-ribbon-bear":       0.6,
+    "h4-bull":               0.6,
+    "h4-bear":               0.6,
+    "adx-strong-bull":       0.5,
+    "adx-strong-bear":       0.5,
+  },
+};
+
 // -----------------------------------------------------------------------------
 // Funding / settlement constants
 // -----------------------------------------------------------------------------

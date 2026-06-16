@@ -364,6 +364,22 @@ export function applyBearShort15m(candidate, confirmation) {
 }
 
 /**
+ * Applies the bull-trend 15m continuation result to a candidate.
+ * Mirrors applyBearShort15m — caller owns the async candle fetch.
+ */
+export function applyBullTrend15m(candidate, confirmation) {
+  if (!confirmation.enter) {
+    return { scoreFactor: 0.85 };
+  }
+  return {
+    scoreFactor: 1,
+    adjustedScore: candidate.score + (confirmation.confidence * 0.25),
+    positionSizeMultiplier: confirmation.positionSizeMultiplier,
+    patterns: confirmation.patterns || [],
+  };
+}
+
+/**
  * Routes each considered candidate into autoList or claudeList (or logs a
  * finalizeDecision call). Pure: returns `{ autoList, claudeList, decisions }`
  * where `decisions` is an array of `{ candidate, outcome, reason, extra }`
