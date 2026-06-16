@@ -39,21 +39,22 @@ bot/
   runner.js            — Core bot logic: checkAllExits → phaseRegimeAndExits → phaseScan
   deps.js              — Dependency injection wiring; wraps runBot with withBotLock
   claude.js            — Anthropic API calls; budget tracking; CLAUDE_LIMIT_FALLBACK detection
-  config.js            — All constants: CLAUDE_MODEL, MONTHLY_BUDGET_USD, thresholds, signal weights
+  config.js            — All constants: CLAUDE_MODEL, MONTHLY_BUDGET_USD, thresholds, signal weights, REGIME_SIGNAL_MULTIPLIERS
   exits.js             — closePosition, partial closes, cooldown registration
   cooldown.js          — Post-TP cooldown (4h); overbought-SL cooldown (6h); same-run SL block
-  scoring.js           — scoreSymbol, signal detection, autoApproveSignal
+  indicators.js        — Pure indicator functions: atrPercentile, weeklyPivots, volumeDelta, anchoredVWAP
+  scoring.js           — scoreSymbol, signal detection, autoApproveSignal, confirm15mBullTrend
   reports.js           — sendDailyReport (unused), sendWeeklyReview, premarketScan, sendTradeAnalysis
   adaptation.js        — Dynamic signal weight updates (time-decayed), regime stats tracking
   execution.js         — Position sizing, tranche scale-ins (checkTranches), DCA (checkDCA)
   telegram.js          — sendTelegram, notifyTrade (OPEN/CLOSE/PARTIAL/TRANCHE/DCA)
   risk-gates.js        — Daily loss limit (4%), min R:R gate, mid-run drawdown halt (4%)
-  runner-utils.js      — Pure helpers: buildRegimeConsensus, checkMidRunDrawdown, routeToApprovalLists, applySyncFilters, etc.
+  runner-utils.js      — Pure helpers: buildRegimeConsensus, checkMidRunDrawdown, routeToApprovalLists, applySyncFilters, applyBullTrend15m, etc.
 db.js                  — Postgres pool, withTransaction, withBotLock (advisory lock)
 state-store.js         — loadState / saveState; atomic trade + blob writes
 trade-store.js         — Separate trades table (loadRecentTrades, insertTrade)
 prune-trades.js        — Diagnostic/maintenance: per-day breakdown + scoped transactional delete of contaminated trades (dry-run by default)
-analyze-trades.js      — Diagnostic: post-fix breakdown by setup/regime/approval/direction/exit-reason/score, per-signal out-of-sample lift, daily equity curve
+analyze-trades.js      — Diagnostic: post-fix breakdown by setup/regime/approval/direction/exit-reason/score, per-signal lift overall + per-regime, daily equity curve
 railway.json           — Shared Railway config (npm start) — used by main server
 railway-runner.json    — Runner-only Railway config (npm run task:fast-scan)
 railway-prune.json     — One-off config for prune-trades.js (node prune-trades.js, no healthcheck)
@@ -267,6 +268,17 @@ Every mean-reversion/fade signal showed positive lift, every trend/momentum sign
 - **Mid-run drawdown halt froze the bot** — the −1.5% net-PnL threshold halted all entries after one or two stop-losses (~$165 on $11k), firing 78+ consecutive runs. Raised to −4.0% and aligned the daily gross-loss gate (`risk-gates.js`) from 3% → 4%. Added a **high-conviction override** (`HIGH_CONVICTION_OVERRIDE = 6`): on a halt day, score ≥ 6 setups still get through. Both halts reset at 00:00 UTC. `runner-utils.js`, `runner.js`, `risk-gates.js`.
 - **Claude API errors / prefill outage** — resolved (see Claude API Configuration). Post-fix Claude spend ticks up and `[CLAUDE BATCH]` succeeds.
 - **Rotation wrap-around double-scan** — when the symbol universe was smaller than one scan window the wrap-around double-scored symbols (test-only impact at ~245 live symbols). Fixed to scan the whole universe once when `total <= maxSymbolsPerRun`. `runner.js`.
+- **Signal overfitting pass (June 2026 — PR #54)** — four improvements to reduce in-sample bias and per-regime quality:
+  1. **Kill-list zeroed** (`bot/config.js` → `SIGNAL_WEIGHTS`) — 6 signals with confirmed negative live lift set to 0.0: `macd-cross-up` / `macd-cross-down` (lift −$62.58, dominant bleeder), `OBV-bull-div` / `OBV-bear-div` (negative lift n=22/36), `stochrsi-oversold` (0% WR), `ribbon-expansion-bear` (0% WR). Zeroing is permanent (not adapted away) because `adaptation.js` only modifies positive-weight signals.
+  2. **Regime-conditional signal multipliers** (`bot/config.js` → `REGIME_SIGNAL_MULTIPLIERS`) — applied multiplicatively on top of dynamic weights in `getSignalMultiplier()`. Bull boosts trend signals and dampens bear signals; bear regime the reverse; sideways boosts MR/oscillator signals and dampens trend. Derived from out-of-sample lift analysis.
+  3. **Dynamic weight drift cap** (`bot/scoring.js` → `getSignalMultiplier`) — combined multiplier (dynamic × regime) capped at 0.6–1.4× base weight. Prevents `adaptation.js` from amplifying any signal beyond 40% above or below its calibrated baseline, limiting adaptive overfitting.
+  4. **Four new indicators** (`bot/indicators.js`) integrated into `scoring.js`:
+     - `atrPercentile` — where current ATR sits in its 120-period distribution; gates trend entries when market is compressed (<20th pct): `atr-compressed` reduces score ×0.75.
+     - `weeklyPivots` — classic floor-trader P/R1/S1/R2/S2 from prior week; adds `near-weekly-S1`/`near-weekly-R1`/`weekly-PP-support`/`weekly-PP-resistance` signals.
+     - `volumeDelta` — net buy-vs-sell pressure; adds `vol-delta-bull`/`vol-delta-bear` when strong directional pressure aligns with regime.
+     - `anchoredVWAP` — VWAP anchored to range extremes (lowest low = bullAVWAP, highest high = bearAVWAP); adds `anchored-vwap-support`/`anchored-vwap-resistance` signals.
+  5. **15m bull trend gate** (`bot/scoring.js` → `confirm15mBullTrend`, `bot/runner-utils.js` → `applyBullTrend15m`, `bot/runner.js` → phaseScan) — mirrors the existing `confirm15mBearShort` gate for bear shorts. For bull-regime non-MR longs, fetches 15m candles and checks EMA21 hold, bull engulfing, green cascade, volume expansion. Unconfirmed entries score ×0.85; confirmed entries get size boost to 0.80–1.0 and score bonus `+confidence × 0.25`.
+  6. **Per-regime signal lift in `analyze-trades.js`** — after the overall lift table, breaks down lift for each regime independently. Signals marked ⚠ in ALL regimes are true kill candidates; signals bad only in some regimes are handled by `REGIME_SIGNAL_MULTIPLIERS` instead.
 
 ---
 
