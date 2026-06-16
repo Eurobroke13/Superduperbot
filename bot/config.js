@@ -65,7 +65,7 @@ export const SIGNAL_WEIGHTS = {
   "TK-bull": 1.0, "TK-bear": 1.0,
   "above-cloud": 0.5, "below-cloud": 1.5,
   "chikou-bull": 0.8, "chikou-bear": 0.8,
-  "OBV-bull-div": 0.5, "OBV-bear-div": 0.3,
+  "OBV-bull-div": 0.0, "OBV-bear-div": 0.0,  // zeroed: negative lift across all history (n=22/36)
   "fisher-rising": 0.0, "fisher-falling": 0.5,
   "rsi-bull-div": 0.5, "rsi-bear-div": 0.35,
   "ema-ribbon-bull": 1.5, "ema-ribbon-bear": 1.5,
@@ -76,13 +76,13 @@ export const SIGNAL_WEIGHTS = {
   "rsi-oversold": 1.3, "rsi-overbought": 1.3,
   "near-support": 1.5, "near-resistance": 1.5,
   "in-HVN": -1.5,
-  "macd-cross-up": 1.2, "macd-cross-down": 1.2,
+  "macd-cross-up": 0.0, "macd-cross-down": 0.0,  // zeroed: worst EV in dataset (macd-cross-up lift -$62.58)
   "adx-strong-bull": 1.0, "adx-strong-bear": 1.0,
   "bb-oversold": 1.0, "bb-overbought": 1.0,
-  "stochrsi-oversold": 0.5, "stochrsi-overbought": 1.0,
+  "stochrsi-oversold": 0.0, "stochrsi-overbought": 1.0,  // stochrsi-oversold zeroed: 0% WR, lift -$33.30
   "stochrsi-cross-up": 0.8, "stochrsi-cross-down": 0.8,
   "rsi-support-bounce": 1.0, "rsi-resistance-reject": 1.0,
-  "ribbon-expansion-bull": 2.0, "ribbon-expansion-bear": 0.65,
+  "ribbon-expansion-bull": 2.0, "ribbon-expansion-bear": 0.0,  // ribbon-expansion-bear zeroed: 0% WR, lift -$24.84
   "liquidity-bull": 0.75, "liquidity-bear": 0.5,
   "trap-bull-confirm": 0.35, "trap-bear-confirm": 2.0,
   "trap-vol-bull": 0.05, "trap-vol-bear": 0.0,
