@@ -242,26 +242,33 @@ function getSignalMultiplier(name, state, regimeLabel) {
   // Static per-regime multiplier derived from out-of-sample lift analysis
   const regimeMult = (REGIME_SIGNAL_MULTIPLIERS[regimeLabel] || {})[name] ?? 1.0;
 
+  // Dynamic weight drift cap: the adaptive layer (signalStats / dynamicWeights)
+  // re-fits every 80 trades and chases noise. Cap its combined output at 1.4×
+  // (floor 0.6×) so no single signal can dominate or be silenced by a lucky/
+  // unlucky recent run. The static regimeMult already handles directional bias.
+  const DRIFT_MAX = 1.4;
+  const DRIFT_MIN = 0.6;
+
   const regimeKey = regimeLabel ? `${name}:${regimeLabel}` : null;
   if (regimeKey && sigStats[regimeKey] && sigStats[regimeKey].count >= 20) {
     const { wins, count } = sigStats[regimeKey];
     const wr  = wins / count;
     const dyn = wr >= 0.62 ? 1.20 : wr >= 0.52 ? 1.08 : wr >= 0.47 ? 0.92 : wr < 0.33 ? 0.65 : wr < 0.40 ? 0.80 : 1.0;
-    return Math.min(2.0, dyn * regimeMult);
+    return Math.max(DRIFT_MIN, Math.min(DRIFT_MAX, dyn * regimeMult));
   }
 
   if (weights[name] !== undefined) {
-    return Math.max(0.1, Math.min(weights[name] * regimeMult, 2.0));
+    return Math.max(DRIFT_MIN, Math.min(weights[name] * regimeMult, DRIFT_MAX));
   }
 
   if (sigStats[name] && sigStats[name].count >= 15) {
     const { wins, count } = sigStats[name];
     const wr  = wins / count;
     const dyn = wr >= 0.62 ? 1.20 : wr >= 0.52 ? 1.08 : wr >= 0.47 ? 0.92 : wr < 0.33 ? 0.65 : wr < 0.40 ? 0.80 : 1.0;
-    return Math.min(2.0, dyn * regimeMult);
+    return Math.max(DRIFT_MIN, Math.min(DRIFT_MAX, dyn * regimeMult));
   }
 
-  return regimeMult;
+  return Math.max(DRIFT_MIN, Math.min(regimeMult, DRIFT_MAX));
 }
 
 export function score4H(candles4h) {
