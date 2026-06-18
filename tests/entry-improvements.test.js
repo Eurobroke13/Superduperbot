@@ -193,10 +193,15 @@ test("check15mReversal - insufficient data", () => {
   assert.deepEqual(r.patterns, ["insufficient-data"]);
 });
 
-test("check15mReversal - zero-range last bar bails out", () => {
+test("check15mReversal - zero-range last bar skips wick patterns but does not bail out", () => {
+  // A doji/flat last candle must NOT short-circuit the whole check — the
+  // flat-market-friendly patterns (RSI/momentum divergence, exhaustion, volume)
+  // still run. It only suppresses the wick-ratio patterns (hammer/engulfing).
   const candles = [...flat(11), candle(10, 10, 10, 10)];
   const r = check15mReversal(candles, "long");
-  assert.deepEqual(r.patterns, ["zero-range-bar"]);
+  assert.ok(!r.patterns.includes("zero-range-bar"));
+  assert.ok(!r.patterns.includes("15m-hammer"));
+  assert.ok(!r.patterns.includes("15m-bull-engulfing"));
 });
 
 test("check15mReversal - long hammer is confirmed", () => {
