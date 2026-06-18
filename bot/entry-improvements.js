@@ -392,7 +392,11 @@ export function check15mReversal(candles15m, direction) {
   const prev2 = candles15m[n - 3];
 
   const lastRange = last.high - last.low;
-  if (lastRange === 0) return { confirmed: false, confidence: 0, patterns: ["zero-range-bar"] };
+  // A zero-range (doji/flat) last candle only invalidates the wick-ratio patterns
+  // (hammer, engulfing, shooting-star) — NOT the flat-market-friendly checks
+  // (RSI divergence, momentum divergence, exhaustion, volume reversal) that were
+  // added specifically for low-volatility sideways markets. Don't bail early.
+  const skipWickPatterns = (lastRange === 0);
 
   const avgVol = candles15m.slice(-8, -1).reduce((s, c) => s + c.volume, 0) / 7;
 
@@ -421,16 +425,18 @@ export function check15mReversal(candles15m, direction) {
 
   if (direction === "long") {
     // 1. Hammer / pin bar: long lower wick, small body at top
-    const lowerWick = Math.min(last.close, last.open) - last.low;
-    const upperWick = last.high - Math.max(last.close, last.open);
-    if (lowerWick / lastRange > 0.60 && upperWick / lastRange < 0.15) {
-      confidence += 2; patterns.push("15m-hammer");
-    }
+    if (!skipWickPatterns) {
+      const lowerWick = Math.min(last.close, last.open) - last.low;
+      const upperWick = last.high - Math.max(last.close, last.open);
+      if (lowerWick / lastRange > 0.60 && upperWick / lastRange < 0.15) {
+        confidence += 2; patterns.push("15m-hammer");
+      }
 
-    // 2. Bullish engulfing: red → larger green that engulfs it
-    if (prev.close < prev.open && last.close > last.open &&
-        last.close > prev.open && last.open <= prev.close) {
-      confidence += 2.5; patterns.push("15m-bull-engulfing");
+      // 2. Bullish engulfing: red → larger green that engulfs it
+      if (prev.close < prev.open && last.close > last.open &&
+          last.close > prev.open && last.open <= prev.close) {
+        confidence += 2.5; patterns.push("15m-bull-engulfing");
+      }
     }
 
     // 3. Three-bar reversal: lower low → recovery above prev high
@@ -474,16 +480,18 @@ export function check15mReversal(candles15m, direction) {
 
   } else {
     // 1. Shooting star: long upper wick, small body at bottom
-    const upperWick = last.high - Math.max(last.close, last.open);
-    const lowerWick = Math.min(last.close, last.open) - last.low;
-    if (upperWick / lastRange > 0.60 && lowerWick / lastRange < 0.15) {
-      confidence += 2; patterns.push("15m-shooting-star");
-    }
+    if (!skipWickPatterns) {
+      const upperWick = last.high - Math.max(last.close, last.open);
+      const lowerWick = Math.min(last.close, last.open) - last.low;
+      if (upperWick / lastRange > 0.60 && lowerWick / lastRange < 0.15) {
+        confidence += 2; patterns.push("15m-shooting-star");
+      }
 
-    // 2. Bearish engulfing
-    if (prev.close > prev.open && last.close < last.open &&
-        last.close < prev.open && last.open >= prev.close) {
-      confidence += 2.5; patterns.push("15m-bear-engulfing");
+      // 2. Bearish engulfing
+      if (prev.close > prev.open && last.close < last.open &&
+          last.close < prev.open && last.open >= prev.close) {
+        confidence += 2.5; patterns.push("15m-bear-engulfing");
+      }
     }
 
     // 3. Three-bar reversal (short side)

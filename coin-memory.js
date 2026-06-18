@@ -275,6 +275,18 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
   // System-level context Claude needs to make good decisions
   const autoStats   = getApprovalStats(state.trades || [], "auto");
   const claudeStats = getApprovalStats(state.trades || [], "claude");
+
+  // Combined system WR across all approval routes. While the bot is recovering
+  // from the pre-MR-pivot edge collapse, the overall/regime EV+WR figures reflect
+  // stale, contaminated history and should NOT drive per-candidate rejections.
+  // Below RECALIBRATION_WR_FLOOR we suppress the system/regime EV numbers and
+  // tell Claude to judge on signal-level WR only. Auto-reverts once WR recovers.
+  const RECALIBRATION_WR_FLOOR = 0.42;
+  const combinedWins  = (autoStats?.wins || 0) + (claudeStats?.wins || 0);
+  const combinedCount = (autoStats?.count || 0) + (claudeStats?.count || 0);
+  const combinedWR    = combinedCount >= 10 ? combinedWins / combinedCount : null;
+  const recalibrating = combinedWR !== null && combinedWR < RECALIBRATION_WR_FLOOR;
+
   const autoWR      = autoStats?.count >= 5
     ? `${(autoStats.winRate * 100).toFixed(0)}% (n=${autoStats.count})`
     : "insufficient data";
@@ -289,11 +301,14 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
     return `${t}:${(s.winRate*100).toFixed(0)}%WR EV=$${s.expectancy.toFixed(1)} n=${s.count}`;
   }).join(" | ");
 
-  // Regime performance
+  // Regime performance — drop the per-trade EV during recalibration so the stale
+  // negative EV doesn't get used as a blanket rejection reason; keep WR/n for context.
   const regimeStats = state.regimeStats?.[regime.label];
   const regimePerf  = regimeStats && regimeStats.count >= 5
-    ? `${regime.label}: ${((regimeStats.wins/regimeStats.count)*100).toFixed(0)}% WR, ` +
-      `avg $${(regimeStats.totalPnl/regimeStats.count).toFixed(2)}/trade, n=${regimeStats.count}`
+    ? (recalibrating
+        ? `${regime.label}: ${((regimeStats.wins/regimeStats.count)*100).toFixed(0)}% WR, n=${regimeStats.count}`
+        : `${regime.label}: ${((regimeStats.wins/regimeStats.count)*100).toFixed(0)}% WR, ` +
+          `avg $${(regimeStats.totalPnl/regimeStats.count).toFixed(2)}/trade, n=${regimeStats.count}`)
     : `${regime.label}: insufficient data`;
 
   // Build candidate lines with full context
@@ -349,20 +364,34 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
     `Setup performance: ${setupPerf}\n` +
     `Regime performance: ${regimePerf}\n\n` +
 
-    `YOUR DECISION FRAMEWORK:\n` +
-    `DEFAULT = REJECT. Approve ONLY if ALL of the following:\n` +
-    `1. Signal performance: most signals shown have ≥48% WR in this regime\n` +
-    `2. Coin history: no repeating failure pattern matching current signals\n` +
-    `3. Setup type: this coin's history for this setupType shows positive EV\n` +
-    `4. No current-setup overlap with this coin's warning signals\n` +
-    `5. Score is meaningful: ≥7 for liquidity-trap, ≥6 for trend/breakout\n\n` +
+    (recalibrating
+      ? `⚠ RECALIBRATION MODE (system WR ${(combinedWR * 100).toFixed(0)}% < 42%):\n` +
+        `The overall/regime WR and EV figures above reflect STALE pre-pivot history ` +
+        `and are NOT valid rejection criteria right now. Do NOT reject a candidate ` +
+        `because system-level or regime-level EV/WR is negative. Judge each candidate ` +
+        `on its per-signal WR (the [...] performance data on each candidate line) only.\n\n` +
 
-    `AUTO-REJECT if ANY of:\n` +
-    `- Current signals overlap with 2+ of this coin's warning signals\n` +
-    `- This setupType has negative EV on this coin (≥3 prior trades)\n` +
-    `- Coin has 3+ consecutive losses (current losing streak)\n` +
-    `- Signal WRs are all below 45% with no strong regime-specific exception\n` +
-    `- Coin stops out frequently (SL exits >50% of trades)\n\n` +
+        `YOUR DECISION FRAMEWORK (recalibration):\n` +
+        `DEFAULT = REJECT. Approve ONLY if:\n` +
+        `1. Signal performance: most signals shown have ≥48% WR in this regime\n` +
+        `2. Score is meaningful: ≥7 for liquidity-trap, ≥6 for trend/breakout, ≥4.5 for mean-reversion\n\n` +
+
+        `AUTO-REJECT only if:\n` +
+        `- Signal WRs are all below 45% with no strong regime-specific exception\n\n`
+      : `YOUR DECISION FRAMEWORK:\n` +
+        `DEFAULT = REJECT. Approve ONLY if ALL of the following:\n` +
+        `1. Signal performance: most signals shown have ≥48% WR in this regime\n` +
+        `2. Coin history: no repeating failure pattern matching current signals\n` +
+        `3. Setup type: this coin's history for this setupType shows positive EV\n` +
+        `4. No current-setup overlap with this coin's warning signals\n` +
+        `5. Score is meaningful: ≥7 for liquidity-trap, ≥6 for trend/breakout\n\n` +
+
+        `AUTO-REJECT if ANY of:\n` +
+        `- Current signals overlap with 2+ of this coin's warning signals\n` +
+        `- This setupType has negative EV on this coin (≥3 prior trades)\n` +
+        `- Coin has 3+ consecutive losses (current losing streak)\n` +
+        `- Signal WRs are all below 45% with no strong regime-specific exception\n` +
+        `- Coin stops out frequently (SL exits >50% of trades)\n\n`) +
 
     `CANDIDATES:\n${candidateLines}`
   );

@@ -175,6 +175,23 @@ When a `liquidity-trap` setup has no confirmed sweep (`isConfirmedSweep` returns
 
 ---
 
+## Zero-Trades Unblock + Claude Recalibration Mode (June 2026)
+
+The bot was opening **zero trades**. Investigation found two real blockers (plus a
+non-issue) and one operational change:
+
+1. **`zero-range-bar` hard bail killed all 15m MR confirmation** (`bot/entry-improvements.js` → `check15mReversal`). When the last 15m candle was a doji (`high === low`, common in flat sideways), the function returned early with `["zero-range-bar"]` — before any of the flat-market-friendly checks (RSI divergence, momentum divergence, exhaustion, volume reversal) could run. Since the only escape was `candidate.score >= 5.5` (nothing was hitting it), every MR candidate died at `mr-entry-gate:mr-15m-rejected(conf=0.0, patterns=zero-range-bar)`. **Fix:** replaced the hard `return` with a `skipWickPatterns` flag that suppresses ONLY the wick-ratio patterns (hammer/engulfing/shooting-star, which divide by `lastRange`). RSI/momentum divergence, exhaustion, and volume reversal now still run on a doji last bar.
+
+2. **Claude rejecting on stale system EV/WR** (`coin-memory.js` → `buildValidationSection`). The validation prompt fed Claude system-wide EV (`avg $-6/trade`) and regime/approval WR (~35%) from pre-pivot contaminated history, and the decision framework treated negative EV as a rejection reason — so anything that squeaked through got rejected. **Fix:** a **recalibration mode** keyed on combined system WR. When `combinedWR < RECALIBRATION_WR_FLOOR` (0.42, needs n≥10): the regime line drops its per-trade EV (keeps WR/n), and the prompt swaps in a slimmed framework that tells Claude the system/regime EV+WR figures are stale and **NOT valid rejection criteria** — judge each candidate on **signal-level WR only** (the per-signal `[..%WR..]` data on each candidate line), not coin-specific history. **Auto-reverts** to the full framework once WR recovers to ≥42% — no code change needed.
+
+3. **Adaptive threshold 4.0→4.5 in sideways — NOT actually a blocker** (kept as-is). MR setups already require score ≥4.5 (`entry-improvements.js:312/349`) and non-MR need ≥5.0 (`MEAN_REVERSION_PRIMARY`), so the 4→4.5 bump excludes nothing live. It shows in logs but is a no-op for current config. Don't "fix" it.
+
+**Operational:** the `superduperbot-runner` cron was changed **2 min → 5 min** (it was staling/locking out constantly against the main bot's advisory lock).
+
+**Watch after deploy:** scan logs should show `mr-15m-confirmed(...)` firing on flat tape (via RSI div / exhaustion, not just wicks), and `[CLAUDE BATCH]` approvals ticking up. The recalibration notice only appears in the prompt while system WR < 42%.
+
+---
+
 ## Seeding Playbook (resetting contaminated learned stats)
 
 The bot's learned state is part windowed/decayed (self-heals) and part **cumulative**
