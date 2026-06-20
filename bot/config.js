@@ -51,6 +51,16 @@ export const MEAN_REVERSION_PRIMARY  = true;
 // Set below CLAUDE_THRESHOLD (6) so medium-quality trend/breakout setups can reach Claude.
 export const MR_PRIMARY_THRESHOLD    = 5.0;
 
+// MR minimum stop-distance floor (June 2026 — the RLS lesson): a mean-reversion
+// fade needs the stop placed beyond ordinary noise, or it gets wicked out before
+// price reverts. Live, RLS stopped out on a −0.33% move (−$5.80) — its 1h ATR
+// was so compressed that the 2×ATR stop sat inside the noise. (Quote volume was
+// NOT the issue: RLS does $272M/24h. The stop was simply too tight.) If the
+// projected MR stop (ATR_SL_MULT × ATR/price) is closer than this floor, the
+// entry is skipped with reason `mr-stop-too-tight`. Tunable — raise to demand
+// more room (skips more compressed-tape MR), lower to allow tighter stops.
+export const MR_MIN_STOP_DISTANCE_PCT = 0.008;  // 0.8% of entry price
+
 export const CANDLE_LIMIT       = 500;
 export const DRAWDOWN_LIMIT     = 0.15;
 

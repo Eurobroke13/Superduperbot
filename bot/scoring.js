@@ -2,6 +2,7 @@ import {
   ATR_SL_MULT,
   ATR_TP_MULT,
   CANDLE_LIMIT,
+  MR_MIN_STOP_DISTANCE_PCT,
   REGIME_SIGNAL_MULTIPLIERS,
 } from "./config.js";
 import { fetchCandles } from "./market-data.js";
@@ -1061,6 +1062,14 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       const bandwidthContracting = Number.isFinite(bbWidth) && Number.isFinite(bbWidthPrev) && bbWidth < bbWidthPrev;
 
       if (!isSidewaysRegime) { _trackNull("mr-not-sideways"); return "bail"; }
+      // Stop-distance floor: a fade needs the stop beyond ordinary noise, or it
+      // gets wicked out before price reverts (the RLS failure mode: a 2×ATR stop
+      // at only −0.33% on ultra-compressed tape). Mirrors the ATR-based stop the
+      // bot places (ATR_SL_MULT × ATR/price); skip when it would be too tight.
+      const mrProjectedStopPct = ATR_SL_MULT * atrPct;
+      if (Number.isFinite(mrProjectedStopPct) && mrProjectedStopPct < MR_MIN_STOP_DISTANCE_PCT) {
+        _trackNull("mr-stop-too-tight"); return "bail";
+      }
       if (!hasLocationEdge || !hasExtreme) { _trackNull("mr-no-edge"); return "bail"; }
       if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) { _trackNull("mr-transition"); return "bail"; }
       if (!volumeDeclining && !bandwidthContracting) {
