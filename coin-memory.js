@@ -397,6 +397,17 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
   );
 }
 
+// Fail-SAFE result: reject every candidate. Used when we got (and paid for) a
+// Claude response that we could not parse (e.g. truncated JSON) or the call
+// threw. Unlike `fallbackResult` (the no-API-key degraded mode, which auto-
+// approves score≥5), this must NOT open positions — a parse failure is not a
+// Claude verdict, and silently auto-approving here defeats REQUIRE_CLAUDE_APPROVAL.
+function rejectAllResult(candidates, reason) {
+  const v = {};
+  for (const c of (candidates || [])) v[c.symbol] = { approved: false, reason };
+  return { newsBlocked: [], newsBoosted: [], newsSummary: "", validations: v, journals: {} };
+}
+
 // =============================================================================
 // LAYER 6 — claudeBatchAnalysis rewrite
 // Drop-in replacement for the existing function in bot.js
@@ -483,16 +494,21 @@ export async function claudeBatchAnalysis({
 
   try {
     const expectedSymbols = candidatesToValidate.map(c => c.symbol);
-    const raw = await callClaudeBudgeted(prompt, env, state, 1200);
+    // The batch response carries news + one validation (with prose reason) per
+    // candidate + per-symbol journals. 1200 tokens truncated mid-object on busy
+    // runs, which fell through to auto-approval (fail-open). Give it real room.
+    const raw = await callClaudeBudgeted(prompt, env, state, 4000);
     const { ok, data, error } = safeParseClaudeJSON(raw);
     if (!ok) {
       console.warn("[CLAUDE BATCH] JSON parse failed:", error, raw.slice(0, 300));
-      return fallback(candidatesToValidate);
+      // Reject (not auto-approve): an unparseable response is not a verdict.
+      return rejectAllResult(candidatesToValidate, "claude-parse-failed");
     }
     return validateBatchResponse(data, expectedSymbols);
   } catch (err) {
     console.error("[CLAUDE BATCH]", err.message);
-    return fallback(candidatesToValidate);
+    // API/budget error mid-run: fail safe, do not open positions on a non-verdict.
+    return rejectAllResult(candidatesToValidate, "claude-error");
   }
 }
 
