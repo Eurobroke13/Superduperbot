@@ -2,6 +2,7 @@ import {
   ATR_SL_MULT,
   ATR_TP_MULT,
   CANDLE_LIMIT,
+  MR_MIN_QUOTE_VOLUME_24H,
   REGIME_SIGNAL_MULTIPLIERS,
 } from "./config.js";
 import { fetchCandles } from "./market-data.js";
@@ -1061,6 +1062,14 @@ export function scoreFromData(symbol, candles1h, candles4h, regime, state) {
       const bandwidthContracting = Number.isFinite(bbWidth) && Number.isFinite(bbWidthPrev) && bbWidth < bbWidthPrev;
 
       if (!isSidewaysRegime) { _trackNull("mr-not-sideways"); return "bail"; }
+      // Liquidity gate: MR fades need depth, or the ATR stop sits inside the
+      // spread and noise/fees stop you out before reversion (the RLS failure
+      // mode). Only blocks when we have a known, too-low 24h quote volume —
+      // fail-open on missing data (backtest / pre-ticker paths).
+      const mrVol24h = state?._volumeMap?.[symbol];
+      if (mrVol24h != null && mrVol24h < MR_MIN_QUOTE_VOLUME_24H) {
+        _trackNull("mr-illiquid"); return "bail";
+      }
       if (!hasLocationEdge || !hasExtreme) { _trackNull("mr-no-edge"); return "bail"; }
       if (hasReason(reasons, "transition-market") || h4AlignedAgainstMr) { _trackNull("mr-transition"); return "bail"; }
       if (!volumeDeclining && !bandwidthContracting) {

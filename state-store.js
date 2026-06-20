@@ -153,6 +153,7 @@ export async function saveState(state, deps = {}) {
   delete stateForBlob.trades;
   delete stateForBlob.decisionLog;
   delete stateForBlob._pendingTrades;
+  delete stateForBlob._volumeMap;
 
   const blobValues = [STATE_KEY, JSON.stringify(stateForBlob)];
 

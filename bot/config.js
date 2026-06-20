@@ -51,6 +51,16 @@ export const MEAN_REVERSION_PRIMARY  = true;
 // Set below CLAUDE_THRESHOLD (6) so medium-quality trend/breakout setups can reach Claude.
 export const MR_PRIMARY_THRESHOLD    = 5.0;
 
+// MR liquidity floor (June 2026): mean-reversion fades need real depth — on an
+// illiquid micro-cap the ATR-based stop sits inside the spread, so normal noise
+// (and fees) stops you out before any reversion (e.g. RLS: −0.33% move → stop,
+// −$5.80, a fee-dominated loss the bot itself flagged as −EV/−Kelly at entry).
+// The universe-wide floor is only $450k 24h quote volume; MR demands much more.
+// Liquid majors/large-caps (ATOM etc.) clear this easily; micro-caps are skipped
+// with reason `mr-illiquid`. Tunable — raise to filter harder, lower to allow
+// thinner names. Non-MR setups are unaffected.
+export const MR_MIN_QUOTE_VOLUME_24H = 5_000_000;
+
 export const CANDLE_LIMIT       = 500;
 export const DRAWDOWN_LIMIT     = 0.15;
 
