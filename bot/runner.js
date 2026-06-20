@@ -795,9 +795,6 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     volumeMap[t.contract] = parseFloat(t.volume_24h_quote || t.volume_24h_usd || t.volume_24h || 0);
     if (t.last) livePrices[t.contract] = t.last;
   }
-  // Expose 24h quote volume to scoring (transient; stripped before persist in
-  // state-store.js) so the MR liquidity gate can read per-symbol depth.
-  state._volumeMap = volumeMap;
 
   const allContracts = await _fetchAllContracts();
   if (!allContracts || allContracts.length === 0) return;

@@ -51,15 +51,15 @@ export const MEAN_REVERSION_PRIMARY  = true;
 // Set below CLAUDE_THRESHOLD (6) so medium-quality trend/breakout setups can reach Claude.
 export const MR_PRIMARY_THRESHOLD    = 5.0;
 
-// MR liquidity floor (June 2026): mean-reversion fades need real depth — on an
-// illiquid micro-cap the ATR-based stop sits inside the spread, so normal noise
-// (and fees) stops you out before any reversion (e.g. RLS: −0.33% move → stop,
-// −$5.80, a fee-dominated loss the bot itself flagged as −EV/−Kelly at entry).
-// The universe-wide floor is only $450k 24h quote volume; MR demands much more.
-// Liquid majors/large-caps (ATOM etc.) clear this easily; micro-caps are skipped
-// with reason `mr-illiquid`. Tunable — raise to filter harder, lower to allow
-// thinner names. Non-MR setups are unaffected.
-export const MR_MIN_QUOTE_VOLUME_24H = 5_000_000;
+// MR minimum stop-distance floor (June 2026 — the RLS lesson): a mean-reversion
+// fade needs the stop placed beyond ordinary noise, or it gets wicked out before
+// price reverts. Live, RLS stopped out on a −0.33% move (−$5.80) — its 1h ATR
+// was so compressed that the 2×ATR stop sat inside the noise. (Quote volume was
+// NOT the issue: RLS does $272M/24h. The stop was simply too tight.) If the
+// projected MR stop (ATR_SL_MULT × ATR/price) is closer than this floor, the
+// entry is skipped with reason `mr-stop-too-tight`. Tunable — raise to demand
+// more room (skips more compressed-tape MR), lower to allow tighter stops.
+export const MR_MIN_STOP_DISTANCE_PCT = 0.008;  // 0.8% of entry price
 
 export const CANDLE_LIMIT       = 500;
 export const DRAWDOWN_LIMIT     = 0.15;

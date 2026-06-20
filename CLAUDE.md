@@ -138,17 +138,18 @@ Backtest analysis revealed three weak MR signals dragging mean-reversion WR belo
 
 **Expected effect:** MR entry frequency drops significantly (only genuine multi-confirmation setups pass). Quality over quantity — fewer but higher-conviction entries.
 
-### MR liquidity gate (June 2026 — the RLS lesson)
+### MR minimum stop-distance gate (June 2026 — the RLS lesson)
 
-Live post-mortem (RLS-USDT-SWAP, 2026-06-19): an MR long opened @ $0.002400 and stopped out @ $0.002392 — a **−0.33% price move** (−$5.80, −1.3% on margin) in 3 hours. On an illiquid micro-cap the ATR-based stop sits **inside the spread**, so ordinary noise + fees stop you out before any reversion. The bot's own sizing had already flagged it (`Kelly:-0.130 mult:0.50`, setup `ev=-6.52`) but only *halved* size rather than skipping. (The memory system then worked correctly — next day Claude *rejected* RLS re-entry citing the 0% WR / fee-dominated loss + journal flag.)
+Live post-mortem (RLS-USDT-SWAP, 2026-06-19): an MR long opened @ $0.002400 and stopped out @ $0.002392 — a **−0.33% price move** (−$5.80, −1.3% on margin) in 3 hours. The bot's own sizing had already flagged it (`Kelly:-0.130 mult:0.50`, setup `ev=-6.52`) but only *halved* size rather than skipping. (The memory system then worked correctly — next day Claude *rejected* RLS re-entry citing the 0% WR / fee-dominated loss + journal flag.)
 
-**Why a liquidity gate, not a wider stop or a Kelly hard-skip:**
-- *Wider stop* on a −EV illiquid name just turns small losses into bigger ones — the instrument is the problem, not the stop distance.
+**Important — it was NOT a liquidity problem.** The first instinct was an illiquid-micro-cap / spread gate, but live OKX data killed that thesis: **RLS does $272M/24h**, while ATOM (the other, sensible MR entry that day) does only **$1.68M**. A quote-volume floor would have *blocked ATOM and let RLS through* — exactly backwards. RLS is a low-*priced* coin ($0.0024), not a low-*liquidity* one. The real cause: its 1h ATR was so compressed that the **2×ATR stop sat at only −0.33%**, inside ordinary noise.
+
+**Why a stop-distance floor, not a wider stop, a Kelly hard-skip, or a volume gate:**
+- *Wider stop* on a −EV name just turns small losses into bigger ones — skip the entry instead.
 - *Negative-Kelly hard-skip* is too blunt: `computeKellySizing` (`stats.js`) is **setup-wide** (one number for all MR, currently negative from the edge-collapse) and clamped to `[0.5, 1.5]` — gating on it would block **essentially all** MR entries → back to the zero-trades problem. Kelly stays a *size* dial, which is its correct role.
+- *Quote-volume gate* — rejected: the metric doesn't separate the bad trade (RLS, $272M) from the good one (ATOM, $1.68M).
 
-**The gate** (`scoring.js` → `applyMRGates`, `MR_MIN_QUOTE_VOLUME_24H = 5_000_000` in `config.js`): MR candidates whose **24h quote volume < $5M** bail with `mr-illiquid`. The universe-wide floor is only $450k (`runner.js:811`); MR demands real depth. Liquid majors/large-caps (e.g. ATOM) clear it easily; RLS-class micro-caps are skipped. Non-MR setups are unaffected.
-
-**Plumbing:** `phaseScan` stashes the ticker volume map on `state._volumeMap` (transient — stripped before persist in `state-store.js`, alongside `_pendingTrades`); the gate reads `state._volumeMap?.[symbol]`. **Fail-open on missing data** (backtest / pre-ticker paths have no `_volumeMap`, so the gate only fires when a *known* volume is below the floor). Tunable: raise to filter harder, lower to allow thinner names. **Watch after deploy:** `mr-illiquid` rejections should appear for micro-caps in scan-null logs while liquid MR setups still pass.
+**The gate** (`scoring.js` → `applyMRGates`, `MR_MIN_STOP_DISTANCE_PCT = 0.008` in `config.js`): compute the projected MR stop distance `ATR_SL_MULT × atrPct` (mirrors the ATR-based stop the bot places — RLS = 2.0 × 0.165% = 0.33%); if it's below **0.8% of entry**, bail with `mr-stop-too-tight`. Liquidity-agnostic, so it catches RLS without touching ATOM. Non-MR setups are unaffected. (`atrPct` is already computed in `computeIndicatorContext` and destructured into `scoreFromData` — **no extra plumbing and no `state` mutation**, so the main bot and the fast-scan runner apply it identically.) Tunable: raise to demand more room (skips more compressed-tape MR), lower to allow tighter stops. **Watch after deploy:** `mr-stop-too-tight` rejections should appear for ultra-compressed coins in scan-null logs while normally-volatile MR setups still pass.
 
 ---
 
