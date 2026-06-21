@@ -302,11 +302,16 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
     ? `${(claudeStats.winRate * 100).toFixed(0)}% (n=${claudeStats.count})`
     : "insufficient data";
 
-  // Setup type performance system-wide
+  // Setup type performance system-wide. During recalibration the EV is stale
+  // pre-pivot contamination (same poisoned well as regime/signal), so drop it
+  // and keep WR/n only — otherwise Claude rejects on a setup EV it was just told
+  // to ignore. Auto-reverts with the rest of recalibration once WR ≥ 42%.
   const setupPerf = ["trend","breakout","liquidity-trap","mean-reversion","bull-pullback"].map(t => {
     const s = getSetupStats(state.trades || [], t);
     if (!s || s.count < 5) return `${t}:no data`;
-    return `${t}:${(s.winRate*100).toFixed(0)}%WR EV=$${s.expectancy.toFixed(1)} n=${s.count}`;
+    return recalibrating
+      ? `${t}:${(s.winRate*100).toFixed(0)}%WR n=${s.count}`
+      : `${t}:${(s.winRate*100).toFixed(0)}%WR EV=$${s.expectancy.toFixed(1)} n=${s.count}`;
   }).join(" | ");
 
   // Regime performance — drop the per-trade EV during recalibration so the stale
@@ -378,9 +383,9 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
 
     (recalibrating
       ? `⚠ RECALIBRATION MODE (system WR ${(combinedWR * 100).toFixed(0)}% < 42%):\n` +
-        `The overall/regime WR and EV figures above reflect STALE pre-pivot history ` +
-        `and are NOT valid rejection criteria right now. Do NOT reject a candidate ` +
-        `because system-level or regime-level EV/WR is negative.\n` +
+        `The overall/regime/setup WR and EV figures above reflect STALE pre-pivot ` +
+        `history and are NOT valid rejection criteria right now. Do NOT reject a ` +
+        `candidate because system-level, regime-level, or setup-level EV/WR is negative.\n` +
         `IMPORTANT — per-signal WR is ALSO unreliable right now: the bot is barely ` +
         `trading, so the trade window hasn't refreshed and most per-signal WRs are ` +
         `tiny samples (often a few stale pre-pivot trades). Any signal marked ` +

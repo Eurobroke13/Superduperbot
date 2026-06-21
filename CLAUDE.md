@@ -215,6 +215,16 @@ The original recalibration mode (above) insulated Claude from stale *system/regi
 
 This breaks the deadlock: Claude stops auto-rejecting on stale n=3 poison, takes confluence-backed trades, fresh data accrues, real WR emerges. Auto-reverts with the rest of recalibration once system WR ≥42%. Tests: `tests/recalibration-thin-wr.test.js`. **Watch after deploy:** candidate lines show `n=… thin` tags; in recalibration, MR candidates with thin WR but strong confluence start getting approved instead of the blanket 33%-WR rejection.
 
+### Poisoned-stats audit + sizing de-contamination (June 2026)
+
+A full audit of every learned-stat store (prompted by "is anything else poisoned?") found the most *material silent* drag wasn't in the Claude prompt at all — it was **position sizing**. Two sizing consumers read `getSetupStats(state.trades, setupType)`, which filters the **whole last-500-trade window with NO recency/decay** (`stats.js`), so pre-2026-06-10 contaminated trades count at full weight:
+1. **`computeKellySizing`** (`execution.js`) — drove MR to `kelly:-0.130 mult:0.50` (half size).
+2. **`getAdaptiveSetupDecision`** (`stats.js`) — drove the `Setup decision … sizeMult=0.85 ev=-6.52` cut, *and at `count≥30` with negative EV returns `allow:false` — a hard block*. MR's window count (~24) was just under 30; once it crossed, **all MR entries would have been blocked** on stale EV. A latent landmine, not just a size cut. (Both stack: 0.50 × 0.85 ≈ MR sized to ~42%.)
+
+**Fix (`stats.js` `getSetupStatsRecent` + `MIN_EFF_RECENT_SETUP = 6`; permanent, not a recalibration toggle):** a decay-weighted (`10-day half-life`, mirroring `adaptation.js`) setup-stats variant returning `count` (raw, for min-sample gates) + `effN` (decayed effective sample) + decayed WR/EV. Both sizing consumers now use it; when `effN < 6` (recent evidence too thin) they **stay neutral (`sizeMult/mult 1.0`, `allow:true`)** instead of acting on stale data — so stale EV can neither shrink size nor block. Self-heals continuously via decay; no future revert. Tests: `tests/setup-stats-recency.test.js`. **Note:** `getSetupAdjustedThreshold` and `regimeStats` (cumulative, n>1000 so contamination is diluted) and `dynamicWeights` (windowed-80 + decay + 0.6–1.4 cap) were judged low-impact and left as-is.
+
+**Also (Fix 2, recalibration-gated, auto-reverts):** the **setup-performance EV line** shown to Claude (`buildValidationSection`) was the one poisoned input recalibration *didn't* suppress — it now drops EV (keeps WR/n) while recalibrating, and the preamble's "stale, not a reject basis" clause now explicitly names **setup-level** alongside system/regime. Reverts to full EV at WR ≥42%.
+
 ---
 
 ## Seeding Playbook (resetting contaminated learned stats)
