@@ -34,15 +34,20 @@ test("thin (n<10) regime signal WR is tagged 'thin' and shows n", () => {
   assert.match(out, /\[sideways:33% n=3 thin\]/);
 });
 
-test("reliable (n>=10) regime signal WR is NOT tagged thin", () => {
+test("reliable (n>=15) regime signal WR is NOT tagged thin", () => {
+  const out = buildValidationSection([candidate], regime, stateWith(16), deps);
+  assert.match(out, /\[sideways:\d+% n=16\]/);
+  assert.doesNotMatch(out, /n=16 thin/);
+});
+
+test("a count between the old and new threshold (n=12) IS now tagged thin", () => {
   const out = buildValidationSection([candidate], regime, stateWith(12), deps);
-  assert.match(out, /\[sideways:\d+% n=12\]/);
-  assert.doesNotMatch(out, /n=12 thin/);
+  assert.match(out, /\[sideways:\d+% n=12 thin\]/);
 });
 
 test("recalibration prompt instructs Claude to ignore thin signal WR", () => {
   const out = buildValidationSection([candidate], regime, stateWith(3), deps);
   assert.match(out, /RECALIBRATION MODE/);
   assert.match(out, /thin.*NOT a valid rejection basis|do NOT reject a candidate because a thin signal/i);
-  assert.match(out, /n≥10/);
+  assert.match(out, /n≥15/);
 });

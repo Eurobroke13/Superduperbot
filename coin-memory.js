@@ -293,7 +293,11 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
   // them "thin" so the prompt can tell Claude not to auto-reject on them. This
   // breaks the deadlock where stale 33%-WR (n=3) rejections block the very
   // trades that would refresh the data.
-  const RELIABLE_SIGNAL_N = 10;
+  //
+  // Set to 15 (not 10): a WR's 95% CI is still ±25% at n=15 and ±31% at n=10, so
+  // 10 was too few to trust enough to auto-reject on. 15 sits just below the
+  // adaptive-weights system's own 20-trade "enough sample" gate (adaptation.js).
+  const RELIABLE_SIGNAL_N = 15;
 
   const autoWR      = autoStats?.count >= 5
     ? `${(autoStats.winRate * 100).toFixed(0)}% (n=${autoStats.count})`
