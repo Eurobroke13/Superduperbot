@@ -203,6 +203,28 @@ non-issue) and one operational change:
 
 **Watch after deploy:** scan logs should show `mr-15m-confirmed(...)` firing on flat tape (via RSI div / exhaustion, not just wicks), and `[CLAUDE BATCH]` approvals ticking up. The recalibration notice only appears in the prompt while system WR < 42%.
 
+### Recalibration v2 — thin per-signal WR is no longer a reject basis (June 2026)
+
+The original recalibration mode (above) insulated Claude from stale *system/regime* EV+WR but then pointed it at **per-signal WR** as the primary criterion — which is the **same poisoned well one level down**. Live (2026-06-21) Claude was rejecting every MR short citing `mr-stoch-overbought[sideways:33%]` / `mr-at-resistance[sideways:33%]`. Those numbers come from `state.signalStats[sig:regime]`, built in `adaptation.js` from `state.trades.slice(-80)` using **raw, un-decayed** win/loss counts (the 10-day decay only feeds `dynamicWeights`, not the WR string Claude sees), and shown at **n as low as 3**.
+
+**The deadlock:** the MR pivot throttled volume to ~1 trade / couple days, so the 80-trade window **doesn't refresh** — it's still full of pre-2026-06-10 contaminated trades. Stale 33%-WR (n=3) → Claude rejects → no new trades open → window never rolls the old trades out → WR frozen at 33% forever. The "windowed stats self-heal in ~30 days" assumption breaks precisely *because* the pivot cut volume.
+
+**Fix A (`coin-memory.js` → `buildValidationSection`, prompt/display-only — no state mutation, main bot only since the runner makes no Claude calls):**
+1. **Surface sample size + a `thin` tag.** Per-signal lines now show `[sideways:33% n=3 thin]` instead of bare `[sideways:33%]` (global stats get a `thin` tag too). `RELIABLE_SIGNAL_N = 10`; below it = small-sample/stale noise. Previously Claude couldn't tell a 33% from n=3 (noise) from a 33% from n=30 (real).
+2. **Recalibration framework rewritten:** thin (n<10) signal WR is explicitly **NOT a valid rejection basis**; only n≥10 WR is trustworthy. Approve path is now `(a)` reliable signals ≥48% WR **OR** `(b)` thin/insufficient WR but 3+ aligned signals (confluence) at a meaningful score. AUTO-REJECT only fires when signals with **reliable** data (n≥10) are all <45% — thin signals are ignored for that test. The non-recalibration framework also gained "ignore signals marked thin".
+
+This breaks the deadlock: Claude stops auto-rejecting on stale n=3 poison, takes confluence-backed trades, fresh data accrues, real WR emerges. Auto-reverts with the rest of recalibration once system WR ≥42%. Tests: `tests/recalibration-thin-wr.test.js`. **Watch after deploy:** candidate lines show `n=… thin` tags; in recalibration, MR candidates with thin WR but strong confluence start getting approved instead of the blanket 33%-WR rejection.
+
+### Poisoned-stats audit + sizing de-contamination (June 2026)
+
+A full audit of every learned-stat store (prompted by "is anything else poisoned?") found the most *material silent* drag wasn't in the Claude prompt at all — it was **position sizing**. Two sizing consumers read `getSetupStats(state.trades, setupType)`, which filters the **whole last-500-trade window with NO recency/decay** (`stats.js`), so pre-2026-06-10 contaminated trades count at full weight:
+1. **`computeKellySizing`** (`execution.js`) — drove MR to `kelly:-0.130 mult:0.50` (half size).
+2. **`getAdaptiveSetupDecision`** (`stats.js`) — drove the `Setup decision … sizeMult=0.85 ev=-6.52` cut, *and at `count≥30` with negative EV returns `allow:false` — a hard block*. MR's window count (~24) was just under 30; once it crossed, **all MR entries would have been blocked** on stale EV. A latent landmine, not just a size cut. (Both stack: 0.50 × 0.85 ≈ MR sized to ~42%.)
+
+**Fix (`stats.js` `getSetupStatsRecent` + `MIN_EFF_RECENT_SETUP = 6`; permanent, not a recalibration toggle):** a decay-weighted (`10-day half-life`, mirroring `adaptation.js`) setup-stats variant returning `count` (raw, for min-sample gates) + `effN` (decayed effective sample) + decayed WR/EV. Both sizing consumers now use it; when `effN < 6` (recent evidence too thin) they **stay neutral (`sizeMult/mult 1.0`, `allow:true`)** instead of acting on stale data — so stale EV can neither shrink size nor block. Self-heals continuously via decay; no future revert. Tests: `tests/setup-stats-recency.test.js`. **Note:** `getSetupAdjustedThreshold` and `regimeStats` (cumulative, n>1000 so contamination is diluted) and `dynamicWeights` (windowed-80 + decay + 0.6–1.4 cap) were judged low-impact and left as-is.
+
+**Also (Fix 2, recalibration-gated, auto-reverts):** the **setup-performance EV line** shown to Claude (`buildValidationSection`) was the one poisoned input recalibration *didn't* suppress — it now drops EV (keeps WR/n) while recalibrating, and the preamble's "stale, not a reject basis" clause now explicitly names **setup-level** alongside system/regime. Reverts to full EV at WR ≥42%.
+
 ---
 
 ## Seeding Playbook (resetting contaminated learned stats)
@@ -292,6 +314,9 @@ Every mean-reversion/fade signal showed positive lift, every trend/momentum sign
 ### Active / Ongoing
 - **Edge collapse is real, not contamination (RESOLVED diagnosis → MR pivot).** The drift warning turned out to be genuine overfitting, not just the duplicate-instance period. The first clean post-fix sample (50 trades, healthy since 2026-06-10) was **WR 34% / PF 0.59 / −$340**, with the score showing no separating power (winners 5.33 vs losers 5.27). Pruning old contaminated trades was investigated and **rejected** — the cleanest data is still net-negative. Response: the four Edge-Recovery gates + MR pivot (see "Edge-Recovery Gates" above). **Watch:** trade frequency drops hard (MR is rare); re-run `analyze-trades.js` after ~100-150 clean MR-era trades to confirm the MR edge holds and re-do the signal-lift kill-list on firmer ground.
 - **Monitoring after MR-pivot deploy** — confirm scan logs show `mr-primary-mode` rejections (non-MR setups held back), `momentum-disabled`, `shorts-bear-only`, and that surviving entries are MR or Claude-approved. Note: with `REQUIRE_CLAUDE_APPROVAL`, the **fast-scan runner only opens `claude-cached` entries** and the bot stops opening new entries when Claude budget ≥90% (fail-safe).
+- **Monitoring after PR #58 deploy (merged 2026-06-20)** — two fixes to confirm in logs:
+  1. **Claude batch fail-open fix** (`coin-memory.js`): `[CLAUDE BATCH] JSON parse failed` should disappear, and there should be **no more `Claude approved: auto-fallback`** on parseable runs. If parse failures *do* recur, candidates now reject with `claude-parse-failed` / `claude-error` (fail-safe, no silent auto-approval) — investigate the batch size / response length rather than letting it ride.
+  2. **MR stop-distance gate** (`scoring.js`, `MR_MIN_STOP_DISTANCE_PCT = 0.008`): `mr-stop-too-tight` rejections should appear for ultra-compressed-ATR coins (the RLS failure mode) while normally-volatile MR setups (ATOM-class) still pass. **Risk:** if MR frequency drops too hard (back toward zero-trades), the 0.8% floor is the single knob to lower in `config.js`. Re-check after ~20-30 MR-era runs; the loss that motivated it (RLS) was a low-*priced* coin, NOT illiquid ($272M/24h) — the gate is liquidity-agnostic by design.
 - **SLX-USDT-SWAP / IRYS-USDT-SWAP partial candles** — These symbols consistently return fewer candles than requested (SLX: 56/200 on 4H, IRYS: 85/200 on 4H). New listings with limited history. Bot skips them correctly but they appear as noise in logs.
 - **`superduperbot-premarket` service** — Still running on schedule but does nothing (disabled in code). Wastes a Railway service slot — consider deleting it.
 

@@ -12,6 +12,50 @@ export const LIVE_BASELINE = {
   maxDrawdown: 0.0346
 };
 
+// Recency-weighting for SIZING stats (Kelly + adaptive setup decision). Plain
+// getSetupStats averages over the whole last-500-trade window with no decay, so
+// pre-pivot contaminated trades drag setup EV/WR down at full weight — which both
+// shrinks position size (Kelly, adaptive sizeMult) AND can hard-block a setup
+// (allow:false on negative full-window EV). These constants make sizing reflect
+// RECENT structure instead. Mirrors adaptation.js's 10-day half-life. Permanent
+// improvement (not a recalibration toggle): self-heals continuously via decay.
+const SETUP_DECAY_HALFLIFE_DAYS = 10;
+// Below this decay-weighted effective sample, recent evidence is too thin to
+// trust — sizing/blocking stays neutral rather than acting on stale data.
+export const MIN_EFF_RECENT_SETUP = 6;
+
+function setupDecayWeight(trade, nowMs) {
+  const closedMs = trade.closedAt ? new Date(trade.closedAt).getTime() : NaN;
+  if (!Number.isFinite(closedMs)) return 1; // undated legacy trades: full weight
+  const ageDays = Math.max(0, (nowMs - closedMs) / 86400000);
+  return Math.pow(0.5, ageDays / SETUP_DECAY_HALFLIFE_DAYS);
+}
+
+// Like getSetupStats, but WR/avgWin/avgLoss/expectancy are decay-weighted toward
+// recent trades. Returns `count` (raw, for min-sample gates) and `effN` (decayed
+// effective sample, for "is recent evidence trustworthy?" gates), so callers keep
+// the raw-count sample logic while the decision math reflects current structure.
+export function getSetupStatsRecent(trades, setupType, nowMs = Date.now()) {
+  const rows = (trades || []).filter((t) => t.setupType === setupType);
+  if (rows.length === 0) return null;
+
+  let mass = 0, winMass = 0, winPnl = 0, winN = 0, lossPnl = 0, lossN = 0;
+  for (const t of rows) {
+    const w = setupDecayWeight(t, nowMs);
+    mass += w;
+    if (t.pnl > 0) { winMass += w; winPnl += t.pnl * w; winN += w; }
+    else           { lossPnl += t.pnl * w; lossN += w; }
+  }
+  if (mass <= 0) return null;
+
+  const winRate = winMass / mass;
+  const avgWin  = winN  > 0 ? winPnl  / winN  : 0;
+  const avgLoss = lossN > 0 ? Math.abs(lossPnl / lossN) : 0;
+  const expectancy = (winRate * avgWin) - ((1 - winRate) * avgLoss);
+
+  return { count: rows.length, effN: mass, winRate, avgWin, avgLoss, expectancy };
+}
+
 export function getSetupStats(trades, setupType) {
   const rows = (trades || []).filter((t) => t.setupType === setupType);
   if (rows.length === 0) return null;
@@ -151,7 +195,9 @@ export function getApprovalRiskMultiplier(state, approvalType) {
 }
 
 export function getAdaptiveSetupDecision(state, setupType) {
-  const stats = getSetupStats(state.trades || [], setupType);
+  // Recency-weighted so stale pre-pivot trades can't shrink size or hard-block
+  // a setup on a negative full-window EV that no longer reflects current structure.
+  const stats = getSetupStatsRecent(state.trades || [], setupType);
 
   if (!stats) {
     return {
@@ -161,13 +207,24 @@ export function getAdaptiveSetupDecision(state, setupType) {
     };
   }
 
-  const { count, expectancy, winRate } = stats;
+  const { count, effN, expectancy, winRate } = stats;
 
   if (count < 15) {
     return {
       allow: true,
       sizeMult: 1.0,
       reason: "low-sample"
+    };
+  }
+
+  // Enough total history, but recent (decayed) evidence is too thin to trust —
+  // don't let stale EV/WR reduce size or block. Stays neutral until fresh trades
+  // accumulate, then the branches below engage on recency-weighted stats.
+  if (effN < MIN_EFF_RECENT_SETUP) {
+    return {
+      allow: true,
+      sizeMult: 1.0,
+      reason: `thin-recent n=${count} effN=${effN.toFixed(1)}`
     };
   }
 

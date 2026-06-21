@@ -10,8 +10,9 @@ import {
   getApprovalRiskMultiplier,
   getApprovalStats,
   getSetupRiskMultiplier,
-  getSetupStats,
+  getSetupStatsRecent,
   getSymbolRiskDecision,
+  MIN_EFF_RECENT_SETUP,
   trackAtrHistory
 } from "./stats.js";
 import { fetchCandles } from "./market-data.js";
@@ -150,10 +151,15 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   const setupRiskMult = getSetupRiskMultiplier(state, setupType);
   const approvalRiskMult = getApprovalRiskMultiplier(state, approvalType);
 
-  // Kelly + ATR-volatility sizing
-  const setupStats = getSetupStats(state.trades || [], setupType);
+  // Kelly + ATR-volatility sizing. Use recency-weighted setup stats so Kelly
+  // sizes off recent structure, not the full 500-trade window (which still
+  // contains pre-pivot contamination). When recent evidence is too thin
+  // (effN below the floor), stay neutral rather than sizing off stale data.
+  const setupStats = getSetupStatsRecent(state.trades || [], setupType);
   const atrHistory = state.atrHistory?.[symbol] || [];
-  const kellySizing = computeKellySizing(setupStats, atrVal, atrHistory);
+  const kellySizing = (setupStats && setupStats.effN >= MIN_EFF_RECENT_SETUP)
+    ? computeKellySizing(setupStats, atrVal, atrHistory)
+    : { mult: 1.0, reason: "kelly:thin-recent" };
   if (kellySizing.mult !== 1.0) {
     console.log(`[${symbol}] Kelly sizing: ${kellySizing.reason}`);
   }

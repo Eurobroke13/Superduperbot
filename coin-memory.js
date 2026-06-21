@@ -287,6 +287,14 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
   const combinedWR    = combinedCount >= 10 ? combinedWins / combinedCount : null;
   const recalibrating = combinedWR !== null && combinedWR < RECALIBRATION_WR_FLOOR;
 
+  // Per-signal WR below this sample size is small-sample noise — and while the
+  // bot is barely trading (MR pivot throttled volume), the last-80-trade window
+  // doesn't refresh, so these thin counts are often stale pre-pivot trades. Tag
+  // them "thin" so the prompt can tell Claude not to auto-reject on them. This
+  // breaks the deadlock where stale 33%-WR (n=3) rejections block the very
+  // trades that would refresh the data.
+  const RELIABLE_SIGNAL_N = 10;
+
   const autoWR      = autoStats?.count >= 5
     ? `${(autoStats.winRate * 100).toFixed(0)}% (n=${autoStats.count})`
     : "insufficient data";
@@ -294,11 +302,16 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
     ? `${(claudeStats.winRate * 100).toFixed(0)}% (n=${claudeStats.count})`
     : "insufficient data";
 
-  // Setup type performance system-wide
+  // Setup type performance system-wide. During recalibration the EV is stale
+  // pre-pivot contamination (same poisoned well as regime/signal), so drop it
+  // and keep WR/n only — otherwise Claude rejects on a setup EV it was just told
+  // to ignore. Auto-reverts with the rest of recalibration once WR ≥ 42%.
   const setupPerf = ["trend","breakout","liquidity-trap","mean-reversion","bull-pullback"].map(t => {
     const s = getSetupStats(state.trades || [], t);
     if (!s || s.count < 5) return `${t}:no data`;
-    return `${t}:${(s.winRate*100).toFixed(0)}%WR EV=$${s.expectancy.toFixed(1)} n=${s.count}`;
+    return recalibrating
+      ? `${t}:${(s.winRate*100).toFixed(0)}%WR n=${s.count}`
+      : `${t}:${(s.winRate*100).toFixed(0)}%WR EV=$${s.expectancy.toFixed(1)} n=${s.count}`;
   }).join(" | ");
 
   // Regime performance — drop the per-trade EV during recalibration so the stale
@@ -326,11 +339,15 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
       if (global && global.count >= 5) {
         const wr = ((global.wins / global.count) * 100).toFixed(0);
         const ev = (global.totalPnl / global.count).toFixed(1);
-        perfStr += `(${wr}%WR,$${ev}EV,n=${global.count})`;
+        const thin = global.count < RELIABLE_SIGNAL_N ? " thin" : "";
+        perfStr += `(${wr}%WR,$${ev}EV,n=${global.count}${thin})`;
       }
       if (regStat && regStat.count >= 3) {
         const rwr = ((regStat.wins / regStat.count) * 100).toFixed(0);
-        perfStr += `[${regime.label}:${rwr}%]`;
+        // Surface n and a thin flag — previously only the % was shown, so Claude
+        // couldn't tell a 33% from n=3 (noise) apart from a 33% from n=30 (real).
+        const thin = regStat.count < RELIABLE_SIGNAL_N ? " thin" : "";
+        perfStr += `[${regime.label}:${rwr}% n=${regStat.count}${thin}]`;
       }
       return perfStr;
     }).join(", ");
@@ -366,21 +383,30 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
 
     (recalibrating
       ? `⚠ RECALIBRATION MODE (system WR ${(combinedWR * 100).toFixed(0)}% < 42%):\n` +
-        `The overall/regime WR and EV figures above reflect STALE pre-pivot history ` +
-        `and are NOT valid rejection criteria right now. Do NOT reject a candidate ` +
-        `because system-level or regime-level EV/WR is negative. Judge each candidate ` +
-        `on its per-signal WR (the [...] performance data on each candidate line) only.\n\n` +
+        `The overall/regime/setup WR and EV figures above reflect STALE pre-pivot ` +
+        `history and are NOT valid rejection criteria right now. Do NOT reject a ` +
+        `candidate because system-level, regime-level, or setup-level EV/WR is negative.\n` +
+        `IMPORTANT — per-signal WR is ALSO unreliable right now: the bot is barely ` +
+        `trading, so the trade window hasn't refreshed and most per-signal WRs are ` +
+        `tiny samples (often a few stale pre-pivot trades). Any signal marked ` +
+        `"thin" (n<${RELIABLE_SIGNAL_N}) is small-sample noise and is NOT a valid ` +
+        `rejection basis — do NOT reject a candidate because a thin signal shows ` +
+        `low WR. Only WR from signals with n≥${RELIABLE_SIGNAL_N} is trustworthy. ` +
+        `When the WR data is thin, judge the candidate on signal CONFLUENCE ` +
+        `(how many aligned signals fired) and score instead.\n\n` +
 
         `YOUR DECISION FRAMEWORK (recalibration):\n` +
-        `DEFAULT = REJECT. Approve ONLY if:\n` +
-        `1. Signal performance: most signals shown have ≥48% WR in this regime\n` +
-        `2. Score is meaningful: ≥7 for liquidity-trap, ≥6 for trend/breakout, ≥4.5 for mean-reversion\n\n` +
+        `DEFAULT = REJECT. Approve if EITHER:\n` +
+        `(a) most signals with reliable data (n≥${RELIABLE_SIGNAL_N}) show ≥48% WR in this regime, OR\n` +
+        `(b) WR data is thin/insufficient but 3+ aligned signals fired (strong confluence),\n` +
+        `AND the score is meaningful: ≥7 for liquidity-trap, ≥6 for trend/breakout, ≥4.5 for mean-reversion.\n\n` +
 
         `AUTO-REJECT only if:\n` +
-        `- Signal WRs are all below 45% with no strong regime-specific exception\n\n`
+        `- Signals with RELIABLE data (n≥${RELIABLE_SIGNAL_N}) are all below 45% WR with no strong regime-specific exception. ` +
+        `(Signals marked "thin" do NOT count toward this — ignore their WR.)\n\n`
       : `YOUR DECISION FRAMEWORK:\n` +
         `DEFAULT = REJECT. Approve ONLY if ALL of the following:\n` +
-        `1. Signal performance: most signals shown have ≥48% WR in this regime\n` +
+        `1. Signal performance: most signals shown have ≥48% WR in this regime (ignore signals marked "thin" — too few samples to trust)\n` +
         `2. Coin history: no repeating failure pattern matching current signals\n` +
         `3. Setup type: this coin's history for this setupType shows positive EV\n` +
         `4. No current-setup overlap with this coin's warning signals\n` +
@@ -390,7 +416,7 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
         `- Current signals overlap with 2+ of this coin's warning signals\n` +
         `- This setupType has negative EV on this coin (≥3 prior trades)\n` +
         `- Coin has 3+ consecutive losses (current losing streak)\n` +
-        `- Signal WRs are all below 45% with no strong regime-specific exception\n` +
+        `- Signal WRs (n≥${RELIABLE_SIGNAL_N} only) are all below 45% with no strong regime-specific exception\n` +
         `- Coin stops out frequently (SL exits >50% of trades)\n\n`) +
 
     `CANDIDATES:\n${candidateLines}`
