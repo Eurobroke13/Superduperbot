@@ -203,6 +203,18 @@ non-issue) and one operational change:
 
 **Watch after deploy:** scan logs should show `mr-15m-confirmed(...)` firing on flat tape (via RSI div / exhaustion, not just wicks), and `[CLAUDE BATCH]` approvals ticking up. The recalibration notice only appears in the prompt while system WR < 42%.
 
+### Recalibration v2 — thin per-signal WR is no longer a reject basis (June 2026)
+
+The original recalibration mode (above) insulated Claude from stale *system/regime* EV+WR but then pointed it at **per-signal WR** as the primary criterion — which is the **same poisoned well one level down**. Live (2026-06-21) Claude was rejecting every MR short citing `mr-stoch-overbought[sideways:33%]` / `mr-at-resistance[sideways:33%]`. Those numbers come from `state.signalStats[sig:regime]`, built in `adaptation.js` from `state.trades.slice(-80)` using **raw, un-decayed** win/loss counts (the 10-day decay only feeds `dynamicWeights`, not the WR string Claude sees), and shown at **n as low as 3**.
+
+**The deadlock:** the MR pivot throttled volume to ~1 trade / couple days, so the 80-trade window **doesn't refresh** — it's still full of pre-2026-06-10 contaminated trades. Stale 33%-WR (n=3) → Claude rejects → no new trades open → window never rolls the old trades out → WR frozen at 33% forever. The "windowed stats self-heal in ~30 days" assumption breaks precisely *because* the pivot cut volume.
+
+**Fix A (`coin-memory.js` → `buildValidationSection`, prompt/display-only — no state mutation, main bot only since the runner makes no Claude calls):**
+1. **Surface sample size + a `thin` tag.** Per-signal lines now show `[sideways:33% n=3 thin]` instead of bare `[sideways:33%]` (global stats get a `thin` tag too). `RELIABLE_SIGNAL_N = 10`; below it = small-sample/stale noise. Previously Claude couldn't tell a 33% from n=3 (noise) from a 33% from n=30 (real).
+2. **Recalibration framework rewritten:** thin (n<10) signal WR is explicitly **NOT a valid rejection basis**; only n≥10 WR is trustworthy. Approve path is now `(a)` reliable signals ≥48% WR **OR** `(b)` thin/insufficient WR but 3+ aligned signals (confluence) at a meaningful score. AUTO-REJECT only fires when signals with **reliable** data (n≥10) are all <45% — thin signals are ignored for that test. The non-recalibration framework also gained "ignore signals marked thin".
+
+This breaks the deadlock: Claude stops auto-rejecting on stale n=3 poison, takes confluence-backed trades, fresh data accrues, real WR emerges. Auto-reverts with the rest of recalibration once system WR ≥42%. Tests: `tests/recalibration-thin-wr.test.js`. **Watch after deploy:** candidate lines show `n=… thin` tags; in recalibration, MR candidates with thin WR but strong confluence start getting approved instead of the blanket 33%-WR rejection.
+
 ---
 
 ## Seeding Playbook (resetting contaminated learned stats)
