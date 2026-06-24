@@ -17,37 +17,50 @@ const candidate = {
   reasons: ["mr-stoch-overbought", "mr-at-resistance"], price: 1, h4Trend: "bearish", obvDiv: "none",
 };
 
-function stateWith(regCount) {
-  // combined WR 30% (<42%) → recalibration mode on
+// effN defaults to count when omitted (legacy-state fallback path).
+function stateWith(regCount, effN) {
   return {
     trades: [],
     regimeStats: { sideways: { wins: 3, count: 10, totalPnl: -50 } },
     signalStats: {
-      "mr-stoch-overbought:sideways": { wins: 1, losses: regCount - 1, count: regCount, totalPnl: -5 },
-      "mr-at-resistance:sideways":    { wins: 1, losses: regCount - 1, count: regCount, totalPnl: -5 },
+      "mr-stoch-overbought:sideways": { wins: 1, losses: regCount - 1, count: regCount, totalPnl: -5, ...(effN != null ? { effN } : {}) },
+      "mr-at-resistance:sideways":    { wins: 1, losses: regCount - 1, count: regCount, totalPnl: -5, ...(effN != null ? { effN } : {}) },
     },
   };
 }
 
-test("thin (n<10) regime signal WR is tagged 'thin' and shows n", () => {
+test("thin (low sample) regime signal WR is tagged 'thin'", () => {
   const out = buildValidationSection([candidate], regime, stateWith(3), deps);
-  assert.match(out, /\[sideways:33% n=3 thin\]/);
+  assert.match(out, /\[sideways:33% n=3 eff=3 thin\]/);
 });
 
-test("reliable (n>=15) regime signal WR is NOT tagged thin", () => {
+test("reliable (n>=15, no decay) regime signal WR is NOT tagged thin", () => {
   const out = buildValidationSection([candidate], regime, stateWith(16), deps);
-  assert.match(out, /\[sideways:\d+% n=16\]/);
-  assert.doesNotMatch(out, /n=16 thin/);
+  assert.match(out, /\[sideways:\d+% n=16 eff=16\]/);
+  assert.doesNotMatch(out, /n=16 eff=16 thin/);
 });
 
-test("a count between the old and new threshold (n=12) IS now tagged thin", () => {
+test("legacy-fallback: count 12 (no effN) IS tagged thin", () => {
   const out = buildValidationSection([candidate], regime, stateWith(12), deps);
-  assert.match(out, /\[sideways:\d+% n=12 thin\]/);
+  assert.match(out, /\[sideways:\d+% n=12 eff=12 thin\]/);
 });
 
-test("recalibration prompt instructs Claude to ignore thin signal WR", () => {
+// The core de-poison case: a large raw n whose decay-weighted effective sample
+// is small (stale pre-pivot trades) must read as thin so it can't auto-reject.
+test("stale high-n but low effN signal IS tagged thin", () => {
+  const out = buildValidationSection([candidate], regime, stateWith(24, 3), deps);
+  assert.match(out, /\[sideways:\d+% n=24 eff=3 thin\]/);
+});
+
+test("high-n with healthy effN is trustworthy (not thin)", () => {
+  const out = buildValidationSection([candidate], regime, stateWith(24, 20), deps);
+  assert.match(out, /\[sideways:\d+% n=24 eff=20\]/);
+  assert.doesNotMatch(out, /eff=20 thin/);
+});
+
+test("recalibration prompt instructs Claude to ignore thin (stale) signal WR", () => {
   const out = buildValidationSection([candidate], regime, stateWith(3), deps);
   assert.match(out, /RECALIBRATION MODE/);
   assert.match(out, /thin.*NOT a valid rejection basis|do NOT reject a candidate because a thin signal/i);
-  assert.match(out, /n≥15/);
+  assert.match(out, /eff≥15/);
 });

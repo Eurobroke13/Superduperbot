@@ -52,11 +52,20 @@ function updateDynamicWeights(state) {
 
   if (!state.signalStats) state.signalStats = {};
   for (const [key, s] of Object.entries(stats)) {
+    // effN = decay-weighted effective sample (s.wins/s.losses are decayed mass).
+    // The raw count alone is misleading at low trade volume: a signal can show
+    // n=24 while every one of those trades is stale pre-pivot contamination that
+    // the last-80 window simply hasn't rolled out. effN fades that stale mass, so
+    // a signal is only "reliable" (trusted for Claude auto-reject) when it has
+    // real RECENT evidence. Mirrors the sizing de-poison (getSetupStatsRecent).
+    const effMass = s.wins + s.losses;
     state.signalStats[key] = {
       wins: s.rawWins,
       losses: s.rawLosses,
       count: s.rawWins + s.rawLosses,
-      totalPnl: parseFloat(s.pnl.toFixed(2))
+      totalPnl: parseFloat(s.pnl.toFixed(2)),
+      effN: parseFloat(effMass.toFixed(2)),
+      decWinRate: effMass > 0 ? parseFloat((s.wins / effMass).toFixed(3)) : null
     };
   }
 
