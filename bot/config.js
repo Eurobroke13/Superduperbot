@@ -20,6 +20,17 @@ export const MAX_LEVERAGE       = 6;
 export const MAX_POSITION_SHARE = 1 / 10;
 export const ATR_SL_MULT        = 2.0;
 export const ATR_TP_MULT        = 4.0;
+
+// Structure-aware chandelier trailing (checked on 15m candles by the exit loop).
+// Once a trade is at least CHANDELIER_MIN_PROFIT_ATR onside, trail the stop to
+// the TIGHTER-but-protective of (a) peak − CHANDELIER_ATR_MULT×ATR (chandelier)
+// and (b) just beyond the nearest swing support/resistance (structure). Only ever
+// tightens. Locks profit earlier than the post-TP2 trail and cuts losers on an
+// intraday structure break instead of riding the wide initial stop. 2.5×ATR is
+// wide enough to avoid 15m chop (a too-tight trail whipsaws = overfitting to noise).
+export const CHANDELIER_ATR_MULT        = 2.5;
+export const STRUCTURE_TRAIL_BUFFER_ATR = 0.25;
+export const CHANDELIER_MIN_PROFIT_ATR  = 1.0;
 export const MAX_POSITIONS      = 10;
 export const ENTRY_THRESHOLD    = 4;
 export const CLAUDE_THRESHOLD   = 6;

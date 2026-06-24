@@ -32,7 +32,8 @@ import {
   checkGraduatedExit,
   closePosition,
   executePartialClose,
-  checkBearShortExit
+  checkBearShortExit,
+  recentSwingLevels
 } from "./exits.js";
 import { loadTodayTrades } from "../trade-store.js";
 import { insertDecisionLog } from "../state-store.js";
@@ -452,7 +453,10 @@ async function checkAllExits(env, state, deps) {
         continue;
       }
 
-      const exit = checkGraduatedExit(pos, price, high, low, atrVal);
+      // 15m swing S/R for the structure-aware chandelier trail (highs/lows are
+      // the 15m series fetched above — same on the main bot and the 5m runner).
+      const srLevels = recentSwingLevels(highs, lows);
+      const exit = checkGraduatedExit(pos, price, high, low, atrVal, srLevels);
       if (exit.exit) {
         positionsToClose.push({ ...pos, exitPrice: price, exitReason: exit.reason });
       } else if (exit.partial && exit.partialCloses) {

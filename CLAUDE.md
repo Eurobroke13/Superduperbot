@@ -311,6 +311,18 @@ Every mean-reversion/fade signal showed positive lift, every trend/momentum sign
 
 ---
 
+## Robustness / anti-overfit pass (June 2026)
+
+After the de-poisoning work, three structural improvements that add edge *without* adding fitted parameters (the bot's core disease is too many history-fitted knobs chasing the last-80-trade noise).
+
+**1. Walk-forward / holdout validation (`backtest.js` → `walkForwardReport`/`foldMetrics`).** `node backtest.js --no-db --walk-forward [--folds N]` splits trades into N time-ordered folds and reports per-fold metrics + an explicit in-sample (folds 1..N-1) vs out-of-sample (final fold) comparison with an **IS→OOS EV-gap overfit flag**. The strategy params are static (hand-tuned on history) and `scoreFromCandles` runs with empty `dynamicWeights`/`signalStats`, so the overfitting lives in the static config — a large IS→OOS gap is the tell. **Rule going forward: judge every change on the OOS fold, never the blended/in-sample number.** Purely additive (reads `allTrades` by `entryTs`). Tests: `tests/walk-forward.test.js`.
+
+**2. Volatility-targeted sizing (`execution.js`).** The base was *already* vol-targeted — `size = riskAmount / slDist` where `riskAmount = equity × risk%` and `slDist` is the ATR-based stop distance (constant dollar risk per trade; tight-vol coins sized up, wild coins down). What corrupted it was the multiplier stack: `getSetupRiskMultiplier` and `getApprovalRiskMultiplier` both read the **full 500-trade window with NO decay** (poisoned). **Removed both.** Conviction now comes only from de-poisoned recency-weighted dials (effN-gated Kelly + setup decision) + structural cuts (drawdown, MR confirmation quality). Removing fitted distortions from a correct structural base = robust, zero new overfit surface.
+
+**3. Structure-aware chandelier trailing exit (`exits.js` → `applyStructureChandelierTrail` + `recentSwingLevels`).** The exit loop already runs every ~5 min (the runner) on **15m** candles + 15m ATR, and `checkGraduatedExit` already had a chandelier trail — but only *after TP2*, leaving a gap where a trade could run to +2.9 ATR then give it all back. The new trail engages once a trade is `CHANDELIER_MIN_PROFIT_ATR` (1.0) onside and trails the stop to the more-protective of (a) `peak − CHANDELIER_ATR_MULT(2.5)×ATR` and (b) just beyond the nearest cleared swing support/resistance (`STRUCTURE_TRAIL_BUFFER_ATR` 0.25). Only ever tightens; safe with empty levels (chandelier-only) and atr≤0 (no-op). 2.5×ATR is wide enough to avoid 15m chop (a too-tight trail whipsaws = overfitting to noise; **15m chosen over 5m for the same reason**). Wired into `checkGraduatedExit(…, srLevels)` — the runner passes 15m swing levels (identical on main bot and the 5m runner, both via `checkAllExits`), and the backtest's `simulatePosition` mirrors the exact same trail (on 1h candles — granularity differs, mechanism identical) so it's harness-validatable. Tests: `tests/chandelier-trail.test.js`; existing `tests/exits.test.js` invariants (SL only tightens, zero-ATR guard) still pass. **Validate via walk-forward before/after; keep only if OOS holds up.**
+
+---
+
 ## Known Issues & History
 
 ### Fixed
