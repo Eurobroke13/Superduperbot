@@ -7,9 +7,7 @@ import {
 import {
   computeKellySizing,
   getAdaptiveSetupDecision,
-  getApprovalRiskMultiplier,
   getApprovalStats,
-  getSetupRiskMultiplier,
   getSetupStatsRecent,
   getSymbolRiskDecision,
   MIN_EFF_RECENT_SETUP,
@@ -148,13 +146,15 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
 
   if (drawdown > 0.10) sizeMultiplier *= 0.7;
 
-  const setupRiskMult = getSetupRiskMultiplier(state, setupType);
-  const approvalRiskMult = getApprovalRiskMultiplier(state, approvalType);
-
-  // Kelly + ATR-volatility sizing. Use recency-weighted setup stats so Kelly
-  // sizes off recent structure, not the full 500-trade window (which still
-  // contains pre-pivot contamination). When recent evidence is too thin
-  // (effN below the floor), stay neutral rather than sizing off stale data.
+  // Volatility-targeted sizing. The base (size = riskAmount / slDist, below)
+  // already risks a constant fraction of equity at the ATR-based stop, so
+  // tight-vol coins get more size and wild coins less — dollar risk per trade is
+  // equalized (textbook risk-parity, no history-fitting). We deliberately do NOT
+  // multiply by getSetupRiskMultiplier / getApprovalRiskMultiplier anymore: both
+  // read the full 500-trade window (poisoned pre-pivot contamination) and only
+  // distorted the clean vol target. Conviction is now expressed solely through
+  // de-poisoned, recency-weighted dials — the effN-gated Kelly and setup decision
+  // — plus structural risk cuts (drawdown, MR confirmation quality).
   const setupStats = getSetupStatsRecent(state.trades || [], setupType);
   const atrHistory = state.atrHistory?.[symbol] || [];
   const kellySizing = (setupStats && setupStats.effN >= MIN_EFF_RECENT_SETUP)
@@ -164,7 +164,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     console.log(`[${symbol}] Kelly sizing: ${kellySizing.reason}`);
   }
 
-  const combinedRiskMult = setupRiskMult * approvalRiskMult * sizeMultiplier * kellySizing.mult;
+  const combinedRiskMult = sizeMultiplier * kellySizing.mult;
   const adjustedRiskPct = Math.max(
     0.01,
     Math.min(RISK_PCT * combinedRiskMult, 0.05)
@@ -174,7 +174,7 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
   if (approvalStats && approvalStats.count >= 20) {
     console.log(
       `[${symbol}] approval=${approvalType} n=${approvalStats.count} ` +
-      `EV=${approvalStats.expectancy.toFixed(2)} mult=${approvalRiskMult.toFixed(2)}`
+      `EV=${approvalStats.expectancy.toFixed(2)}`
     );
   }
 
