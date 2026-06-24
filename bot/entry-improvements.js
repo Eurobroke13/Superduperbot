@@ -318,6 +318,11 @@ export function scoreSidewaysMeanReversion({
     return {
       signal: "long", score, setupType: "mean-reversion", reasons, price,
       sl, tp, atrVal,
+      // Carry the computed indicators onto the candidate so the Claude validation
+      // prompt shows real RSI/Fisher/ADX/OBV instead of "?" — otherwise Claude
+      // rejects MR setups citing "critical indicators missing" even though they
+      // were computed here.
+      rsiVal, fisherVal, adxResult, obvDiv,
       riskReward: Math.abs(tp - price) / Math.abs(price - sl),
       positionSizeMultiplier: 0.70,
       maxHoldHours: 12
@@ -355,6 +360,11 @@ export function scoreSidewaysMeanReversion({
     return {
       signal: "short", score, setupType: "mean-reversion", reasons, price,
       sl, tp, atrVal,
+      // Carry the computed indicators onto the candidate so the Claude validation
+      // prompt shows real RSI/Fisher/ADX/OBV instead of "?" — otherwise Claude
+      // rejects MR setups citing "critical indicators missing" even though they
+      // were computed here.
+      rsiVal, fisherVal, adxResult, obvDiv,
       riskReward: Math.abs(price - tp) / Math.abs(sl - price),
       positionSizeMultiplier: 0.70,
       maxHoldHours: 12
