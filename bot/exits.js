@@ -1,4 +1,59 @@
-import { ATR_SL_MULT } from "./config.js";
+import {
+  ATR_SL_MULT,
+  CHANDELIER_ATR_MULT,
+  STRUCTURE_TRAIL_BUFFER_ATR,
+  CHANDELIER_MIN_PROFIT_ATR
+} from "./config.js";
+
+// Recent swing highs/lows from a candle series — lightweight S/R for the trail.
+// A bar is a pivot high if its high is the local max over ±span bars (mirror for
+// lows). Returns a flat, de-duplicated price array; the trail filters by side.
+export function recentSwingLevels(highs, lows, { span = 2, lookback = 40 } = {}) {
+  const levels = [];
+  const n = highs.length;
+  const start = Math.max(span, n - lookback);
+  for (let i = start; i < n - span; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = i - span; j <= i + span; j++) {
+      if (j === i) continue;
+      if (highs[j] >= highs[i]) isHigh = false;
+      if (lows[j]  <= lows[i])  isLow = false;
+    }
+    if (isHigh) levels.push(highs[i]);
+    if (isLow)  levels.push(lows[i]);
+  }
+  return levels;
+}
+
+// Structure-aware chandelier trailing stop. Mutates pos.sl, only ever tightening.
+// Engages once the trade is CHANDELIER_MIN_PROFIT_ATR onside. The chandelier
+// (peak − N×ATR) is the floor; the nearest cleared swing level pulls the stop up
+// to just beyond structure when that is more protective. Safe with empty srLevels
+// (chandelier-only) and with atr<=0 (no-op).
+export function applyStructureChandelierTrail(pos, price, currentAtr, srLevels = []) {
+  if (!pos || !(currentAtr > 0)) return;
+  const { direction, entryPrice } = pos;
+  const profitATRs = direction === "long"
+    ? (price - entryPrice) / currentAtr
+    : (entryPrice - price) / currentAtr;
+  if (profitATRs < CHANDELIER_MIN_PROFIT_ATR) return;
+
+  if (direction === "long") {
+    let stop = pos.maxFavorable - currentAtr * CHANDELIER_ATR_MULT;
+    const below = (srLevels || []).filter(l => Number.isFinite(l) && l < price);
+    if (below.length) {
+      stop = Math.max(stop, Math.max(...below) - currentAtr * STRUCTURE_TRAIL_BUFFER_ATR);
+    }
+    if (stop < price && stop > pos.sl) pos.sl = stop;
+  } else {
+    let stop = pos.maxFavorable + currentAtr * CHANDELIER_ATR_MULT;
+    const above = (srLevels || []).filter(l => Number.isFinite(l) && l > price);
+    if (above.length) {
+      stop = Math.min(stop, Math.min(...above) + currentAtr * STRUCTURE_TRAIL_BUFFER_ATR);
+    }
+    if (stop > price && stop < pos.sl) pos.sl = stop;
+  }
+}
 import { registerExit, registerOverboughtExit } from "./cooldown.js";
 
 /**
@@ -62,7 +117,7 @@ function pushExecutionEvent(state, event) {
   }
 }
 
-export function checkGraduatedExit(pos, price, high, low, currentAtr) {
+export function checkGraduatedExit(pos, price, high, low, currentAtr, srLevels = []) {
   const { direction, entryPrice } = pos;
   if (!pos.maxFavorable) pos.maxFavorable = entryPrice;
   const entryAtr = pos.atrVal || currentAtr;
@@ -103,6 +158,7 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
 
   if (direction === "long") {
     pos.maxFavorable = Math.max(pos.maxFavorable, price);
+    applyStructureChandelierTrail(pos, price, currentAtr, srLevels);
 
     if (low <= pos.sl) return { exit: true, reason: "stop-loss", partial: false };
     if (pos.liquidationPrice && low <= pos.liquidationPrice) {
@@ -159,6 +215,7 @@ export function checkGraduatedExit(pos, price, high, low, currentAtr) {
     }
   } else {
     pos.maxFavorable = Math.min(pos.maxFavorable, price);
+    applyStructureChandelierTrail(pos, price, currentAtr, srLevels);
 
     if (high >= pos.sl) return { exit: true, reason: "stop-loss", partial: false };
     if (pos.liquidationPrice && high >= pos.liquidationPrice) {
