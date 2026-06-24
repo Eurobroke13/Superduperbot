@@ -215,6 +215,19 @@ The original recalibration mode (above) insulated Claude from stale *system/regi
 
 This breaks the deadlock: Claude stops auto-rejecting on stale n=3 poison, takes confluence-backed trades, fresh data accrues, real WR emerges. Auto-reverts with the rest of recalibration once system WR ≥42%. Tests: `tests/recalibration-thin-wr.test.js`. **Watch after deploy:** candidate lines show `n=… thin` tags; in recalibration, MR candidates with thin WR but strong confluence start getting approved instead of the blanket 33%-WR rejection.
 
+### Recalibration v3 — effN signal reliability + bear-regime re-enable (June 2026)
+
+v2 had a hole: it only neutralized signals with raw **n<15**. A poisoned signal with **n≥15** (e.g. `ema-ribbon-bear` at 21% WR, n=24) still drove Claude's auto-reject — even though at near-zero trade volume that n=24 is entirely stale pre-pivot trades the last-80 window hasn't rolled out. This blocked **all bear trades** (every bear short leans on `ema-ribbon-bear`), leaving the bot idle whenever the regime turned bear.
+
+**Root insight:** raw count is the wrong reliability metric at low volume. A signal is only trustworthy when it has real *recent* evidence.
+
+**Changes:**
+1. **effN signal reliability** (`adaptation.js` → stores `effN`/`decWinRate` per signal; `coin-memory.js` → `buildValidationSection` gates `thin` on `effN`, not raw count). `effN` = decay-weighted effective sample (10-day half-life, same decay already used for `dynamicWeights`). A signal with raw n=24 but all-stale trades has a tiny `effN` → tagged `thin` → ignored for auto-reject. Candidate lines now show `n=24 eff=3 thin`. This finishes the de-poisoning thread (signal WR was the last raw-un-decayed consumer Claude saw). Fallback to raw count for legacy state with no `effN`.
+2. **Trend/breakout threshold 6 → 5** in the Claude framework (both recalibration and normal). Aligns with the code gate `MR_PRIMARY_THRESHOLD = 5.0`, so the whole pipeline gates at 5. Bear shorts scoring 5.5–5.9 (previously rejected on "<6") now qualify.
+3. **Bear stays bidirectional** — no shorts-only restriction added; bear already permits longs and shorts (shorts naturally dominate via `REGIME_SIGNAL_MULTIPLIERS`, left as-is).
+
+**Why this isn't just "re-enable the losers":** the bear-signal WRs that flagged them as losers are themselves poisoned (pre-#58–#61 buggy-era trades), so they're not a trustworthy verdict. effN stops trusting *stale* data without blindly trusting anything — fresh bear-era data now decides. **Risk:** no WR safety net on bear shorts until fresh data accrues; treat as a **monitored experiment**, watch the first ~20–30 bear trades and let real WR emerge. Tests: `tests/recalibration-thin-wr.test.js` (stale high-n→thin), `tests/adaptation.test.js`. **Watch after deploy:** bear candidates show `eff=N` tags; `ema-ribbon-bear`-only setups stop blocking on poisoned 21% WR; bear trades (both directions, mostly shorts) start flowing at score ≥5.
+
 ### Poisoned-stats audit + sizing de-contamination (June 2026)
 
 A full audit of every learned-stat store (prompted by "is anything else poisoned?") found the most *material silent* drag wasn't in the Claude prompt at all — it was **position sizing**. Two sizing consumers read `getSetupStats(state.trades, setupType)`, which filters the **whole last-500-trade window with NO recency/decay** (`stats.js`), so pre-2026-06-10 contaminated trades count at full weight:

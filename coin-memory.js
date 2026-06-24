@@ -343,15 +343,19 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
       if (global && global.count >= 5) {
         const wr = ((global.wins / global.count) * 100).toFixed(0);
         const ev = (global.totalPnl / global.count).toFixed(1);
-        const thin = global.count < RELIABLE_SIGNAL_N ? " thin" : "";
-        perfStr += `(${wr}%WR,$${ev}EV,n=${global.count}${thin})`;
+        // "thin" gates on the decay-weighted effective sample (effN), not the raw
+        // count — a signal with n=24 of stale pre-pivot trades has a tiny effN and
+        // must NOT be trusted for auto-reject. Fallback to count for legacy state.
+        const eff = global.effN ?? global.count;
+        const thin = eff < RELIABLE_SIGNAL_N ? " thin" : "";
+        perfStr += `(${wr}%WR,$${ev}EV,n=${global.count} eff=${eff.toFixed(0)}${thin})`;
       }
       if (regStat && regStat.count >= 3) {
         const rwr = ((regStat.wins / regStat.count) * 100).toFixed(0);
-        // Surface n and a thin flag — previously only the % was shown, so Claude
-        // couldn't tell a 33% from n=3 (noise) apart from a 33% from n=30 (real).
-        const thin = regStat.count < RELIABLE_SIGNAL_N ? " thin" : "";
-        perfStr += `[${regime.label}:${rwr}% n=${regStat.count}${thin}]`;
+        // Reliability gates on effN (decayed), so a stale n=24 still reads as thin.
+        const eff = regStat.effN ?? regStat.count;
+        const thin = eff < RELIABLE_SIGNAL_N ? " thin" : "";
+        perfStr += `[${regime.label}:${rwr}% n=${regStat.count} eff=${eff.toFixed(0)}${thin}]`;
       }
       return perfStr;
     }).join(", ");
@@ -393,9 +397,11 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
         `IMPORTANT — per-signal WR is ALSO unreliable right now: the bot is barely ` +
         `trading, so the trade window hasn't refreshed and most per-signal WRs are ` +
         `tiny samples (often a few stale pre-pivot trades). Any signal marked ` +
-        `"thin" (n<${RELIABLE_SIGNAL_N}) is small-sample noise and is NOT a valid ` +
-        `rejection basis — do NOT reject a candidate because a thin signal shows ` +
-        `low WR. Only WR from signals with n≥${RELIABLE_SIGNAL_N} is trustworthy. ` +
+        `"thin" (effective recent sample eff<${RELIABLE_SIGNAL_N}) is small-sample ` +
+        `or STALE noise and is NOT a valid rejection basis — do NOT reject a ` +
+        `candidate because a thin signal shows low WR, even if its raw n looks ` +
+        `large (a high n with low eff means the data is old/contaminated). Only WR ` +
+        `from signals with eff≥${RELIABLE_SIGNAL_N} is trustworthy. ` +
         `When the WR data is thin, judge the candidate on signal CONFLUENCE ` +
         `(how many aligned signals fired) and score instead.\n\n` +
 
@@ -403,7 +409,7 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
         `DEFAULT = REJECT. Approve if EITHER:\n` +
         `(a) most signals with reliable data (n≥${RELIABLE_SIGNAL_N}) show ≥48% WR in this regime, OR\n` +
         `(b) WR data is thin/insufficient but 3+ aligned signals fired (strong confluence),\n` +
-        `AND the score is meaningful: ≥7 for liquidity-trap, ≥6 for trend/breakout, ≥4.5 for mean-reversion.\n\n` +
+        `AND the score is meaningful: ≥7 for liquidity-trap, ≥5 for trend/breakout, ≥4.5 for mean-reversion.\n\n` +
 
         `AUTO-REJECT only if:\n` +
         `- Signals with RELIABLE data (n≥${RELIABLE_SIGNAL_N}) are all below 45% WR with no strong regime-specific exception. ` +
@@ -414,7 +420,7 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
         `2. Coin history: no repeating failure pattern matching current signals\n` +
         `3. Setup type: this coin's history for this setupType shows positive EV\n` +
         `4. No current-setup overlap with this coin's warning signals\n` +
-        `5. Score is meaningful: ≥7 for liquidity-trap, ≥6 for trend/breakout\n\n` +
+        `5. Score is meaningful: ≥7 for liquidity-trap, ≥5 for trend/breakout\n\n` +
 
         `AUTO-REJECT if ANY of:\n` +
         `- Current signals overlap with 2+ of this coin's warning signals\n` +
