@@ -691,7 +691,13 @@ export function weeklyPivots(candles1h) {
 
   const dayMap = {};
   for (const c of candles1h) {
-    const day = new Date(c.time).toISOString().slice(0, 10);
+    // Live candles carry `time`; the backtest's carry `ts` — tolerate both, and
+    // skip any candle with an unparseable timestamp rather than throwing
+    // "Invalid time value" (which previously zeroed the entire backtest).
+    const tsRaw = c.time ?? c.ts;
+    const dateObj = new Date(tsRaw);
+    if (Number.isNaN(dateObj.getTime())) continue;
+    const day = dateObj.toISOString().slice(0, 10);
     if (!dayMap[day]) dayMap[day] = { high: c.high, low: c.low, close: c.close };
     else {
       if (c.high  > dayMap[day].high)  dayMap[day].high  = c.high;

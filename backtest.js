@@ -42,7 +42,6 @@ import {
   bearFilter,
   checkMeanReversionExit
 } from "./bot/entry-improvements.js";
-import { applyStructureChandelierTrail, recentSwingLevels } from "./bot/exits.js";
 import { isOnCooldown, registerExit } from "./bot/cooldown.js";
 import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
 
@@ -450,17 +449,6 @@ function simulatePosition(pos, futureCandles) {
           sl = tightSl;
         }
       }
-    }
-
-    // ── Structure-aware chandelier trail (mirrors bot/exits.js) ───────────
-    // Backtest runs on 1h candles vs 15m live, so granularity differs, but the
-    // mechanism (peak − N×ATR, anchored to recent swing structure) is identical.
-    {
-      const seen = futureCandles.slice(0, i + 1);
-      const srLevels = recentSwingLevels(seen.map(c => c.high), seen.map(c => c.low));
-      const trailPos = { direction, entryPrice, maxFavorable, sl };
-      applyStructureChandelierTrail(trailPos, close, atrVal, srLevels);
-      sl = trailPos.sl;
     }
 
     // ── Stop loss ────────────────────────────────────────────────────────
@@ -1321,7 +1309,9 @@ export function foldMetrics(trades) {
   const wins = trades.filter(t => t.pnl > 0);
   const grossWin  = wins.reduce((s, t) => s + t.pnl, 0);
   const grossLoss = trades.filter(t => t.pnl <= 0).reduce((s, t) => s + Math.abs(t.pnl), 0);
-  let eq = 0, peak = 0, maxDD = 0;
+  // Equity curve starts at PAPER_CASH so drawdown is a sane % of capital (an
+  // equity curve starting at 0 makes peak≈0 and the ratio explode past 100%).
+  let eq = PAPER_CASH, peak = PAPER_CASH, maxDD = 0;
   for (const t of trades) { eq += t.pnl; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak : 0; if (dd > maxDD) maxDD = dd; }
   return {
     n: trades.length,
