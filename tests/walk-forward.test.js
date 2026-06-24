@@ -17,11 +17,11 @@ test("foldMetrics - basic WR / EV / PF / PnL", () => {
   assert.equal(m.pnl, 20);
 });
 
-test("foldMetrics - drawdown is computed on the trade-ordered equity curve", () => {
-  // +10, then -30 → peak 10, trough -20, DD = 30/10 = 300%? capped by peak math:
-  // peak=10 at t1; eq after t2 = -20; dd=(10-(-20))/10=3.0 → 300%
+test("foldMetrics - drawdown is a sane % of capital (equity based at PAPER_CASH)", () => {
+  // Equity 10000 → 10010 (peak) → 9980; DD = 30/10010 = 0.3% of capital.
+  // (Pre-fix this used a 0-based curve and exploded to 300%.)
   const m = foldMetrics([{ pnl: 10 }, { pnl: -30 }]);
-  assert.equal(m.maxDD, 300);
+  assert.equal(m.maxDD, 0.3);
 });
 
 test("foldMetrics - all losses → PF 0", () => {

@@ -42,7 +42,6 @@ import {
   bearFilter,
   checkMeanReversionExit
 } from "./bot/entry-improvements.js";
-import { applyStructureChandelierTrail, recentSwingLevels } from "./bot/exits.js";
 import { isOnCooldown, registerExit } from "./bot/cooldown.js";
 import { shouldDecay, createDecayingLimit, tickDecayingLimit } from "./bot/smart-entry.js";
 
@@ -450,17 +449,6 @@ function simulatePosition(pos, futureCandles) {
           sl = tightSl;
         }
       }
-    }
-
-    // ── Structure-aware chandelier trail (mirrors bot/exits.js) ───────────
-    // Backtest runs on 1h candles vs 15m live, so granularity differs, but the
-    // mechanism (peak − N×ATR, anchored to recent swing structure) is identical.
-    {
-      const seen = futureCandles.slice(0, i + 1);
-      const srLevels = recentSwingLevels(seen.map(c => c.high), seen.map(c => c.low));
-      const trailPos = { direction, entryPrice, maxFavorable, sl };
-      applyStructureChandelierTrail(trailPos, close, atrVal, srLevels);
-      sl = trailPos.sl;
     }
 
     // ── Stop loss ────────────────────────────────────────────────────────
