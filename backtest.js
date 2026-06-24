@@ -9,6 +9,8 @@
 //   node backtest.js --seed-safe     - seed only regimeStats and signalStats
 //   node backtest.js --no-db         - skip DB write (dry run)
 //   node backtest.js --months 3      - override lookback period (default: 6)
+//   node backtest.js --walk-forward  - add time-split out-of-sample validation
+//   node backtest.js --folds N       - number of walk-forward folds (default: 4)
 
 import fs from "fs/promises";
 import path from "path";
@@ -53,6 +55,9 @@ const SAFE_SEED_MODE = ARGS.includes("--seed-safe");
 const FORCE_REPLACE_REGIMES = ARGS.includes("--force-replace-regimes");
 const NO_DB        = ARGS.includes("--no-db");
 const DIAGNOSTIC_GATES = ARGS.includes("--diagnostic-gates");
+const WALK_FORWARD = ARGS.includes("--walk-forward");
+const foldsFlag    = ARGS.indexOf("--folds");
+const WF_FOLDS     = foldsFlag !== -1 ? Math.max(2, parseInt(ARGS[foldsFlag + 1]) || 4) : 4;
 const monthsFlag   = ARGS.indexOf("--months");
 const BACKTEST_MONTHS = monthsFlag !== -1 ? parseInt(ARGS[monthsFlag + 1]) || 6
   : (SEED_MODE || SAFE_SEED_MODE) ? 12 : 6;
@@ -1291,6 +1296,65 @@ async function saveResultsToDb(metrics, allTrades, months) {
 }
 
 // =============================================================================
+// WALK-FORWARD / HOLDOUT VALIDATION
+// =============================================================================
+// Splits trades into N time-ordered folds and reports per-fold metrics, then an
+// explicit in-sample (folds 1..N-1) vs out-of-sample (final fold) comparison.
+// The strategy's params are static (hand-tuned on history), so a large IS→OOS
+// gap is the overfitting tell. Rule: judge any new change on the OOS fold, never
+// the blended/in-sample number. Run `node backtest.js --no-db --walk-forward`
+// before and after a change; keep it only if OOS holds up.
+export function foldMetrics(trades) {
+  if (!trades || !trades.length) return { n: 0, wr: 0, ev: 0, pf: 0, pnl: 0, maxDD: 0 };
+  const wins = trades.filter(t => t.pnl > 0);
+  const grossWin  = wins.reduce((s, t) => s + t.pnl, 0);
+  const grossLoss = trades.filter(t => t.pnl <= 0).reduce((s, t) => s + Math.abs(t.pnl), 0);
+  let eq = 0, peak = 0, maxDD = 0;
+  for (const t of trades) { eq += t.pnl; if (eq > peak) peak = eq; const dd = peak > 0 ? (peak - eq) / peak : 0; if (dd > maxDD) maxDD = dd; }
+  return {
+    n: trades.length,
+    wr: +((wins.length / trades.length) * 100).toFixed(1),
+    ev: +(trades.reduce((s, t) => s + t.pnl, 0) / trades.length).toFixed(2),
+    pf: grossLoss > 0 ? +(grossWin / grossLoss).toFixed(2) : 999,
+    pnl: +trades.reduce((s, t) => s + t.pnl, 0).toFixed(0),
+    maxDD: +(maxDD * 100).toFixed(1)
+  };
+}
+
+export function walkForwardReport(allTrades, folds = 4) {
+  const trades = (allTrades || []).filter(t => t.entryTs != null).sort((a, b) => a.entryTs - b.entryTs);
+  if (trades.length < folds * 5) {
+    console.log(`\n[WALK-FORWARD] Not enough trades (${trades.length}) for ${folds} folds.`);
+    return;
+  }
+  const t0 = trades[0].entryTs, t1 = trades[trades.length - 1].entryTs;
+  const span = (t1 - t0) || 1;
+  const buckets = Array.from({ length: folds }, () => []);
+  for (const t of trades) {
+    let idx = Math.floor(((t.entryTs - t0) / span) * folds);
+    if (idx >= folds) idx = folds - 1;
+    buckets[idx].push(t);
+  }
+  console.log(`\n${"═".repeat(72)}`);
+  console.log(`  WALK-FORWARD  •  ${folds} time-ordered folds  •  ${trades.length} trades`);
+  console.log(`${"═".repeat(72)}`);
+  console.log(`  Fold  ${"window".padEnd(23)} ${"n".padStart(4)} ${"WR%".padStart(6)} ${"EV$".padStart(8)} ${"PF".padStart(6)} ${"PnL$".padStart(8)} ${"DD%".padStart(6)}`);
+  buckets.forEach((b, i) => {
+    const m = foldMetrics(b);
+    const d0 = new Date(b[0]?.entryTs || t0).toISOString().slice(0, 10);
+    const d1 = new Date(b[b.length - 1]?.entryTs || t1).toISOString().slice(0, 10);
+    console.log(`  ${String(i + 1).padEnd(4)} ${`${d0}→${d1}`.padEnd(23)} ${String(m.n).padStart(4)} ${String(m.wr).padStart(6)} ${String(m.ev).padStart(8)} ${String(m.pf).padStart(6)} ${String(m.pnl).padStart(8)} ${String(m.maxDD).padStart(6)}`);
+  });
+  const is  = foldMetrics(buckets.slice(0, -1).flat());
+  const oos = foldMetrics(buckets[buckets.length - 1]);
+  console.log(`  ${"─".repeat(68)}`);
+  console.log(`  IN-SAMPLE  (folds 1-${folds - 1}): n=${is.n}  WR=${is.wr}%  EV=$${is.ev}  PF=${is.pf}  DD=${is.maxDD}%`);
+  console.log(`  OUT-SAMPLE (fold ${folds})     : n=${oos.n}  WR=${oos.wr}%  EV=$${oos.ev}  PF=${oos.pf}  DD=${oos.maxDD}%`);
+  const gap = +(is.ev - oos.ev).toFixed(2);
+  console.log(`  IS→OOS EV gap: $${gap}/trade  ${gap > 3 ? "⚠ likely overfit — do not trust the blended number" : "✓ holds up out-of-sample"}`);
+  console.log(`${"═".repeat(72)}`);
+}
+
 // PRINT REPORT
 // =============================================================================
 function printReport(metrics, bySymbol) {
@@ -1437,6 +1501,7 @@ async function main() {
   }
 
   printReport(metrics, bySymbol);
+  if (WALK_FORWARD) walkForwardReport(allTrades, WF_FOLDS);
   printGateDiagnostics();
 
   const outFile = path.join(__dirname, `backtest-${new Date().toISOString().split("T")[0]}.json`);
