@@ -158,6 +158,27 @@ test("scoreSidewaysMeanReversion - qualifying long at lower edge", () => {
   assert.ok(approxLt(r.sl, 100)); // SL below price for a long
 });
 
+test("scoreSidewaysMeanReversion - qualifying candidate carries indicator fields for the Claude prompt", () => {
+  const adxResult = { adx: 20, pdi: 25, mdi: 18 };
+  const r = scoreSidewaysMeanReversion({
+    regime: { label: "sideways" }, adxResult,
+    price: 100, atrVal: 2,
+    bbUpper: 110, bbLower: 90, bbMiddle: 100, bbWidth: 0.2, pctB: 0.1,
+    rsiVal: 28, fisherVal: -1.8, fisherPrev: -2.1,
+    stochResult: { oversold: true, k: 10 },
+    supports: [100], currentEMA20: 102, vwapVal: 101,
+    obvDiv: "bullish"
+  });
+  assert.ok(r, "should produce a setup");
+  // Regression guard: these were computed but omitted from the return, so the
+  // Claude prompt showed "RSI: ? | Fisher: ? | ADX: ?" and Claude rejected on
+  // "critical indicators missing".
+  assert.equal(r.rsiVal, 28);
+  assert.equal(r.fisherVal, -1.8);
+  assert.equal(r.obvDiv, "bullish");
+  assert.deepEqual(r.adxResult, adxResult);
+});
+
 test("scoreSidewaysMeanReversion - qualifying short at upper edge", () => {
   const r = scoreSidewaysMeanReversion({
     regime: { label: "sideways" }, adxResult: { adx: 20 },
