@@ -25,8 +25,13 @@ const SETUP_DECAY_HALFLIFE_DAYS = 10;
 export const MIN_EFF_RECENT_SETUP = 6;
 
 function setupDecayWeight(trade, nowMs) {
-  const closedMs = trade.closedAt ? new Date(trade.closedAt).getTime() : NaN;
-  if (!Number.isFinite(closedMs)) return 1; // undated legacy trades: full weight
+  // Fall back to openedAt, then treat a truly undated trade as STALE (weight 0.05),
+  // NOT fresh — the old contaminated trades carry no closedAt, and full-weighting
+  // them defeated the sizing de-poison (effN stayed == raw count). See the matching
+  // note in adaptation.js → tradeDecayWeight.
+  const ts = trade.closedAt || trade.openedAt;
+  const closedMs = ts ? new Date(ts).getTime() : NaN;
+  if (!Number.isFinite(closedMs)) return 0.05;
   const ageDays = Math.max(0, (nowMs - closedMs) / 86400000);
   return Math.pow(0.5, ageDays / SETUP_DECAY_HALFLIFE_DAYS);
 }

@@ -24,7 +24,7 @@ const approx = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 const trade = (pnl, setupType = "trend", approvalType = "auto", symbol = "BTC-USDT-SWAP", notional = 500) =>
-  ({ pnl, setupType, approvalType, symbol, notional });
+  ({ pnl, setupType, approvalType, symbol, notional, closedAt: new Date().toISOString() });
 
 function makeN(n, winPnl, lossPnl, setupType = "trend", approvalType = "auto") {
   // Produces a 50/50 win/loss spread of exactly n trades
