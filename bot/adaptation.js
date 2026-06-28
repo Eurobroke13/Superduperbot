@@ -9,8 +9,14 @@ import { getWeightRegimeAware } from "./risk-gates.js";
 const DECAY_HALFLIFE_DAYS = 10;
 
 function tradeDecayWeight(trade, nowMs) {
-  const closedMs = trade.closedAt ? new Date(trade.closedAt).getTime() : NaN;
-  if (!Number.isFinite(closedMs)) return 1; // undated legacy trades: full weight
+  // Fall back to openedAt, then treat a truly undated trade as STALE (~43 days
+  // old → weight 0.05), NOT fresh. The old contaminated trades carry no closedAt
+  // in their stored record; giving them full weight (the previous behavior)
+  // immortalized the poison — eff stayed == raw n, "thin" never fired, and Claude
+  // kept auto-rejecting on stale 21%-WR bear signals. Undated = legacy = old = fade it.
+  const ts = trade.closedAt || trade.openedAt;
+  const closedMs = ts ? new Date(ts).getTime() : NaN;
+  if (!Number.isFinite(closedMs)) return 0.05;
   const ageDays = Math.max(0, (nowMs - closedMs) / 86400000);
   return Math.pow(0.5, ageDays / DECAY_HALFLIFE_DAYS);
 }
