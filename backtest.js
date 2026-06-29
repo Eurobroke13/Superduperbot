@@ -857,6 +857,18 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
         if (!liquidityTrapQualityGate(candidate, volumeData, rsiDivergence).pass) continue;
       }
 
+      // ── Sweep gate A/B (mirrors runner.js hard-zero for liquidity-trap) ──
+      // ON = skip un-confirmed-sweep LT (current live); OFF = let them trade.
+      if (SWEEP_GATE && candidate.setupType === "liquidity-trap") {
+        const sweep = isConfirmedSweep({
+          candles: candidate._candles1h || window1h,
+          srLevels: candidate._srLevels || { supports: [], resistances: [] },
+          direction: candidate.signal,
+          atrVal: candidate.atrVal
+        });
+        if (!sweep.confirmed) continue;
+      }
+
       // ── Bear regime filter ──
       if (useBear) {
         const bf = bearFilter(candidate, regime.label, null);
