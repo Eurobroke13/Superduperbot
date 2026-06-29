@@ -30,7 +30,7 @@ import {
   formatCoinMemoryForClaude,
   claudeBatchAnalysis as claudeBatchAnalysisNew
 } from "../coin-memory.js";
-import { getApprovalStats, getSetupStats } from "./stats.js";
+import { getApprovalStats, getSetupStats, getSetupStatsRecent } from "./stats.js";
 
 function fallbackResult(candidates) {
   const v = {};
@@ -49,6 +49,7 @@ async function claudeBatchAnalysis(params) {
       formatCoinMemory: formatCoinMemoryForClaude,
       getApprovalStats,
       getSetupStats,
+      getSetupStatsRecent,
       getWeight,
       fallbackResult
     }
