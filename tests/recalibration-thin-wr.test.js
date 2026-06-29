@@ -58,6 +58,22 @@ test("high-n with healthy effN is trustworthy (not thin)", () => {
   assert.doesNotMatch(out, /eff=20 thin/);
 });
 
+test("displayed WR uses decWinRate (decayed) not raw lifetime wins/count", () => {
+  // Raw WR = 2/10 = 20% (poisoned lifetime), but decWinRate=0.55 (recency-weighted),
+  // effN=20 (reliable). The number Claude sees must be the decayed 55%, not 20%.
+  const state = {
+    trades: [],
+    regimeStats: { sideways: { wins: 3, count: 10, totalPnl: -50 } },
+    signalStats: {
+      "mr-stoch-overbought:sideways": { wins: 2, losses: 8, count: 10, totalPnl: -5, effN: 20, decWinRate: 0.55 },
+      "mr-at-resistance:sideways":    { wins: 2, losses: 8, count: 10, totalPnl: -5, effN: 20, decWinRate: 0.55 },
+    },
+  };
+  const out = buildValidationSection([candidate], regime, state, deps);
+  assert.match(out, /\[sideways:55% n=10 eff=20\]/);   // decayed 55%, reliable (not thin)
+  assert.doesNotMatch(out, /sideways:20%/);            // NOT the raw lifetime 20%
+});
+
 test("recalibration prompt instructs Claude to ignore thin (stale) signal WR", () => {
   const out = buildValidationSection([candidate], regime, stateWith(3), deps);
   assert.match(out, /RECALIBRATION MODE/);

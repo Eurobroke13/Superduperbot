@@ -271,6 +271,10 @@ export function formatCoinMemoryForClaude(memory, currentRegime, currentReasons)
 export function buildValidationSection(candidatesToValidate, regime, state, deps) {
   const { getCoinMemory, formatCoinMemoryForClaude, getApprovalStats,
           getSetupStats, getWeight } = deps;
+  // Prefer the decay-weighted setup stats (recency-biased, de-poisoned) for the
+  // WR/EV shown to Claude; fall back to the raw full-window stats for legacy
+  // deps (e.g. test stubs) that don't inject the recent variant.
+  const setupStatsFn = deps.getSetupStatsRecent || getSetupStats;
 
   // System-level context Claude needs to make good decisions
   const autoStats   = getApprovalStats(state.trades || [], "auto");
@@ -311,7 +315,7 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
   // and keep WR/n only — otherwise Claude rejects on a setup EV it was just told
   // to ignore. Auto-reverts with the rest of recalibration once WR ≥ 42%.
   const setupPerf = ["trend","breakout","liquidity-trap","mean-reversion","bull-pullback"].map(t => {
-    const s = getSetupStats(state.trades || [], t);
+    const s = setupStatsFn(state.trades || [], t);   // decayed when available
     if (!s || s.count < 5) return `${t}:no data`;
     return recalibrating
       ? `${t}:${(s.winRate*100).toFixed(0)}%WR n=${s.count}`
@@ -341,19 +345,19 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
 
       let perfStr = sig;
       if (global && global.count >= 5) {
-        const wr = ((global.wins / global.count) * 100).toFixed(0);
-        const ev = (global.totalPnl / global.count).toFixed(1);
-        // "thin" gates on the decay-weighted effective sample (effN), not the raw
-        // count — a signal with n=24 of stale pre-pivot trades has a tiny effN and
-        // must NOT be trusted for auto-reject. Fallback to count for legacy state.
+        // Show the DECAY-WEIGHTED WR (decWinRate) when available, so the number
+        // Claude judges on matches the thin/reliable gate — not the poisoned
+        // lifetime rate. eff gates "thin"; a stale n=24 has tiny effN. Both fall
+        // back to raw for legacy state with no effN/decWinRate.
         const eff = global.effN ?? global.count;
+        const wr = ((global.decWinRate != null ? global.decWinRate : global.wins / global.count) * 100).toFixed(0);
+        const ev = (global.totalPnl / global.count).toFixed(1);
         const thin = eff < RELIABLE_SIGNAL_N ? " thin" : "";
         perfStr += `(${wr}%WR,$${ev}EV,n=${global.count} eff=${eff.toFixed(0)}${thin})`;
       }
       if (regStat && regStat.count >= 3) {
-        const rwr = ((regStat.wins / regStat.count) * 100).toFixed(0);
-        // Reliability gates on effN (decayed), so a stale n=24 still reads as thin.
         const eff = regStat.effN ?? regStat.count;
+        const rwr = ((regStat.decWinRate != null ? regStat.decWinRate : regStat.wins / regStat.count) * 100).toFixed(0);
         const thin = eff < RELIABLE_SIGNAL_N ? " thin" : "";
         perfStr += `[${regime.label}:${rwr}% n=${regStat.count} eff=${eff.toFixed(0)}${thin}]`;
       }
@@ -462,6 +466,7 @@ export async function claudeBatchAnalysis({
     formatCoinMemory:    formatCoinMemoryFn,
     getApprovalStats,
     getSetupStats,
+    getSetupStatsRecent,
     getWeight,
     fallbackResult:      fallback
   } = deps;
@@ -492,6 +497,7 @@ export async function claudeBatchAnalysis({
         formatCoinMemoryForClaude: formatCoinMemoryFn,
         getApprovalStats,
         getSetupStats,
+        getSetupStatsRecent,
         getWeight
       }
     );
