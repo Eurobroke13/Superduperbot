@@ -520,6 +520,17 @@ async function checkAllExits(env, state, deps) {
       }
     }
   }
+
+  // Recompute the decay-weighted signal/setup stats EVERY run, not only when a
+  // trade closes. updateDynamicWeights was previously called ONLY inside
+  // closePosition, so in a no-trade deadlock `state.signalStats.effN` never
+  // refreshed — the decayed WR fixes (#65 decay fallback, #66 decWinRate display)
+  // stayed frozen at the stale pre-fix value (eff==n), Claude kept AUTO-REJECTing
+  // bear shorts on it, and that prevented the very trades that would have
+  // refreshed it. Running it per-run lets the 10-day decay progress with wall
+  // time so stale signals fade to `thin` even while the bot is idle — which is
+  // what actually breaks the freeze once #65/#66 are deployed.
+  updateDynamicWeights(state);
 }
 
 function checkHardExitFromLivePrice(pos, price) {

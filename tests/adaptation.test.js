@@ -46,6 +46,23 @@ test("updateDynamicWeights - populates signalStats from trades", () => {
   assert.equal(state.signalStats["ema-ribbon"].wins, 20);
 });
 
+test("updateDynamicWeights - undated (poison) trades decay to a small effN, not full weight", () => {
+  // 24 undated trades (no closedAt/openedAt) = the pre-pivot poison shape. With
+  // the decay fallback (weight 0.05) they must produce effN well below the raw
+  // count, so the signal reads 'thin' rather than a trusted (poisoned) reliable
+  // sample. This is the chain Claude's auto-reject depends on — a regression here
+  // re-freezes the bot.
+  const state = {
+    cash: 10000, positions: {}, lastRegime: { label: "bear" },
+    signalStats: {}, dynamicWeights: {}, disabledSignals: [],
+    trades: Array.from({ length: 24 }, () => ({ pnl: -5, reasons: ["ema-ribbon-bear"], regime: "bear" })),
+  };
+  updateDynamicWeights(state);
+  const s = state.signalStats["ema-ribbon-bear"];
+  assert.equal(s.count, 24);                         // raw count preserved
+  assert.ok(s.effN < 15, `effN should decay below the reliable threshold, got ${s.effN}`);
+});
+
 test("updateDynamicWeights - high WR signal gets weight > 1", () => {
   // 20 trades all winning with the same signal
   const state = makeState(20, 10, ["ema-ribbon"]);
