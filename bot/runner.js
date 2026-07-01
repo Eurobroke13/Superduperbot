@@ -520,6 +520,17 @@ async function checkAllExits(env, state, deps) {
       }
     }
   }
+
+  // Recompute the decay-weighted signal/setup stats EVERY run, not only when a
+  // trade closes. updateDynamicWeights was previously called ONLY inside
+  // closePosition, so in a no-trade deadlock `state.signalStats.effN` never
+  // refreshed — the decayed WR fixes (#65 decay fallback, #66 decWinRate display)
+  // stayed frozen at the stale pre-fix value (eff==n), Claude kept AUTO-REJECTing
+  // bear shorts on it, and that prevented the very trades that would have
+  // refreshed it. Running it per-run lets the 10-day decay progress with wall
+  // time so stale signals fade to `thin` even while the bot is idle — which is
+  // what actually breaks the freeze once #65/#66 are deployed.
+  updateDynamicWeights(state);
 }
 
 function checkHardExitFromLivePrice(pos, price) {
@@ -1153,14 +1164,23 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
 
   const interleaved = interleaveLongsShorts(longs, shorts, slotsAvailable);
 
-  // ── Mean-reversion concurrency cap ───────────────────────────────────────────
+  // ── Setup concurrency caps ───────────────────────────────────────────────────
   // MR entries fade the same extremes and so correlate heavily — several at once
-  // is really one concentrated bet. Cap total concurrent MR at 2 across already-
-  // open positions plus this run's picks (highest-scored MR kept, since interleave
-  // preserves the per-side score ordering).
+  // is really one concentrated bet. Cap total concurrent MR at 2.
+  //
+  // Liquidity-trap has the same correlation problem AND a coverage hole: the
+  // cluster cap (checkCorrelationExposure, max 2 same-dir per cluster) only bites
+  // on symbols in a defined cluster, but LT fires mostly on uncategorized small
+  // alts (clusterOf → null → no cap). That's the exact "6-8 correlated small-loss
+  // trades per cycle" the sweep gate guards against. Cap total concurrent LT at 3
+  // so the count is bounded regardless of cluster — a per-cycle net that must be
+  // in place before the sweep hard-zero is ever softened to a penalty.
   const MAX_CONCURRENT_MR = 2;
+  const MAX_CONCURRENT_LT = 3;
   const openMR = Object.values(state.positions).filter(p => p.setupType === "mean-reversion").length;
+  const openLT = Object.values(state.positions).filter(p => p.setupType === "liquidity-trap").length;
   let mrBudget = Math.max(0, MAX_CONCURRENT_MR - openMR);
+  let ltBudget = Math.max(0, MAX_CONCURRENT_LT - openLT);
   const toConsider = [];
   for (const candidate of interleaved) {
     if (candidate.setupType === "mean-reversion") {
@@ -1171,6 +1191,14 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
         continue;
       }
       mrBudget--;
+    } else if (candidate.setupType === "liquidity-trap") {
+      if (ltBudget <= 0) {
+        finalizeDecision(candidate, "rejected", "lt-concurrency-cap", {
+          details: { openLT, cap: MAX_CONCURRENT_LT }
+        });
+        continue;
+      }
+      ltBudget--;
     }
     toConsider.push(candidate);
   }

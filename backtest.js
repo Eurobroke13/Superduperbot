@@ -35,6 +35,7 @@ import {
 import { checkMinRR } from "./bot/risk-gates.js";
 import { detectRegime } from "./bot/regime.js";
 import { applyRoundTripFriction, FRICTION_CONFIG } from "./bot/friction.js";
+import { isConfirmedSweep } from "./bot/sweep-confirmation.js";
 import {
   checkEarlyReversalTighten,
   liquidityTrapQualityGate,
@@ -56,6 +57,11 @@ const FORCE_REPLACE_REGIMES = ARGS.includes("--force-replace-regimes");
 const NO_DB        = ARGS.includes("--no-db");
 const DIAGNOSTIC_GATES = ARGS.includes("--diagnostic-gates");
 const WALK_FORWARD = ARGS.includes("--walk-forward");
+// A/B the live liquidity-trap sweep gate (runner.js hard-zeroes un-confirmed-sweep
+// LT setups). OFF (default) = backtest's normal behavior (LT trades freely, ≈ the
+// "convert to penalty/allow" side). ON = apply the gate, skipping un-swept LT
+// (= current live hard-zero). The EV delta on LT trades is the verdict.
+const SWEEP_GATE = ARGS.includes("--sweep-gate") || process.env.SWEEP_GATE === "on";
 const foldsFlag    = ARGS.indexOf("--folds");
 const WF_FOLDS     = foldsFlag !== -1 ? Math.max(2, parseInt(ARGS[foldsFlag + 1]) || 4) : 4;
 const monthsFlag   = ARGS.indexOf("--months");
@@ -542,6 +548,17 @@ async function backtestSymbol(symbol, candles1h, candles4h, btcDaily, cap) {
       if (!bf.allowed) { bar += 1; continue; }
     }
 
+    // ── Sweep gate A/B (mirrors runner.js hard-zero for liquidity-trap) ──
+    if (SWEEP_GATE && candidate.setupType === "liquidity-trap") {
+      const sweep = isConfirmedSweep({
+        candles: candidate._candles1h || window1h,
+        srLevels: candidate._srLevels || { supports: [], resistances: [] },
+        direction: candidate.signal,
+        atrVal: candidate.atrVal
+      });
+      if (!sweep.confirmed) { bar += 1; continue; }
+    }
+
     // In backtest we use autoApprove OR score >= 8 (Claude threshold)
     const approved = autoApproveSignal(candidate) || candidate.score >= 8;
     if (!approved) {
@@ -838,6 +855,18 @@ async function backtestPortfolio(map1h, map4h, fundingMap, btcDaily) {
         const rsiDivergence = candidate.obvDiv && candidate.obvDiv !== "none"
           ? { type: candidate.obvDiv } : { type: "none" };
         if (!liquidityTrapQualityGate(candidate, volumeData, rsiDivergence).pass) continue;
+      }
+
+      // ── Sweep gate A/B (mirrors runner.js hard-zero for liquidity-trap) ──
+      // ON = skip un-confirmed-sweep LT (current live); OFF = let them trade.
+      if (SWEEP_GATE && candidate.setupType === "liquidity-trap") {
+        const sweep = isConfirmedSweep({
+          candles: candidate._candles1h || window1h,
+          srLevels: candidate._srLevels || { supports: [], resistances: [] },
+          direction: candidate.signal,
+          atrVal: candidate.atrVal
+        });
+        if (!sweep.confirmed) continue;
       }
 
       // ── Bear regime filter ──
