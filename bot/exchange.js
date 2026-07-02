@@ -64,7 +64,8 @@ function authHeaders(method, path, body = "") {
 async function okxGet(path) {
   const res = await fetch(OKX_BASE + path, {
     method: "GET",
-    headers: authHeaders("GET", path)
+    headers: authHeaders("GET", path),
+    signal: AbortSignal.timeout(15_000)
   });
   const data = await res.json();
   if (data.code !== "0") throw new Error(`OKX GET ${path}: ${data.msg} (${data.code})`);
@@ -76,7 +77,8 @@ async function okxPost(path, body) {
   const res = await fetch(OKX_BASE + path, {
     method: "POST",
     headers: authHeaders("POST", path, bodyStr),
-    body: bodyStr
+    body: bodyStr,
+    signal: AbortSignal.timeout(15_000)
   });
   const data = await res.json();
   if (data.code !== "0") throw new Error(`OKX POST ${path}: ${data.msg} (${data.code})`);

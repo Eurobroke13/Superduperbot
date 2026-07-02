@@ -14,6 +14,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Every external fetch MUST carry a timeout. A single stalled request with no
+// AbortSignal parked the fast-scan runner forever mid-run (2026-07-02): the
+// await never settled, the process never exited, and the cron wedged for 8+
+// hours with zero output. 15s is generous for OKX/news/social endpoints.
+const FETCH_TIMEOUT_MS = 15_000;
+
 function recordApiSuccess() {
   apiHealth.consecutiveFailures = 0;
   apiHealth.lastSuccessAt = new Date().toISOString();
@@ -43,7 +49,10 @@ export function getApiHealth() {
 export async function fetchWithRetry(url, retries = 2) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      const res = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+      });
       if (res.status === 429) {
         await sleep(Math.pow(2, attempt) * 500);
         continue;
@@ -144,7 +153,10 @@ export async function fetchCryptoPanicNews(state) {
 
   try {
     const url = "https://cryptopanic.com/api/v1/posts/?auth_token=anonymous&public=true&kind=news&filter=hot";
-    const res = await fetch(url, { headers: { Accept: "application/json" } });
+    const res = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
+    });
     if (!res.ok) {
       result.blockedCoins = state.newsBlocked || [];
       result.boostedCoins = state.newsBoosted || [];
@@ -221,7 +233,8 @@ export async function fetchLunarCrush(symbols, env, state) {
   try {
     const url = `${LUNARCRUSH_API}/list/v1?symbols=${symbols.join(",")}`;
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${env.LUNARCRUSH_API_KEY}`, Accept: "application/json" }
+      headers: { Authorization: `Bearer ${env.LUNARCRUSH_API_KEY}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS)
     });
     if (!res.ok) return result;
     const data = await res.json();
