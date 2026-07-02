@@ -30,6 +30,7 @@ async function sendTelegramAlert(text) {
     await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({ chat_id: chatId, text: text.slice(0, 4000) })
     });
   } catch (err) {
@@ -49,6 +50,20 @@ async function runScheduledBot(trigger = "scheduler") {
   scheduler.lastError = null;
   console.log(`[SCHEDULER] Starting bot run (${trigger}) at ${scheduler.lastStartedAt}`);
 
+  // Watchdog: one hung run would leave scheduler.running=true forever — every
+  // future tick skips with "previous bot run still active" while /health keeps
+  // answering, so Railway never restarts us. Exiting non-zero instead hands
+  // recovery to Railway's ON_FAILURE restart, which also releases the pool
+  // connections and the Postgres advisory lock the hung run is holding.
+  const watchdogMinutes = Number(process.env.RUN_WATCHDOG_MINUTES || 12);
+  const watchdog = setTimeout(() => {
+    console.error(
+      `[SCHEDULER] WATCHDOG: bot run (${trigger}) still active after ${watchdogMinutes} minutes — exiting so Railway restarts the service`
+    );
+    sendTelegramAlert(`🚨 BOT HUNG [${trigger}]\nRun exceeded ${watchdogMinutes} min, restarting service\n${scheduler.lastStartedAt}`)
+      .finally(() => process.exit(1));
+  }, watchdogMinutes * 60_000);
+
   try {
     await runBot(process.env);
     scheduler.runCount += 1;
@@ -62,6 +77,7 @@ async function runScheduledBot(trigger = "scheduler") {
     await sendTelegramAlert(`🚨 BOT CRASH [${trigger}]\n${scheduler.lastError}\n${scheduler.lastStartedAt}`);
     return { skipped: false, ok: false, error: scheduler.lastError };
   } finally {
+    clearTimeout(watchdog);
     scheduler.running = false;
   }
 }

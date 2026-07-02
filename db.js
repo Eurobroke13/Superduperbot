@@ -8,7 +8,14 @@ if (!process.env.DATABASE_URL) {
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
+  // Bound every DB wait so a saturated/unreachable Postgres fails loudly
+  // instead of parking the process forever (no-timeout awaits are what
+  // wedged the fast-scan cron on 2026-07-02):
+  connectionTimeoutMillis: 15_000, // pool.connect() — was infinite
+  idleTimeoutMillis: 30_000,       // recycle idle clients
+  statement_timeout: 60_000,       // server-side cap; saveState's full-blob write stays well under this
+  keepAlive: true                  // detect silently-dropped TCP connections
 });
 
 let initialized = false;

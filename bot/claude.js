@@ -1,6 +1,13 @@
 import { ANTHROPIC_API, CLAUDE_MODEL, MONTHLY_BUDGET_USD } from "./config.js";
 import { estimateMonthlySpend } from "./stats.js";
 
+// A stalled request with no timeout can park the whole run forever (this
+// wedged the fast-scan cron for 8+ hours on 2026-07-02). 120s covers the
+// slowest legitimate batch call (4000 max_tokens); on abort the throw lands
+// in claudeBatchAnalysis's error path, which fail-safes to rejecting all
+// candidates rather than hanging or auto-approving.
+const CLAUDE_TIMEOUT_MS = 120_000;
+
 function initTokenUsage(state) {
   const now = new Date();
   const key = `${now.getUTCFullYear()}-${now.getUTCMonth()}`;
@@ -51,6 +58,7 @@ async function callClaudeBudgeted(prompt, env, state, maxTokens = 500) {
       "x-api-key": env.ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01"
     },
+    signal: AbortSignal.timeout(CLAUDE_TIMEOUT_MS),
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: maxTokens,
@@ -109,6 +117,7 @@ async function callClaudePlaintext(prompt, env, state, maxTokens = 500) {
       "x-api-key": env.ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01"
     },
+    signal: AbortSignal.timeout(CLAUDE_TIMEOUT_MS),
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: maxTokens,

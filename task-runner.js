@@ -11,6 +11,19 @@ import { closeDb } from "./db.js";
 const task = process.argv[2];
 const env = process.env;
 
+// Hard watchdog: if the task is still running after this long, force-exit
+// non-zero so Railway's ON_FAILURE policy surfaces it and the cron slot is
+// freed. Without this, a single hung await (e.g. a stalled fetch) parked the
+// fast-scan runner forever with zero output (2026-07-02, 8+ hours wedged).
+// Fast-scan normally completes in <1 min; 10 min is generous for every task.
+const WATCHDOG_MINUTES = Number(env.TASK_WATCHDOG_MINUTES || 10);
+setTimeout(() => {
+  console.error(
+    `[task-runner] WATCHDOG: task '${task}' still running after ${WATCHDOG_MINUTES} minutes — force-exiting`
+  );
+  process.exit(2);
+}, WATCHDOG_MINUTES * 60_000);
+
 async function main() {
   switch (task) {
     case "fast-scan":

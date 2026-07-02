@@ -5,6 +5,9 @@ async function sendTelegram(message, env) {
     const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      // Timeout so a stalled Telegram request can't hang the run — the
+      // try/catch only helps if the await actually settles.
+      signal: AbortSignal.timeout(15_000),
       body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text })
     });
     if (!res.ok) console.error("[TG]", await res.text());
