@@ -80,3 +80,19 @@ test("recalibration prompt instructs Claude to ignore thin (stale) signal WR", (
   assert.match(out, /thin.*NOT a valid rejection basis|do NOT reject a candidate because a thin signal/i);
   assert.match(out, /eff≥15/);
 });
+
+test("recalibration approve rule (b) is binding — 3 aligned signals is sufficient, not 'marginal'", () => {
+  // Live 2026-07-03: Claude rejected every candidate that met rule (b) to the
+  // letter (3 aligned signals + score met) as "marginal"/"only 3", re-freezing
+  // the bot at the approval layer. The prompt must state the rule is binding
+  // and that exactly 3 counts. A regression here re-opens deadlock #4.
+  const out = buildValidationSection([candidate], regime, stateWith(3), deps);
+  assert.match(out, /BINDING/);
+  assert.match(out, /exactly 3 aligned signals IS/);
+  assert.match(out, /do NOT call 3 "marginal"/);
+  assert.match(out, /REJECT only when neither \(a\) nor \(b\) is met/);
+  // hour-of-day nudges must not inflate the aligned-signal count
+  assert.match(out, /time\(±x\) entries are hour-of-day nudges/);
+  // verdicts must name the rule applied, so log review is unambiguous
+  assert.match(out, /name the rule you applied/);
+});

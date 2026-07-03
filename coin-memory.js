@@ -410,13 +410,20 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
         `(how many aligned signals fired) and score instead.\n\n` +
 
         `YOUR DECISION FRAMEWORK (recalibration):\n` +
-        `DEFAULT = REJECT. Approve if EITHER:\n` +
-        `(a) most signals with reliable data (n≥${RELIABLE_SIGNAL_N}) show ≥48% WR in this regime, OR\n` +
-        `(b) WR data is thin/insufficient but 3+ aligned signals fired (strong confluence),\n` +
-        `AND the score is meaningful: ≥7 for liquidity-trap, ≥5 for trend/breakout, ≥4.5 for mean-reversion.\n\n` +
+        `Approve if EITHER:\n` +
+        `(a) most signals with reliable data (eff≥${RELIABLE_SIGNAL_N}) show ≥48% WR in this regime, OR\n` +
+        `(b) WR data is thin/insufficient but 3+ aligned signals fired,\n` +
+        `AND (for either path) the score is meaningful: ≥7 for liquidity-trap, ≥5 for trend/breakout, ≥4.5 for mean-reversion.\n` +
+        `These rules are BINDING. If (b) is satisfied, APPROVE: exactly 3 aligned signals IS ` +
+        `sufficient confluence — do NOT call 3 "marginal", "only 3", or "the bare minimum" and reject. ` +
+        `Do NOT reject a candidate that meets (a) or (b) because its signals are thin, samples are ` +
+        `small, system stats are stale, or for any other criterion not listed here. ` +
+        `(time(±x) entries are hour-of-day nudges, not signals — exclude them from the aligned count.)\n` +
+        `REJECT only when neither (a) nor (b) is met, or AUTO-REJECT below fires.\n` +
+        `In each verdict's reason, name the rule you applied: (a), (b), no-rule-met, or auto-reject.\n\n` +
 
         `AUTO-REJECT only if:\n` +
-        `- Signals with RELIABLE data (n≥${RELIABLE_SIGNAL_N}) are all below 45% WR with no strong regime-specific exception. ` +
+        `- Signals with RELIABLE data (eff≥${RELIABLE_SIGNAL_N}) are all below 45% WR with no strong regime-specific exception. ` +
         `(Signals marked "thin" do NOT count toward this — ignore their WR.)\n\n`
       : `YOUR DECISION FRAMEWORK:\n` +
         `DEFAULT = REJECT. Approve ONLY if ALL of the following:\n` +
