@@ -144,6 +144,12 @@ export function openPositionGradual(candidate, state, livePrices = null, env = n
     sizeMultiplier *= (mrMult != null && mrMult > 0) ? mrMult : 0.70;
   }
 
+  // Recalibration confluence override (rule (b) enforced in code over a Claude
+  // rejection) opens at reduced size — bounded risk while fresh data accrues.
+  if (candidate.overrideSizeMult != null && candidate.overrideSizeMult > 0) {
+    sizeMultiplier *= candidate.overrideSizeMult;
+  }
+
   if (drawdown > 0.10) sizeMultiplier *= 0.7;
 
   // Volatility-targeted sizing. The base (size = riskAmount / slDist, below)

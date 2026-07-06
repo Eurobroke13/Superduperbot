@@ -77,6 +77,7 @@ import {
   applyBearShort15m,
   applyBullTrend15m,
   applyClaudeSpendGuardrail,
+  applyConfluenceOverride,
   applyFundingAdjustments,
   applyLunarAdjustments,
   applyMrGate,
@@ -94,6 +95,8 @@ import {
   selectTopSignals,
   trimToClosedCandles
 } from "./runner-utils.js";
+import { getRecalibrationState } from "../coin-memory.js";
+import { getApprovalStats } from "./stats.js";
 export {
   applyBearShort15m,
   applyBullTrend15m,
@@ -1308,6 +1311,21 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       });
       Object.assign(state.claudeValidations, cacheEntries);
       pruneClaudeValidationCache(state);
+
+      // Recalibration confluence override: while the system is recalibrating and
+      // a rejected candidate mechanically satisfies rule (b) (3+ non-time signals,
+      // score at setup threshold, zero reliable-WR signals), stage it anyway at
+      // reduced size. Claude's prose kept re-freezing the bot by re-interpreting
+      // the approve rule (deadlock #5) — the rule is enforced in code now.
+      const { recalibrating } = getRecalibrationState(state, getApprovalStats);
+      const overridden = applyConfluenceOverride(routing, {
+        recalibrating,
+        signalStats: state.signalStats,
+        regimeLabel: regime.label
+      });
+      if (overridden > 0) {
+        console.log(`[CONFLUENCE OVERRIDE] ${overridden} Claude rejection(s) overridden by code-enforced rule (b) (recalibration)`);
+      }
 
       for (const { candidate, action, approvalType, claudeReason } of routing) {
         if (action === "stage") {
