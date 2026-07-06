@@ -517,6 +517,82 @@ export function resolveClaudeValidations(claudeList, claudeResult, { getSetupFin
 }
 
 /**
+ * Recalibration confluence override — rule (b) of the recalibration framework
+ * enforced in CODE, not prose.
+ *
+ * Background (deadlock #5, July 2026): five prompt iterations in, Claude kept
+ * finding conservative escapes — the last one read rule (b) ("WR data is thin
+ * but 3+ aligned signals fired") as requiring the aligned signals to NOT be
+ * thin, i.e. the exact opposite of the rule's purpose. 34 reviews, 0 approvals,
+ * while candidates met (b) mechanically. Prompt-lawyering an anchored-to-reject
+ * model is a losing game, so the approve condition is now computed here: a
+ * Claude rejection is overridden to a stage when, during recalibration,
+ *   - no fired signal has reliable recent data (rule (a) unavailable, so the
+ *     rejection can only rest on thin stats or invented criteria), and
+ *   - 3+ non-time signals fired (the score threshold below does the alignment
+ *     work: contra signals carry no positive weight, so a met score means the
+ *     count is aligned confluence, not mixed noise), and
+ *   - score meets the setup threshold (LT 7 / MR 4.5 / else 5).
+ * Overrides are capped per run and sized down via overrideSizeMult; trades
+ * carry approvalType "confluence-override" so analyze-trades.js can judge the
+ * route once data accrues, and they count toward the recalibration-exit WR.
+ * Claude's prose verdict is preserved inside the override reason as a risk
+ * note. Self-disables with recalibration at system WR ≥42%.
+ *
+ * @param {Array<{candidate, action, approvalType, claudeReason}>} routing  mutated in place
+ * @param {{ recalibrating:boolean, signalStats:object, regimeLabel:string,
+ *           maxOverrides?:number, reliableN?:number, sizeMult?:number }} ctx
+ * @returns {number} how many rejections were overridden
+ */
+export function applyConfluenceOverride(routing, {
+  recalibrating,
+  signalStats,
+  regimeLabel,
+  maxOverrides = 2,
+  reliableN = 15,
+  sizeMult = 0.5
+}) {
+  if (!recalibrating) return 0;
+  let used = 0;
+  for (const r of routing) {
+    if (used >= maxOverrides) break;
+    // Only override genuine Claude rejections — "fallback-rejected" means
+    // Claude never reviewed the candidate (degraded mode), not that it said no.
+    if (r.action !== "rejected") continue;
+    const c = r.candidate;
+
+    const aligned = (c.reasons || []).filter(s => !/^time\(/.test(s));
+    if (aligned.length < 3) continue;
+
+    const minScore = c.setupType === "liquidity-trap" ? 7
+      : c.setupType === "mean-reversion" ? 4.5
+      : 5;
+    if (!(c.score >= minScore)) continue;
+
+    // Rule (a) must be unavailable: if any fired signal has a reliable recent
+    // sample (effN ≥ reliableN, globally or in-regime), Claude's WR-based
+    // judgment is legitimate — leave the rejection alone.
+    const hasReliable = aligned.some(sig =>
+      [sig, `${sig}:${regimeLabel}`].some(key => {
+        const s = signalStats?.[key];
+        return s && (s.effN ?? s.count ?? 0) >= reliableN;
+      })
+    );
+    if (hasReliable) continue;
+
+    r.action = "stage";
+    r.approvalType = "confluence-override";
+    r.claudeReason =
+      `confluence-override: rule (b) met in code (${aligned.length} signals, ` +
+      `score ${c.score.toFixed(1)}≥${minScore}, no reliable-WR signal). ` +
+      `Claude said: ${r.claudeReason}`;
+    c.overrideSizeMult = sizeMult;
+    used += 1;
+  }
+  return used;
+}
+
+/**
  * Resolves per-candidate routing when claudeBatchAnalysis throws. Mirrors the
  * catch block: high-score auto-approvable candidates can still be staged;
  * others are rejected.

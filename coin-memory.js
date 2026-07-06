@@ -265,6 +265,35 @@ export function formatCoinMemoryForClaude(memory, currentRegime, currentReasons)
 }
 
 // =============================================================================
+// Recalibration state — single source of truth
+// =============================================================================
+// Combined system WR across all approval routes. While the bot is recovering
+// from the pre-MR-pivot edge collapse, the overall/regime EV+WR figures reflect
+// stale, contaminated history and should NOT drive per-candidate rejections.
+// Below RECALIBRATION_WR_FLOOR the prompt suppresses system/regime EV numbers
+// and swaps in the thin-data framework; the runner's confluence override
+// (rule (b) enforced in code) is gated on the same flag. Auto-reverts once WR
+// recovers. "confluence-override" trades count toward the combined WR so the
+// very trades the override opens can lift the system out of recalibration.
+export const RECALIBRATION_WR_FLOOR = 0.42;
+export const RELIABLE_SIGNAL_N = 15;
+
+export function getRecalibrationState(state, getApprovalStatsFn) {
+  let wins = 0, count = 0;
+  for (const route of ["auto", "claude", "confluence-override"]) {
+    const s = getApprovalStatsFn(state.trades || [], route);
+    if (!s) continue;
+    wins  += s.winRate * s.count;
+    count += s.count;
+  }
+  const combinedWR = count >= 10 ? wins / count : null;
+  return {
+    recalibrating: combinedWR !== null && combinedWR < RECALIBRATION_WR_FLOOR,
+    combinedWR
+  };
+}
+
+// =============================================================================
 // LAYER 5 — buildClaudeValidationPrompt (new helper, used inside claudeBatchAnalysis)
 // Replaces the inline sections.push(VALIDATE) block
 // =============================================================================
@@ -280,16 +309,9 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
   const autoStats   = getApprovalStats(state.trades || [], "auto");
   const claudeStats = getApprovalStats(state.trades || [], "claude");
 
-  // Combined system WR across all approval routes. While the bot is recovering
-  // from the pre-MR-pivot edge collapse, the overall/regime EV+WR figures reflect
-  // stale, contaminated history and should NOT drive per-candidate rejections.
-  // Below RECALIBRATION_WR_FLOOR we suppress the system/regime EV numbers and
-  // tell Claude to judge on signal-level WR only. Auto-reverts once WR recovers.
-  const RECALIBRATION_WR_FLOOR = 0.42;
-  const combinedWins  = (autoStats?.wins || 0) + (claudeStats?.wins || 0);
-  const combinedCount = (autoStats?.count || 0) + (claudeStats?.count || 0);
-  const combinedWR    = combinedCount >= 10 ? combinedWins / combinedCount : null;
-  const recalibrating = combinedWR !== null && combinedWR < RECALIBRATION_WR_FLOOR;
+  // Recalibration gating lives in getRecalibrationState (shared with the
+  // runner's code-level confluence override — keep the two consumers in sync).
+  const { recalibrating, combinedWR } = getRecalibrationState(state, getApprovalStats);
 
   // Per-signal WR below this sample size is small-sample noise — and while the
   // bot is barely trading (MR pivot throttled volume), the last-80-trade window
@@ -301,7 +323,7 @@ export function buildValidationSection(candidatesToValidate, regime, state, deps
   // Set to 15 (not 10): a WR's 95% CI is still ±25% at n=15 and ±31% at n=10, so
   // 10 was too few to trust enough to auto-reject on. 15 sits just below the
   // adaptive-weights system's own 20-trade "enough sample" gate (adaptation.js).
-  const RELIABLE_SIGNAL_N = 15;
+  // (RELIABLE_SIGNAL_N is module-level now — shared with the confluence override.)
 
   const autoWR      = autoStats?.count >= 5
     ? `${(autoStats.winRate * 100).toFixed(0)}% (n=${autoStats.count})`
