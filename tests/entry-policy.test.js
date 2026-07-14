@@ -206,6 +206,36 @@ test("applyEntryFilters - candidate in result has rawScore field for overbought"
   assert.ok("rawScore" in result.candidate);
 });
 
+test("applyEntryFilters - non-MR setups use raised blockThreshold (3.0×)", () => {
+  // price=100, ema21=88, atrVal=5 → dist=12/5=2.4 ATR — blocks at 1.8× but NOT at 3.0×
+  const candidate = baseCandidate({
+    price: 100, ema21: 88, atrVal: 5, setupType: "trend",
+    reasons: ["trend-vs-overbought"],
+  });
+  const result = applyEntryFilters(candidate, { enableEmaDistanceGate: true });
+  assert.equal(result.action, "allow", "trend setup at 2.4× ATR should pass with raised threshold");
+});
+
+test("applyEntryFilters - MR setups still use tight blockThreshold (1.8×)", () => {
+  // price=100, ema21=88, atrVal=5 → dist=2.4 ATR > 1.8× → block for MR
+  const candidate = baseCandidate({
+    price: 100, ema21: 88, atrVal: 5, setupType: "mean-reversion",
+    reasons: ["trend-vs-overbought"],
+  });
+  const result = applyEntryFilters(candidate, { enableEmaDistanceGate: true });
+  assert.equal(result.action, "block", "MR setup at 2.4× ATR should block at 1.8× threshold");
+});
+
+test("applyEntryFilters - non-MR setups still blocked above 3.0×", () => {
+  // price=100, ema21=82, atrVal=5 → dist=18/5=3.6 ATR > 3.0× → block even for trend
+  const candidate = baseCandidate({
+    price: 100, ema21: 82, atrVal: 5, setupType: "trend",
+    reasons: ["trend-vs-overbought"],
+  });
+  const result = applyEntryFilters(candidate, { enableEmaDistanceGate: true });
+  assert.equal(result.action, "block", "trend setup at 3.6× ATR should still block");
+});
+
 // ── queueEntry ─────────────────────────────────────────────────────────────────
 
 test("queueEntry - overbought signal queues as decaying limit", () => {

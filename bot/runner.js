@@ -1296,17 +1296,29 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
     console.warn(`[CLAUDE] Budget at ${pct}% ($${claudeSpend.toFixed(2)}/$${MONTHLY_BUDGET_USD}) — switching to auto-only`);
   }
 
-  if (claudeList.length > 0) {
+  // Pre-filter claudeList through structural gates before spending Claude budget
+  const preFiltered = [];
+  for (const c of claudeList) {
+    const check = applyEntryFilters(c);
+    if (check.action === "block") {
+      console.log(`[${c.symbol}] Pre-filtered before Claude: ${check.reason}`);
+      finalizeDecision(c, "rejected", `pre-filter:${check.reason}`);
+    } else {
+      preFiltered.push(check.candidate);
+    }
+  }
+
+  if (preFiltered.length > 0) {
     try {
       const claudeResult = await claudeBatchAnalysis({
         headlines: [],
-        candidatesToValidate: claudeList.slice(0, 5),
+        candidatesToValidate: preFiltered.slice(0, 5),
         positionsToClose: [],
         regime, env, state
       });
 
       if (!state.claudeValidations) state.claudeValidations = {};
-      const { cacheEntries, routing } = resolveClaudeValidations(claudeList, claudeResult, {
+      const { cacheEntries, routing } = resolveClaudeValidations(preFiltered, claudeResult, {
         getSetupFingerprintFn: getSetupFingerprint
       });
       Object.assign(state.claudeValidations, cacheEntries);
@@ -1349,7 +1361,7 @@ async function phaseScan(env, state, startFrac, endFrac, deps) {
       }
     } catch (err) {
       console.error("[CLAUDE VALIDATE]", err.message);
-      const fallbackRouting = resolveClaudeFallback(claudeList, {
+      const fallbackRouting = resolveClaudeFallback(preFiltered, {
         regime, autoApproveSignalFn: autoApproveSignal, scoreThreshold: 9
       });
       for (const { candidate, action, approvalType, claudeReason } of fallbackRouting) {

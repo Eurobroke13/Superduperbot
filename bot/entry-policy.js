@@ -66,6 +66,11 @@ export function applyEntryFilters(candidate, config = {}) {
     return { action: "allow", candidate: filtered };
   }
 
+  const effectiveGate = { ...policy.emaGate };
+  if (candidate.setupType && candidate.setupType !== "mean-reversion") {
+    effectiveGate.blockThreshold = Math.max(effectiveGate.blockThreshold, 3.0);
+  }
+
   const gate = emaDistanceGate({
     currentPrice: filtered.price,
     ema21: filtered.ema21,
@@ -73,7 +78,7 @@ export function applyEntryFilters(candidate, config = {}) {
     signalSet,
     direction: filtered.signal,
     currentScore: filtered.adjustedScore ?? filtered.score,
-    ...policy.emaGate
+    ...effectiveGate
   });
 
   if (!gate.allow) {
