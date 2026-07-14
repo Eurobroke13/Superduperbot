@@ -560,6 +560,7 @@ export function applyConfluenceOverride(routing, {
     // Claude never reviewed the candidate (degraded mode), not that it said no.
     if (r.action !== "rejected") continue;
     const c = r.candidate;
+    if (c.setupType !== "mean-reversion") continue;
 
     const aligned = (c.reasons || []).filter(s => !/^time\(/.test(s));
     if (aligned.length < 3) continue;

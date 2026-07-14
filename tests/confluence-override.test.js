@@ -16,17 +16,17 @@ function makeRouting(overrides = {}) {
     claudeReason: "all signals thin — marginal",
     candidate: {
       symbol: "AAA-USDT-SWAP",
-      setupType: "trend",
+      setupType: "mean-reversion",
       score: 5.5,
-      reasons: ["ema-ribbon-bull", "h4-bull", "above-VWAP", "time(+0.1)"],
+      reasons: ["mr-stoch-overbought", "mr-at-resistance", "above-VWAP", "time(+0.1)"],
       ...overrides
     }
   }];
 }
 
 const thinStats = {
-  "ema-ribbon-bull": { count: 8, effN: 2 },
-  "h4-bull": { count: 5, effN: 1 },
+  "mr-stoch-overbought": { count: 8, effN: 2 },
+  "mr-at-resistance": { count: 5, effN: 1 },
   "above-VWAP": { count: 6, effN: 3 }
 };
 
@@ -52,19 +52,19 @@ test("no override outside recalibration", () => {
 });
 
 test("time(±x) nudges do not count toward the 3-signal minimum", () => {
-  const routing = makeRouting({ reasons: ["ema-ribbon-bull", "h4-bull", "time(+0.1)", "time(-0.2)"] });
+  const routing = makeRouting({ reasons: ["mr-stoch-overbought", "mr-at-resistance", "time(+0.1)", "time(-0.2)"] });
   assert.equal(applyConfluenceOverride(routing, baseCtx), 0);
 });
 
 test("no override when any fired signal has reliable recent data (rule (a) available)", () => {
   const routing = makeRouting();
-  const stats = { ...thinStats, "h4-bull": { count: 30, effN: 20 } };
+  const stats = { ...thinStats, "mr-at-resistance": { count: 30, effN: 20 } };
   assert.equal(applyConfluenceOverride(routing, { ...baseCtx, signalStats: stats }), 0);
 });
 
 test("in-regime reliable stats also block the override", () => {
   const routing = makeRouting();
-  const stats = { ...thinStats, "h4-bull:bull": { count: 22, effN: 18 } };
+  const stats = { ...thinStats, "mr-at-resistance:bull": { count: 22, effN: 18 } };
   assert.equal(applyConfluenceOverride(routing, { ...baseCtx, signalStats: stats }), 0);
 });
 
@@ -74,18 +74,23 @@ test("legacy stats with no effN fall back to raw count for reliability", () => {
   assert.equal(applyConfluenceOverride(routing, { ...baseCtx, signalStats: stats }), 0);
 });
 
-test("score thresholds are per setup type: LT needs 7, MR needs 4.5, trend needs 5", () => {
-  const lt64 = makeRouting({ setupType: "liquidity-trap", score: 6.4 });
-  assert.equal(applyConfluenceOverride(lt64, baseCtx), 0, "LT 6.4 must not override");
+test("score thresholds: MR needs 4.5", () => {
+  const mr44 = makeRouting({ score: 4.4 });
+  assert.equal(applyConfluenceOverride(mr44, baseCtx), 0, "MR 4.4 must not override");
 
-  const lt70 = makeRouting({ setupType: "liquidity-trap", score: 7.0 });
-  assert.equal(applyConfluenceOverride(lt70, baseCtx), 1, "LT 7.0 overrides");
-
-  const mr45 = makeRouting({ setupType: "mean-reversion", score: 4.5 });
+  const mr45 = makeRouting({ score: 4.5 });
   assert.equal(applyConfluenceOverride(mr45, baseCtx), 1, "MR 4.5 overrides");
+});
 
-  const trend49 = makeRouting({ score: 4.9 });
-  assert.equal(applyConfluenceOverride(trend49, baseCtx), 0, "trend 4.9 must not override");
+test("non-MR setups are never overridden", () => {
+  const trend = makeRouting({ setupType: "trend", score: 6.0, reasons: ["ema-ribbon-bull", "h4-bull", "above-VWAP"] });
+  assert.equal(applyConfluenceOverride(trend, baseCtx), 0, "trend must not override");
+
+  const lt = makeRouting({ setupType: "liquidity-trap", score: 8.0, reasons: ["trap-clean-sweep-bull", "h4-bull", "above-VWAP"] });
+  assert.equal(applyConfluenceOverride(lt, baseCtx), 0, "LT must not override");
+
+  const breakout = makeRouting({ setupType: "breakout", score: 6.0, reasons: ["breakout-confirm", "h4-bull", "above-VWAP"] });
+  assert.equal(applyConfluenceOverride(breakout, baseCtx), 0, "breakout must not override");
 });
 
 test("overrides are capped per run (default 2)", () => {
