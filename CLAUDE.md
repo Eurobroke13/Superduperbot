@@ -343,6 +343,22 @@ After the de-poisoning work, structural improvements that add edge *without* add
 
 ---
 
+## Entry-Flow Fixes (July 2026 — PR #71, log analysis)
+
+Railway log analysis (main bot + runner, 2026-07-13→14) revealed three entry-flow issues where gates and overrides were fighting each other:
+
+**1. EMA distance block threshold raised for non-MR setups** (`bot/entry-policy.js` → `applyEntryFilters`). The `blockThreshold: 1.8` was killing trend/breakout entries in bull regime — these setups are *naturally* extended from EMA21 at 2.0–2.5× ATR, which is healthy for directional trades. Now: **MR keeps the tight 1.8× threshold** (overbought MR entries near EMA21 is the correct behavior); **non-MR setups use 3.0×** (`Math.max(policy.blockThreshold, 3.0)`). Tunable: the 3.0× floor is in `applyEntryFilters`; raise to allow even more extension, or lower to tighten. Tests: `tests/entry-policy.test.js`.
+
+**2. Pre-filter before Claude calls** (`bot/runner.js` → `phaseScan`). `applyEntryFilters` ran *after* Claude approval inside `_stageCandidateEntry` — so the bot spent Claude budget on candidates that would be structurally blocked anyway (e.g. `ema-distance-block`). Now: `claudeList` candidates are pre-filtered through `applyEntryFilters` before the batch call. Blocked candidates log `Pre-filtered before Claude: <reason>` and are finalized as `pre-filter:<reason>`. Only survivors go to Claude. The post-Claude `_stageCandidateEntry` still runs `applyEntryFilters` (belt-and-suspenders — e.g. if price moved between pre-filter and staging).
+
+**3. Confluence override restricted to MR setups only** (`bot/runner-utils.js` → `applyConfluenceOverride`). The override was designed for recalibration-mode MR candidates that Claude rejected on thin data — but it also fired for trend/breakout/LT setups, re-opening exactly the negative-EV trades the MR pivot was designed to suppress. Now: `if (c.setupType !== "mean-reversion") continue;` skips non-MR candidates. The override's caps (2/run, 0.5× size) and reliability escape hatch are unchanged. Tests: `tests/confluence-override.test.js`.
+
+**#4 investigated, left as-is:** `getAdaptiveSetupDecision` (`stats.js`) blocking trend setups (`trend blocked n=134 ev=-6.04`) is using decayed stats correctly — trend setups genuinely have negative recent decayed EV. The blocking is legitimate behavior, not a poisoning artifact. Fixes 1-3 redirect the bot toward its profitable MR edge rather than forcing through negative-EV trend entries.
+
+**Watch after deploy:** `ema-distance-block` rejections should drop significantly for trend setups; `Pre-filtered before Claude:` should appear for any remaining structural blocks (saves budget); `[CONFLUENCE OVERRIDE]` should only fire for MR setups. If trend entries in bull still get blocked, check whether it's the EMA gate (raise 3.0→higher) or the adaptive setup decision (legitimate negative EV).
+
+---
+
 ## Known Issues & History
 
 ### Reverted (tried, validated as harmful, removed — do NOT rebuild)
@@ -368,6 +384,10 @@ After the de-poisoning work, structural improvements that add edge *without* add
 - **Monitoring after PR #58 deploy (merged 2026-06-20)** — two fixes to confirm in logs:
   1. **Claude batch fail-open fix** (`coin-memory.js`): `[CLAUDE BATCH] JSON parse failed` should disappear, and there should be **no more `Claude approved: auto-fallback`** on parseable runs. If parse failures *do* recur, candidates now reject with `claude-parse-failed` / `claude-error` (fail-safe, no silent auto-approval) — investigate the batch size / response length rather than letting it ride.
   2. **MR stop-distance gate** (`scoring.js`, `MR_MIN_STOP_DISTANCE_PCT = 0.008`): `mr-stop-too-tight` rejections should appear for ultra-compressed-ATR coins (the RLS failure mode) while normally-volatile MR setups (ATOM-class) still pass. **Risk:** if MR frequency drops too hard (back toward zero-trades), the 0.8% floor is the single knob to lower in `config.js`. Re-check after ~20-30 MR-era runs; the loss that motivated it (RLS) was a low-*priced* coin, NOT illiquid ($272M/24h) — the gate is liquidity-agnostic by design.
+- **Monitoring after PR #71 deploy (July 2026)** — three entry-flow fixes (see "Entry-Flow Fixes" above):
+  1. **EMA distance threshold**: `ema-distance-block` rejections should drop for trend/breakout setups in bull (threshold raised 1.8→3.0× for non-MR). MR setups still blocked at 1.8×.
+  2. **Pre-filter before Claude**: `Pre-filtered before Claude:` log lines should appear for structurally blocked candidates — confirms budget savings. No more `Entry blocked: ema-distance-block` *after* a Claude approval.
+  3. **Confluence override MR-only**: `[CONFLUENCE OVERRIDE]` should only fire for `mean-reversion` setups. Trend/LT/breakout rejections by Claude should stand.
 - **SLX-USDT-SWAP / IRYS-USDT-SWAP partial candles** — These symbols consistently return fewer candles than requested (SLX: 56/200 on 4H, IRYS: 85/200 on 4H). New listings with limited history. Bot skips them correctly but they appear as noise in logs.
 - **`superduperbot-premarket` service** — Still running on schedule but does nothing (disabled in code). Wastes a Railway service slot — consider deleting it.
 
