@@ -1,8 +1,8 @@
-# Friedhofsgebühren — Quellengestützte Daten für 15 Großstädte
+# Friedhofsgebühren — Quellengestützte Daten für 20 Großstädte
 
 Alle Angaben stammen aus den offiziellen Friedhofsgebührenordnungen/-satzungen
 der jeweiligen Stadt oder aus Bestatter-Portalen, die diese Satzungen zitieren.
-**Stand: Juli 2026** (Gebührentarife 2024–2026).
+**Stand: August 2026** (Gebührentarife 2024–2026).
 
 > **Lesehinweis:** „Grabnutzung" = Nutzungsrecht für die gesamte Ruhezeit;
 > „Bestattungsgebühr" = Öffnen/Schließen des Grabes + Beisetzung;
@@ -558,7 +558,184 @@ Reihengräber. Eigenes Krematorium mit €394 Einäscherungsgebühr.
 
 ---
 
-## Erweiterter Quervergleich — 20-Jahres-Gesamtkosten (alle 15 Städte)
+## 16. Bielefeld — Städtische Friedhöfe
+
+**Rechtsgrundlage:** Gebührensatzung für die Benutzung der Friedhöfe (VII/25),
+Neufassung gültig ab 15.07.2024
+— [Gebührensatzung (PDF)](https://www.bielefeld.de/sites/default/files/datei/2024/Gebuehrensatzung-Friedhoefe.pdf)
+— [Friedhofssatzung (PDF)](https://www.bielefeld.de/sites/default/files/datei/2024/Friedhofssatzung_130724n.pdf)
+— [Gebührenanpassung 2024](https://www.bielefeld.de/node/27204)
+
+| Position | Gebühr (€) | Anmerkung |
+|---|---|---|
+| **Grabnutzung** | | Jahresgebühr × Nutzungsdauer |
+| Sarg-Wahlgrab (Jahresgebühr) | 70 /Jahr | vorher 57,99; × 25 J. = 1.750 |
+| Urnen-Wahlgrab (Jahresgebühr) | 62 /Jahr | andere Friedhöfe; × 20 J. = 1.240 |
+| Urnen-Wahlgrab Sennefriedhof | 39 /Jahr | günstigster Satz |
+| Sarg-Reihengrab | in Bestattungsgebühr | feste Ruhezeit, nicht verlängerbar |
+| **Bestattungsgebühr** | | |
+| Erdbestattung Reihengrab | 673 | |
+| Erdbestattung Wahlgrab | 819 | vorher 682 |
+| Urnenbeisetzung (Reihengrab) | 70 | vorher 58 |
+| **Trauerhalle** | 287 | vorher 239 |
+| **Nutzungsdauer** | 25 J. (Sarg) / 20 J. (Urne) | Wahlgräber verlängerbar |
+
+**Besonderheit Bielefeld:** Bielefeld erhebt die Grabnutzungsgebühr als
+**Jahresgebühr** (nicht als Pauschale für die gesamte Ruhezeit). Für ein
+Sarg-Wahlgrab über 25 Jahre ergibt sich: €70 × 25 = €1.750 + €819
+Bestattung = ca. €2.569 Gesamtkosten. Neben den 8 städtischen Friedhöfen
+(inkl. Sennefriedhof mit günstigerem Tarif) gibt es kirchliche Friedhöfe
+(z.B. Heepen-Oldentrup) mit eigener Gebührenordnung und teils abweichenden
+Sätzen (Wahlgrab 30 J. = €1.815). Gebühren wurden im Juli 2024 nach
+6 Jahren erstmals angepasst (Basis Kostenstruktur 2022).
+
+**Quellen:** [Stadt Bielefeld – Gebührenanpassung](https://www.bielefeld.de/node/27204),
+[Gebührensatzung (PDF)](https://www.bielefeld.de/sites/default/files/datei/2024/Gebuehrensatzung-Friedhoefe.pdf),
+[Feuerbestattung24 – Bielefeld](https://feuerbestattung24.de/pages/friedhoefe/friedhofsverwaltung-bielefeld.html)
+
+---
+
+## 17. Bonn — Städtische Friedhöfe
+
+**Rechtsgrundlage:** Gebührenordnung für das Friedhofs- und Begräbniswesen
+(Ortsrecht 68-1-1), Tarife 2025 und 2026
+— [Gebührenordnung (Ortsrecht)](https://www.bonn.de/service-bieten/stadtpolitik-ortsrecht/ortsrecht/bauen-stadtgestaltung/gebuehrenordnung-fuer-das-friedhofs-und-begraebniswesen.php)
+
+| Position | Gebühr 2025 (€) | Gebühr 2026 (€) | Anmerkung |
+|---|---|---|---|
+| **Grabnutzung (15 J. Minimum)** | | | |
+| Sarg-Wahlgrab | 1.273 | 1.233 | einstellig, 15 J. |
+| Urnen-Wahlgrab | 1.037 | 1.025 | 15 J. |
+| **Bestattungsgebühr** | | | |
+| Sargbestattung | 842 | 1.040 | +24% Anstieg 2026 |
+| Urnenbestattung | 252 | 341 | +35% Anstieg 2026 |
+| **Trauerhalle** | ab 300 | — | je nach Halle/Dauer |
+| **Nutzungsdauer** | 15 Jahre | | Minimum, verlängerbar |
+
+**Besonderheit Bonn:** Bonn hat mit **15 Jahren** die kürzeste
+Mindest-Nutzungsdauer aller untersuchten Städte. Die Grabnutzungsgebühren
+sinken 2025→2026 leicht (−3%), während die Bestattungsgebühren deutlich
+steigen (+24% Sarg, +35% Urne) — eine Umschichtung von der Grab- auf die
+Dienstleistungskomponente. Gesamtkosten Erdbestattung 2026 (15 J.):
+€1.233 + €1.040 = ca. €2.273 (auf 20 J. normiert: ca. €2.684).
+
+**Quellen:** [Bonn – Gebührenordnung 68-1-1](https://www.bonn.de/service-bieten/stadtpolitik-ortsrecht/ortsrecht/bauen-stadtgestaltung/gebuehrenordnung-fuer-das-friedhofs-und-begraebniswesen.php),
+[Ferdinand Fair – Bestattung Bonn](https://www.ferdinand-fair.de/g%C3%BCnstige-bestattung-bonn)
+
+---
+
+## 18. Münster — Städtische Friedhöfe / Zentralfriedhof
+
+**Rechtsgrundlage:** Friedhofsgebührensatzung der Stadt Münster
+(Satzungsnummer 67.02)
+— [Ortsrecht (Satzung 67.02)](https://www.stadt-muenster.de/recht/ortsrecht/satzungen/detailansicht/satzungsnummer/67.02)
+— [Zentralfriedhof – Gebühren](https://www.zentralfriedhof-muenster.de/grabstaetten/gebuehren)
+— [Gebührenübersicht (PDF, 10/2024)](https://www.stadt-muenster.de/fileadmin/user_upload/stadt-muenster/67_gruen/pics/Friedhoefe/pdf/friedhoefe_gebuehren_10_2024.pdf)
+
+| Position | Gebühr (€) | Anmerkung |
+|---|---|---|
+| **Grabnutzung (30 Jahre)** | | |
+| Sarg-Wahlgrab | 1.812 | verlängerbar |
+| Sarg-Reihengrab | 900 – 1.900 | nach Friedhof/Lage |
+| Urnen-Wahlgrab | 1.290 | verlängerbar |
+| Urnen-Reihengrab | 780 | nicht verlängerbar |
+| Kindergrab | 450 | |
+| Gemeinschaftsgrab | 900 | zzgl. 2.250 Pflege (Zentralfriedhof, 20 J.) |
+| **Bestattungsgebühr** | | |
+| Erdbestattung (Reihengrab) | 550 | |
+| Erdbestattung (Wahlgrab) | 617 | |
+| Urnenbeisetzung | 314 | |
+| **Trauerhalle / Kapelle** | 143 /Stunde | Abschiedsraum 95 €/Std. |
+| **Nutzungsdauer** | 30 Jahre | Wahlgräber verlängerbar |
+
+**Besonderheit Münster:** 30 Jahre Nutzungsdauer — die längste aller
+untersuchten NRW-Städte (Dortmund/Essen 25 J., Düsseldorf 30 J. nur
+Wahlgrab). Der Zentralfriedhof bietet Gemeinschaftsgrabfelder mit
+pauschalem Pflegepaket (20 J., €2.250 separat). Absolut gesehen günstig:
+Sarg-Wahlgrab €1.812 für 30 Jahre = €604/Dekade vs. Düsseldorf
+€4.177/30 J. = €1.392/Dekade. BdSt-NRW-Vergleich bestätigt Münster als
+eine der günstigsten NRW-Großstädte.
+
+**Quellen:** [Stadt Münster – Friedhöfe](https://www.stadt-muenster.de/gruen/friedhoefe),
+[Zentralfriedhof Münster – Gebühren](https://www.zentralfriedhof-muenster.de/grabstaetten/gebuehren),
+[Gebührenübersicht 10/2024 (PDF)](https://www.stadt-muenster.de/fileadmin/user_upload/stadt-muenster/67_gruen/pics/Friedhoefe/pdf/friedhoefe_gebuehren_10_2024.pdf),
+[BdSt NRW – Gebührenvergleich (PDF)](https://www.sauerbier-bestattungshaus.de/sites/default/files/gebuehrensatzung_nrw_vergleich.pdf)
+
+---
+
+## 19. Karlsruhe — Städtische Friedhöfe
+
+**Rechtsgrundlage:** Friedhofsgebührensatzung der Stadt Karlsruhe (7/9),
+Tarife gültig ab 01.01.2026
+— [Friedhofsgebührensatzung (PDF)](https://www.karlsruhe.de/fileadmin/user_upload/01_Stadt_Rathaus/013_Verwaltung_und_Stadtpolitik/Stadtrecht/7_OEffentliche_Einrichtungen__Wirtschaftsfoerderung/7-9_Friedhofsgebuehrensatzung.pdf)
+— [Gebührenverzeichnis 2025/26 (PDF)](https://www.friedhof-karlsruhe.de/fileadmin/user_upload/Anlage_1a_Gebuehrenverzeichnis_2025.pdf)
+— [Grab- und Bestattungsgebühren](https://www.friedhof-karlsruhe.de/service/grab-und-bestattungsgebuehren/)
+
+| Position | Gebühr (€) | Anmerkung |
+|---|---|---|
+| **Grabnutzung (20 Jahre)** | | Tarif ab 01.01.2026 |
+| Sarg-Reihengrab | 877 | Ruhezeit 20 J. |
+| Sarg-Wahlgrab | 2.000 | verlängerbar |
+| Urnen-Reihengrab (Feuerbestattung) | 791 | |
+| Urnen-Wahlgrab (Feuerbestattung) | 1.860 | verlängerbar |
+| Anonymes Grab (Sarg) | 1.938 | |
+| Anonymes Grab (Urne) | 1.292 | |
+| Kolumbariumreihengrab (1 Urne) | 1.740 | 20 J. |
+| **Bestattungsgebühr** | | |
+| in Grabgebühr enthalten | — | Paketgebühr |
+| **Nutzungsdauer** | 20 Jahre | Bergdörfer 25 J. für Sarg |
+
+**Besonderheit Karlsruhe:** Karlsruhe bündelt Grabnutzung und
+Bestattungsgebühr in einer **Paketgebühr** (ähnlich Frankfurt/Dresden).
+Ungewöhnlich: das anonyme Sarggrab (€1.938) ist teurer als das
+Urnen-Wahlgrab (€1.860). In den Bergdörfern (z.B. Grünwettersbach,
+Palmbach) gilt eine längere Ruhezeit von 25 Jahren für Sargbestattungen.
+Kolumbarien (Urnennischen) sind mit €1.740 eine vergleichsweise teure
+Alternative.
+
+**Quellen:** [Friedhöfe Karlsruhe – Gebühren](https://www.friedhof-karlsruhe.de/service/grab-und-bestattungsgebuehren/),
+[Gebührenverzeichnis (PDF)](https://www.friedhof-karlsruhe.de/fileadmin/user_upload/Anlage_1a_Gebuehrenverzeichnis_2025.pdf),
+[Friedhofsgebührensatzung 7/9 (PDF)](https://www.karlsruhe.de/fileadmin/user_upload/01_Stadt_Rathaus/013_Verwaltung_und_Stadtpolitik/Stadtrecht/7_OEffentliche_Einrichtungen__Wirtschaftsfoerderung/7-9_Friedhofsgebuehrensatzung.pdf)
+
+---
+
+## 20. Mannheim — Städtische Friedhöfe
+
+**Rechtsgrundlage:** Satzung der Stadt Mannheim über Gebühren im
+Bestattungswesen (Stadtrecht 07-04), Tarife zuletzt geändert ab 01.01.2025
+— [Gebührensatzung (Stadtrecht, PDF)](https://www.mannheim.de/sites/default/files/page/2854/s07-04.pdf)
+— [Friedhofsrecht](https://www.friedhof-mannheim.de/service/friedhofsrecht/)
+— [Änderungssatzung Gebühren (PDF)](https://www.mannheim.de/sites/default/files/B025%20Satzung%20zur%20%C3%84nderung%20der%20Geb%C3%BChrensatzung%20im%20Bestattungswesen.pdf)
+
+| Position | Gebühr (€) | Anmerkung |
+|---|---|---|
+| **Bestattungsgebühr inkl. Trauerhalle** | | Stand 2025 |
+| Erdbestattung Wahlgrab | 1.588 | ohne Trauerhalle: 1.246 |
+| Erdbestattung Reihengrab (Erw.) | 1.324 | ohne Trauerhalle: 982 |
+| **Grabnutzung** | | |
+| Urnenwahlgrab (Jahresgebühr) | 88 /Jahr | min. 15 J. = 1.320 |
+| Urnenreihengrab (15 J.) | 697 | |
+| Urnennische (30 J.) | 1.076 | Urnenhalle 1+2 |
+| Gemeinschaftsgrab Urne | 418 | |
+| **Trauerhalle** | ca. 342 | Differenz mit/ohne Trauerhalle |
+| **Nutzungsdauer** | 25 J. (Sarg-Reihe) / 20 J. (Urne-Reihe) | Wahlgräber min. 15 J. |
+
+**Besonderheit Mannheim:** Mannheim bündelt die Bestattungsgebühr mit der
+Trauerhalle-Nutzung in einer Position und weist den Betrag „ohne
+Trauerhalle" separat aus (Differenz ca. €342). Bei Urnenwahlgräbern wird
+eine **Jahresgebühr** erhoben (€88/J., ähnlich Bielefeld), nicht eine
+Pauschale. Reihengräber für Sargbestattung haben mit 25 Jahren eine
+überdurchschnittliche Nutzungsdauer. Die Gebühren wurden zum 01.01.2025
+angepasst.
+
+**Quellen:** [Mannheim – Gebührensatzung (PDF)](https://www.mannheim.de/sites/default/files/page/2854/s07-04.pdf),
+[Friedhöfe Mannheim – Friedhofsrecht](https://www.friedhof-mannheim.de/service/friedhofsrecht/),
+[Feuerbestattung24 – Mannheim](https://feuerbestattung24.de/pages/friedhoefe/friedhofsverwaltung-mannheim.html),
+[Mannheim.de – Gebühren neu angepasst](https://www.mannheim.de/de/nachrichten/friedhofsgebuehren-werden-neu-angepasst)
+
+---
+
+## Erweiterter Quervergleich — 20-Jahres-Gesamtkosten (alle 20 Städte)
 
 Normiert auf **20 Jahre Nutzung**, günstigste verfügbare Standardgrabform.
 
@@ -579,11 +756,18 @@ Normiert auf **20 Jahre Nutzung**, günstigste verfügbare Standardgrabform.
 | Nürnberg | ca. 2.010 (620+1.390) | ca. 404 (160+244) | BFGebS 2024 |
 | Bremen | 1.473 | 961 | Gebührenordnung 2025 |
 | Duisburg | 1.329 | 1.259 | WBD 2026 |
+| Bielefeld | ca. 2.569 (70×25+819) | ca. 1.310 (62×20+70) | Gebührensatzung 2024 |
+| Bonn | ca. 2.684 (1.644×20/15+1.040) | ca. 1.707 (1.367×20/15+341) | Gebührenordnung 2026 |
+| Münster | ca. 1.825 (1.208×20/30+550) | ca. 834 (520×20/30+314) | Satzung 67.02 |
+| Karlsruhe | 877 (Paket) | 791 (Paket) | Gebührensatzung 2026 |
+| Mannheim | ca. 2.382 (1.324×20/25+1.324×0) | ca. 697 (Reihe, 15 J.→928 norm.) | Gebührensatzung 2025 |
 
-> **Achtung:** Die Normierung ist vereinfacht — Hamburg 25→20 J. linear,
-> München/Nürnberg 10→20 J. verdoppelt, Düsseldorf 30→20 J. linear.
-> Ostdeutsche Städte (Leipzig, Dresden) sind strukturell günstiger.
-> „Paket" = Grabnutzung + Bestattung gebündelt.
+> **Achtung:** Die Normierung ist vereinfacht — Hamburg/Essen/Dortmund
+> 25→20 J. linear, München/Nürnberg 10→20 J. verdoppelt, Düsseldorf/Münster
+> 30→20 J. linear, Bonn 15→20 J. linear, Mannheim Sarg 25→20 J. linear.
+> Bielefeld/Mannheim Jahresgebühr × normierte Dauer. Ostdeutsche Städte
+> (Leipzig, Dresden) sind strukturell günstiger. „Paket" = Grabnutzung +
+> Bestattung gebündelt (Karlsruhe, Frankfurt, Dresden).
 
 ---
 
@@ -595,11 +779,17 @@ Normiert auf **20 Jahre Nutzung**, günstigste verfügbare Standardgrabform.
    Trauerhalle immer einzeln zeigen; der Leser soll nachvollziehen können,
    woraus sich die Summe zusammensetzt.
 3. **Nutzungsdauer-Normierung explizit machen** — München/Nürnberg (10 J.),
-   Hamburg/Essen/Dortmund (25 J.) und Düsseldorf (30 J.) sind nicht direkt
-   vergleichbar. Wenn ein Quervergleich gezeigt wird, immer die
-   Umrechnungsbasis angeben.
-4. **Kirchliche vs. städtische Friedhöfe** — in Berlin, München, Leipzig und
-   Dresden sind viele/die Mehrheit der Friedhöfe kirchlich. Wer nur städtische
-   Gebühren zeigt, deckt u.U. nicht den Normalfall ab.
-5. **Krematoriumsgebühren separat** — sie sind kein Teil der
+   Hamburg/Essen/Dortmund (25 J.), Düsseldorf/Münster (30 J.), Bonn (15 J.)
+   und Mannheim Sarg (25 J.) sind nicht direkt vergleichbar. Wenn ein
+   Quervergleich gezeigt wird, immer die Umrechnungsbasis angeben.
+4. **Jahresgebühren umrechnen** — Bielefeld und Mannheim (Urnenwahlgrab)
+   erheben jährliche Nutzungsgebühren statt Pauschalen. Für Vergleiche:
+   Jahresgebühr × normierte Nutzungsdauer.
+5. **Kirchliche vs. städtische Friedhöfe** — in Berlin, München, Leipzig,
+   Dresden und Bielefeld sind viele/die Mehrheit der Friedhöfe kirchlich.
+   Wer nur städtische Gebühren zeigt, deckt u.U. nicht den Normalfall ab.
+6. **Paketgebühren kennzeichnen** — Karlsruhe, Frankfurt und Dresden bündeln
+   Grabnutzung + Bestattung in einer Position. Mannheim bündelt Bestattung +
+   Trauerhalle. Immer klarstellen, was im Preis enthalten ist.
+7. **Krematoriumsgebühren separat** — sie sind kein Teil der
    Friedhofsgebührenordnung und variieren nach Betreiber und Region.
