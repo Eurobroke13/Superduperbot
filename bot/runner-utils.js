@@ -485,17 +485,38 @@ export function applyClaudeSpendGuardrail(claudeList, autoList, { spend, budget 
  *             routing: Array<{candidate, action, approvalType, claudeReason}> }}
  *   action ∈ "stage" | "rejected" | "fallback-rejected"
  */
+// Reasons that mean "we never got a verdict", as opposed to "Claude said no".
+// An API outage, a budget error or an unparseable response must still reject
+// the current cycle (never open a position on a non-verdict) — but it must NOT
+// be written to the validation cache. Caching it turns an infrastructure
+// failure into a trading decision that then suppresses the same candidate for
+// the next 20-45 minutes without ever re-asking. Seen live on 2026-09-01: the
+// Anthropic credit balance ran out, every candidate came back "claude-error",
+// and those errors were cached and replayed as `claude-cached-rejected` long
+// after the credits were topped up.
+const NON_VERDICT_REASONS = new Set([
+  "claude-error",
+  "claude-parse-failed",
+  "no response"
+]);
+
 export function resolveClaudeValidations(claudeList, claudeResult, { getSetupFingerprintFn }) {
   const cacheEntries = {};
   const routing = [];
 
   for (const c of claudeList) {
     const v = claudeResult.validations[c.symbol];
+    const reason = v?.reason || "unknown";
+
+    // Approvals are always a verdict. Rejections are only a verdict if they
+    // came from Claude rather than from a failure to reach it.
+    if (v?.approved !== true && NON_VERDICT_REASONS.has(reason)) continue;
+
     cacheEntries[c.symbol] = {
       fingerprint: getSetupFingerprintFn(c),
       ts: Date.now(),
       approved: v?.approved === true,
-      reason: v?.reason || "unknown"
+      reason
     };
   }
 
