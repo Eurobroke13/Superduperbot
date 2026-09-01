@@ -6,7 +6,7 @@ import {
   reevaluatePositions,
   sendTradeAnalysis
 } from "./bot/deps.js";
-import { closeDb } from "./db.js";
+import { closeDb, isTransientDbError } from "./db.js";
 
 const task = process.argv[2];
 const env = process.env;
@@ -56,15 +56,39 @@ async function main() {
   }
 }
 
+// Surface anything that escapes the promise chain instead of dying silently.
+process.on("unhandledRejection", (reason) => {
+  console.error("[task-runner] UNHANDLED REJECTION:", reason?.stack || reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[task-runner] UNCAUGHT EXCEPTION:", err?.stack || err);
+  process.exit(1);
+});
+
 main()
   .then(async () => {
     await closeDb();
     process.exit(0);
   })
   .catch(async (error) => {
+    const transient = isTransientDbError(error);
     console.error("[task-runner]", error.message || error);
     try {
       await closeDb();
     } catch (_) {}
+
+    if (transient) {
+      // Postgres was unreachable even after db.js exhausted its retries. This
+      // is infrastructure, not a bug in this run. Exiting 1 made Railway burn
+      // restartPolicyMaxRetries and flag the whole cron deployment as CRASHED
+      // — which is the "deployment crash" noise on superduperbot-runner. The
+      // next cron tick is only minutes away and will pick up cleanly, so exit
+      // clean and let the scheduler do its job.
+      console.warn(
+        `[task-runner] Postgres unavailable for task '${task}' — skipping this tick (exit 0). ` +
+        "Next scheduled run will retry."
+      );
+      process.exit(0);
+    }
     process.exit(1);
   });
