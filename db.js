@@ -195,17 +195,46 @@ const BOT_LOCK_KEY = 98765432;
  * the lock, this run is skipped immediately rather than running in parallel.
  * Lock is released in the finally block on the same client.
  */
+// A full bot run takes ~5-20s. The main service runs every 15 min and the cron
+// runner every 5 min, so they collide periodically and the loser used to drop
+// its cycle entirely (~1 in 4 fast-scans, observed 2026-09-01). Waiting a few
+// seconds converts almost every collision into a slightly delayed run instead
+// of a lost one. Kept well under the cron interval so a genuinely stuck holder
+// still results in a skip rather than a pile-up.
+const LOCK_WAIT_MS = Number(process.env.BOT_LOCK_WAIT_MS || 45_000);
+const LOCK_POLL_MS = Number(process.env.BOT_LOCK_POLL_MS || 2_000);
+
 export async function withBotLock(fn) {
   await initDb();
   const client = await connectWithRetry("withBotLock");
   try {
-    const { rows } = await client.query(
-      "SELECT pg_try_advisory_lock($1) AS acquired",
-      [BOT_LOCK_KEY]
-    );
-    if (!rows[0].acquired) {
-      console.log("[LOCK] Another bot run is active — skipping this run");
+    const deadline = Date.now() + LOCK_WAIT_MS;
+    let acquired = false;
+    let waited = 0;
+
+    for (;;) {
+      const { rows } = await client.query(
+        "SELECT pg_try_advisory_lock($1) AS acquired",
+        [BOT_LOCK_KEY]
+      );
+      if (rows[0].acquired) {
+        acquired = true;
+        break;
+      }
+      if (Date.now() + LOCK_POLL_MS > deadline) break;
+      if (waited === 0) {
+        console.log(`[LOCK] Another bot run is active — waiting up to ${Math.round(LOCK_WAIT_MS / 1000)}s`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, LOCK_POLL_MS));
+      waited += LOCK_POLL_MS;
+    }
+
+    if (!acquired) {
+      console.log(`[LOCK] Another bot run still active after ${Math.round(waited / 1000)}s — skipping this run`);
       return { skipped: true, reason: "lock-held" };
+    }
+    if (waited > 0) {
+      console.log(`[LOCK] Acquired after waiting ${Math.round(waited / 1000)}s`);
     }
     try {
       return await fn();
