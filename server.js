@@ -1,5 +1,5 @@
 import express from "express";
-import { initDb } from "./db.js";
+import { initDb, pingDb } from "./db.js";
 import { MONTHLY_BUDGET_USD, PAPER_CASH } from "./bot/config.js";
 import { fetchAllTickers } from "./bot/market-data.js";
 import { estimateMonthlySpend } from "./bot/stats.js";
@@ -86,7 +86,10 @@ app.get("/", (_, res) => res.send("Live"));
 
 app.get("/health", async (_, res) => {
   try {
-    await initDb();
+    // pingDb, not initDb: initDb short-circuits on its `initialized` flag, so
+    // after the first success it stopped touching Postgres and happily reported
+    // "connected" for a database that had been down for hours.
+    await pingDb();
     res.json({ ok: true, database: "connected", scheduler });
   } catch (error) {
     console.error("[health]", error);
